@@ -7,6 +7,8 @@ docker logs containerId
 docker run -d --name "nginxcontainer" -p 8081:80 -v "D:/codes Practice/learning/texts-20230226T192047Z-001/texts/index.html:/usr/share/nginx/html/index.html" nginx:latest
 --> run below command where your dockerfile is present and is for creating the image
 docker build -t backend-micro001 .
+--> with no cache
+docker build -t backend-micro001 --no-cache.
 docker run --name "backend001" -d -p 8080:8080 backend-micro001:latest
 docker ps -aq
 docker rm -f containerId
