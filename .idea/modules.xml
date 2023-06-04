@@ -4,6 +4,7 @@
     <modules>
       <module fileurl="file://$PROJECT_DIR$/Devops/Devops.iml" filepath="$PROJECT_DIR$/Devops/Devops.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/Devops Complete.iml" filepath="$PROJECT_DIR$/.idea/Devops Complete.iml" />
+      <module fileurl="file://$PROJECT_DIR$/javatopics/javatopics/javatopics.iml" filepath="$PROJECT_DIR$/javatopics/javatopics/javatopics.iml" />
     </modules>
   </component>
 </project>
