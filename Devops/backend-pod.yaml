@@ -5,6 +5,6 @@ metadata:
 spec:
   containers:
     - name: backend001
-      image: backend-micro001
+      image: rajji01/backend-micro001
       ports:
         - containerPort: 8080
