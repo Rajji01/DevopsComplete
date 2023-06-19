@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: spring-boot-app
+spec:
+  containers:
+    - name: backend001
+      image: backend-micro001
+      ports:
+        - containerPort: 8080
