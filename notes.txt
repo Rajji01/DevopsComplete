@@ -1,5 +1,5 @@
 --->
-docker run -d --name "nginxcontainer" -p 8081:80 nginx:latest
+docker run -d --name "nginxcontainer" -p 8080:80 nginx:latest
 docker ps -a
 docker rm -f nginxcontainer
 docker exec -it 3dd7dd4b537f sh
@@ -12,6 +12,11 @@ docker build -t backend-micro001 --no-cache .
 docker run --name "backend001" -d -p 8080:8080 backend-micro001:latest
 docker ps -aq
 docker rm -f containerId
+
+---> push your local image
+docker tag backend-micro001 rajji01/backend-micro001
+docker push rajji01/backend-micro001
+docker login
 
 
 
