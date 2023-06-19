@@ -12,3 +12,42 @@ docker build -t backend-micro001 --no-cache .
 docker run --name "backend001" -d -p 8080:8080 backend-micro001:latest
 docker ps -aq
 docker rm -f containerId
+
+
+
+------>kubernetes
+k get po
+k exec -it nginx bash
+kubectl apply -f fist-pod.yaml
+k delete po podname
+k delete po manifestyaml -n namespace
+kubectl delete -f fist-pod.yaml -n default
+kubectl describe po podname -n default
+
+# delete all pods
+k delete po --all
+
+#for multiple container
+k -n dop exec -it podname --container container-name bash
+
+#namespaces
+k get namespaces/ k get ns
+k create ns testing
+kubectl delete ns testing
+
+
+#service
+k get svc -n namespsace
+kubectl describe svc -n namespace service-name
+kubectl delete svc nginx-service
+kubectl describe svc service-name
+
+k logs -n podname
+
+//for multiple pods having same selector
+k logs --selector=app=nginx-testing
+
+
+###for complete definition
+kubectl get po -n default nginx -o yaml | less
+kubectl get po -n default nginx -o json | less
