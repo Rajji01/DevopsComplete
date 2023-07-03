@@ -5,6 +5,7 @@
       <list>
         <option value="$PROJECT_DIR$/Devops/pom.xml" />
         <option value="$PROJECT_DIR$/javatopics/javatopics/pom.xml" />
+        <option value="$PROJECT_DIR$/microservice01/pom.xml" />
       </list>
     </option>
   </component>

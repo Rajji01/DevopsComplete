@@ -10,14 +10,36 @@ docker build -t backend-micro001 .
 --> with no cache
 docker build -t backend-micro001 --no-cache .
 docker run --name "backend001" -d -p 8080:8080 backend-micro001:latest
+docker build -t backend-micro002 --no-cache .
+docker run --name "backend002" -d -p 8081:8081 backend-micro002:latest
 docker ps -aq
 docker rm -f containerId
 
 ---> push your local image
 docker tag backend-micro001 rajji01/backend-micro001
 docker push rajji01/backend-micro001
+docker tag backend-micro002 rajji01/backend-micro002
+docker push rajji01/backend-micro002
 docker login
 
+-->get all pods for all namespaces
+kubectl get pods -A
+
+
+---> port forwarding and accessing your application
+kubectl run hello-world01 --image=rajji01/backend-micro001:latest --port=8080
+kubectl port-forward pod/hello-world01 8080:8080
+kubectl port-forward  hello-world0001 8080:8080
+
+
+--->for logs and following logs
+kubectl  logs hello-world
+kubectl  logs hello-world -f
+
+kubectl logs hello-world0001 -c hello-world0001
+
+------>port-forward in deployment
+kubectl port-forward deployment/hello-world 8081:8080
 
 
 ------>kubernetes

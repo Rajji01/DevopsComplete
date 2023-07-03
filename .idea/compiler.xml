@@ -7,17 +7,20 @@
         <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
         <outputRelativeToContentRoot value="true" />
         <module name="Devops" />
+        <module name="microservice01" />
       </profile>
     </annotationProcessing>
     <bytecodeTargetLevel>
       <module name="Devops" target="17" />
       <module name="javatopics" target="17" />
+      <module name="microservice01" target="17" />
     </bytecodeTargetLevel>
   </component>
   <component name="JavacSettings">
     <option name="ADDITIONAL_OPTIONS_OVERRIDE">
       <module name="Devops" options="-parameters" />
       <module name="javatopics" options="-parameters" />
+      <module name="microservice01" options="-parameters" />
     </option>
   </component>
 </project>

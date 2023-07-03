@@ -4,6 +4,7 @@
     <modules>
       <module fileurl="file://$PROJECT_DIR$/Devops/Devops.iml" filepath="$PROJECT_DIR$/Devops/Devops.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/Devops Complete.iml" filepath="$PROJECT_DIR$/.idea/Devops Complete.iml" />
+      <module fileurl="file://$PROJECT_DIR$/microservice01/microservice01.iml" filepath="$PROJECT_DIR$/microservice01/microservice01.iml" />
     </modules>
   </component>
 </project>
