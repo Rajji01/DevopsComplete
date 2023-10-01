@@ -1,12 +1,13 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: spring-boot-service
+  name: backend-service
 spec:
   selector:
-    app: spring-boot-app
+    app: hello-world
   ports:
     - protocol: TCP
       port: 8080
       targetPort: 8080
+      nodePort: 30001
   type: NodePort

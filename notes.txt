@@ -9,6 +9,9 @@ docker run -d --name "nginxcontainer" -p 8081:80 -v "D:/codes Practice/learning/
 docker build -t backend-micro001 .
 --> with no cache
 docker build -t backend-micro001 --no-cache .
+backend-main
+docker run --name "backend-main" -d -p 8080:8080 backend-main:latest
+docker tag backend-main rajji01/backend-micro001
 docker run --name "backend001" -d -p 8080:8080 backend-micro001:latest
 docker build -t backend-micro002 --no-cache .
 docker run --name "backend002" -d -p 8081:8081 backend-micro002:latest
@@ -85,3 +88,7 @@ kubectl get po -n default nginx -o json | less
 #For getting the endpoints of services
 kubectl get endpoints
 kubectl get ep
+
+
+####->
+>kubectl port-forward deploy/hello-world 8080:8080
