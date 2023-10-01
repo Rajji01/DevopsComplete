@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
         - name: helper-micro001
-          image: backend-micro002:latest
+          image: rajji01/backend-micro002:latest
           resources:
             limits:
               memory: "128Mi"
