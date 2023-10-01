@@ -78,3 +78,10 @@ k logs --selector=app=nginx-testing
 ###for complete definition
 kubectl get po -n default nginx -o yaml | less
 kubectl get po -n default nginx -o json | less
+
+
+#
+
+#For getting the endpoints of services
+kubectl get endpoints
+kubectl get ep

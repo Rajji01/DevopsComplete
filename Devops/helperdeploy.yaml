@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: helper-micro001
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy :
+    type : RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+
+  selector:
+    matchLabels:
+      app: helper-micro001
+  template:
+    metadata:
+      labels:
+        app: helper-micro001
+      annotations:
+        kubernetes.io/change-cause: "amigoscode/kubernetes:hello-world-v5"
+    spec:
+      containers:
+        - name: helper-micro001
+          image: rajji01/backend-micro002:latest
+          resources:
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+          ports:
+            - containerPort: 80
