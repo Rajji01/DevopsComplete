@@ -18,6 +18,8 @@ spec:
     metadata:
       labels:
         app: hello-world
+        tier: backend
+        env: test
       annotations:
         kubernetes.io/change-cause: "amigoscode/kubernetes:hello-world-v4"
     spec:

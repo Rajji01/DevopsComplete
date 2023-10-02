@@ -92,3 +92,35 @@ kubectl get ep
 
 ####->
 >kubectl port-forward deploy/hello-world 8080:8080
+
+
+---> to test your node port service now in minikube
+if you have multiple node take one ip of it
+or you can do like this
+minikube ssh
+now
+curl localhost:nodeport_port_present_in_service:/api/m1
+for multiple minikube nodes you can type other ip instead of localhost and rest will also work same
+
+other way of accessing the nodeport service
+minikube service backend-service --url
+this will provideone url append your api path it will also work
+http://127.0.0.1:64879/api/m2
+
+
+---> minikube load balancer
+minikube tunnel
+now get svc then external ip will be assigned
+now use that ip and with port and api path you can open the endpoint
+http://127.0.0.1:8080/api/m3
+
+---> show pods with labels
+kubectl get po --show-labels
+
+---> apply all yamls in folder
+kubectl apply -f .
+
+---> apply filtering on basis of selector
+kubectl get po --selector="app=hello-world"
+kubectl get po --selector="tier=backend,app=hello-world"
+
