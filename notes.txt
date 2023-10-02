@@ -123,4 +123,34 @@ kubectl apply -f .
 ---> apply filtering on basis of selector
 kubectl get po --selector="app=hello-world"
 kubectl get po --selector="tier=backend,app=hello-world"
+kubectl get po -l tier=backend,app=hello-world
 
+--->another way to access you pod/deploymnet using service name only
+minikube service nameofservice
+
+##for selectors all labels have to match
+
+---> not working this way
+kubectl get pods -l 'env in (test)'
+kubectl get pods -l 'env notin (test)'
+error: name cannot be provided when a selector is specified
+
+--> below command is executed from inside of pod by using ssh
+kubectl exec -it pod-name  -- sh
+nslookup service_name
+
+
+--> add curl in minikube when inside of pod
+apk add curl
+## below inside pod using service name
+http://helper-service:8088/api2/m2
+## below inside pod using dns name (nslookup service_name)
+curl http://helper-service.default.svc.cluster.local:8088/api2/m2
+
+
+
+ sudo sh -c "echo 'Hello pv a& pvc' > /mnt/data/index.html"
+docker@minikube:~$ cat /mnt/data/index.html
+
+--> for multiple containers inside one specific container
+kubectl exec -it pod_name -c container_name_from_yaml  -- sh

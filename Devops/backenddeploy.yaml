@@ -23,15 +23,29 @@ spec:
       annotations:
         kubernetes.io/change-cause: "amigoscode/kubernetes:hello-world-v4"
     spec:
+      volumes:
+        - name: cache
+          emptyDir: {}
       containers:
         - name: hello-world
           image: rajji01/backend-micro001:latest
+          command:
+            - "sh"
+            - "-c"
+            - "sleep 3600"
           resources:
             limits:
               memory: "128Mi"
               cpu: "500m"
+          volumeMounts:
+            - name: cache
+              mountPath: /foo
           ports:
             - containerPort: 80
           env: # Add your environment variables here
             - name: HELPER_SERVICE
               value: "helper-service"
+          lifecycle:
+            preStop:
+              exec:
+                command: [ "sh", "-c", "touch /foo/bar.txt" ]
