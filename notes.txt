@@ -181,3 +181,6 @@ echo dGhpcyBpcyBzZWNyZXQ= | base64 -d
 
 --> for communication between two different namespaces we can communicate via
 service.namespace
+
+
+https://github.com/amigoscode/kubernetes/blob/main/yamls/cron-job.yaml
