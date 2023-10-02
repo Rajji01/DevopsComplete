@@ -154,3 +154,30 @@ docker@minikube:~$ cat /mnt/data/index.html
 
 --> for multiple containers inside one specific container
 kubectl exec -it pod_name -c container_name_from_yaml  -- sh
+
+
+--->create namespace
+kubectl create namespace engineering
+
+
+--->
+kubectl api-resources
+kubectl get pv
+
+
+--->create secret
+kubectl create secret generic mysecret --from-literal=db-password=123 --from-literal=api-token=token
+when inside the secret pod use
+env you will see the AMIGOSCODE_SECRET value as mentioned in the file secret-data
+because we created secreet from file also
+now inside etc
+cd etc
+cd secrets you can see api-token and db-password
+cat api-token
+cat db-password you will see value appended see clearly you idiot
+if you want to get the secret value here in shell of pod  only then you can
+echo dGhpcyBpcyBzZWNyZXQ= | base64 -d
+
+
+--> for communication between two different namespaces we can communicate via
+service.namespace

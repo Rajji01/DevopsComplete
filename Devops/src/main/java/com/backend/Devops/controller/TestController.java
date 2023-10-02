@@ -13,8 +13,8 @@ public class TestController {
     @Value("${testing.property}")
     private String value;
 
-//    @Value("${testing.helper-service}")
-//    private String serviceUrl;
+    @Value("${host.port}")
+    private String hostPort;
 
     @GetMapping("/m1")
     public String restApi() {
@@ -51,5 +51,15 @@ public class TestController {
             System.out.println("ex occured = " + ex.getMessage());
         }
         return response;
+    }
+
+    //getting value via configmap
+    @GetMapping("/m4")
+    public String resApi4() {
+        System.out.println("indiside m4" +
+                "=====>");
+        String response=null;
+
+        return response+" host port is ="+hostPort;
     }
 }
