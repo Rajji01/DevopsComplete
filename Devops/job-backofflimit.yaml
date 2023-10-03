@@ -1,0 +1,18 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-backup-job
+spec:
+  ttlSecondsAfterFinished: 10
+  activeDeadlineSeconds: 10 # maximum time for pod
+  completions: 2 #number of pods/job will be executed one after the other
+  parallelism: 2
+  backoffLimit: 2 # here command will not work so job  will not be success then it will retry
+  # infinite times so to stop that we use backoffLimit try two times only
+  template:
+    spec:
+      containers:
+        - name: backup
+          image: busybox
+          command: ["cat",  "job.yaml"]
+      restartPolicy: Never

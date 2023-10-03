@@ -1,0 +1,17 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-backup-job
+spec:
+  ttlSecondsAfterFinished: 10
+  completions: 2 #number of pods/job will be executed one after the other
+  parallelism: 2
+  template:
+    spec:
+      containers:
+        - name: backup
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - "echo 'performing db backup...' && sleep 40"
+      restartPolicy: Never
