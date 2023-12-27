@@ -185,3 +185,13 @@ service.namespace
 
 https://github.com/amigoscode/kubernetes/blob/main/yamls/cron-job.yaml
 https://earthly.dev/blog/kubernetes-jobs-cron-jobs/
+
+
+
+----> office env 
+create image
+docker build -t imagename .
+docker push image imagename
+
+namespce should be created first
+helm install chartname chartfoldername -n namespace
