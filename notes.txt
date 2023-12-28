@@ -195,7 +195,8 @@ docker push image imagename
 
 namespce should be created first
 helm install chartname chartfoldername -n namespace
-
+---> go inside the container
+k -it exec podname sh -n testing
 when inside the container
 wget http://localhost:8081/api2/version
 above command will give one output string
