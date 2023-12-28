@@ -116,7 +116,8 @@ http://127.0.0.1:8080/api/m3
 
 ---> show pods with labels
 kubectl get po --show-labels
-
+---> show pods with labels and filter with specific name
+kubectl get po --show-labels -l labelName
 ---> apply all yamls in folder
 kubectl apply -f .
 
