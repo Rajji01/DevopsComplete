@@ -195,3 +195,11 @@ docker push image imagename
 
 namespce should be created first
 helm install chartname chartfoldername -n namespace
+
+when inside the container
+wget http://localhost:8081/api2/version
+above command will give one output string
+just use cat command to see the output
+cat version
+here 8081 is the port at which app is running inside container
+
