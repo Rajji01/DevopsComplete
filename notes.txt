@@ -205,3 +205,5 @@ just use cat command to see the output
 cat version
 here 8081 is the port at which app is running inside container
 
+---> start minikube
+minikube start
