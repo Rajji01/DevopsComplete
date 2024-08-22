@@ -207,3 +207,16 @@ here 8081 is the port at which app is running inside container
 
 ---> start minikube
 minikube start
+minikube status
+minikube ip // for node ip if node is one then it is masters ip
+
+run your container-->
+docker run --rm -p 80:80 amigoscode/kubernetes:hello-world
+
+>kubectl delete pod hello-world
+
+## toexpose or use application of pod or container outside
+kubectl port-forward pod/hello-world 8080:80
+
+###delete cluster
+minikube delete
