@@ -3,14 +3,12 @@ kind: Deployment
 metadata:
   name: helper-micro001
 spec:
-  replicas: 2
-  revisionHistoryLimit: 5
-  strategy :
-    type : RollingUpdate
+  replicas: 1
+  strategy:
+    type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 1
       maxSurge: 1
-
   selector:
     matchLabels:
       app: helper-micro001
@@ -18,15 +16,21 @@ spec:
     metadata:
       labels:
         app: helper-micro001
-      annotations:
-        kubernetes.io/change-cause: "amigoscode/kubernetes:hello-world-v5"
     spec:
       containers:
         - name: helper-micro001
-          image: rajji01/backend-micro002:latest
+          image: rajji01/backend-micro002:emptydir
           resources:
             limits:
               memory: "128Mi"
               cpu: "500m"
           ports:
             - containerPort: 8081
+          volumeMounts:
+            - name: cache-volume
+              mountPath: /cache
+          command: ["/bin/sh"]
+          args: ["-c", "echo 'This file is created by the deployment at start.' > /cache/myfile.txt && sleep 3600"]
+      volumes:
+        - name: cache-volume
+          emptyDir: {}

@@ -8,7 +8,7 @@ docker run -d --name "nginxcontainer" -p 8081:80 -v "D:/codes Practice/learning/
 --> run below command where your dockerfile is present and is for creating the image
 docker build -t backend-micro001 .
 --> with no cache
-docker build -t backend-micro001 --no-cache .
+docker build -t backend-micdock --no-cache .
 backend-main
 docker run --name "backend-main" -d -p 8080:8080 backend-main:latest
 docker tag backend-main rajji01/backend-micro001
@@ -220,3 +220,36 @@ kubectl port-forward pod/hello-world 8080:80
 
 ###delete cluster
 minikube delete
+
+minikube ssh
+
+
+##create two nodes
+minikube start --nodes=2
+## by default it give master node ip in case of multiple nodes
+minikube ip --node nodename
+##logs for a node
+>minikube logs --node=minikube-m02 -f
+
+logs in case of mutiple container
+kubectl logs <podname> -c <containername>  # for single one
+kubectl logs <podname> --all-containers   # for all container
+
+
+----->for mulitple nodes in minikube
+minikube ip
+minikube node list
+
+minikube ssh -n minikube-m02
+
+
+
+pods with labels
+>kubectl get po --show-labels
+
+
+--> get pods with selector single or multle
+
+kubectl get po --selector="tier=backend"
+kubectl get po --selector="tier=backend,env=test"
+kubectl get po -l tier=backend,env=test
