@@ -86,8 +86,9 @@ shopflow/k8s/
 4. ReplicaSet controller → creates Pod objects (no nodeName yet)
 5. Scheduler (watch) → filters nodes (requests 250m/384Mi fit? taints? spread?)
                → scores → binds Pod to node (writes nodeName)
-6. kubelet on that node (watch) → pulls image via containerd → CNI assigns IP
-               → mounts volumes (emptyDir /tmp) → starts container
+6. kubelet on that node (watch) → mounts volumes (emptyDir /tmp, secrets)
+               → creates pod sandbox via CRI (CNI assigns Pod IP)
+               → pulls image via containerd → starts container
 7. kubelet runs startupProbe → then liveness + readiness
 8. Readiness OK → EndpointSlice controller adds Pod IP to Service "order-service"
                → kube-proxy updates iptables → traffic flows
@@ -122,7 +123,7 @@ Multi-container Pod example: `Devops/empty-dir-volume.yaml` — containers `one`
 | Pod names | random `order-service-7d9f...-x2k` | ordinal `postgres-0`, `postgres-1` |
 | Storage | shared PVC or none | `volumeClaimTemplates` → one PVC per Pod (`data-postgres-0`), kept on reschedule/delete |
 | DNS | via Service only | per-Pod via headless Service: `postgres-0.postgres.shopflow.svc.cluster.local` |
-| Order | parallel | ordered create (0→N), reverse delete |
+| Order | parallel | ordered create (0→N-1), reverse-order scale-down/updates (`podManagementPolicy: OrderedReady`) |
 | Use | APIs, workers | DBs, Kafka, ZooKeeper, Elasticsearch |
 
 ShopFlow's StatefulSet comment says it honestly: *demo DB; in real production use a managed DB (RDS / Cloud SQL) or an operator (CloudNativePG)*.
@@ -141,11 +142,11 @@ spec:
     spec:
       restartPolicy: Never      # Jobs need Never or OnFailure (not Always)
 ```
-(Note: the original inline comment in `job.yaml` says completions run "one after the other" — with `parallelism: 2` they actually run at the same time.)
+(Note: the inline comment in `job.yaml` / `job-backofflimit.yaml` says completions run "one after the other" — with `parallelism: 2` they actually run at the same time; `parallelism: 1` would make them sequential.)
 
 `Devops/cron-job.yaml`:
 ```yaml
-schedule: "* * * * *"           # every minute (UTC by default; spec.timeZone available)
+schedule: "* * * * *"           # every minute (kube-controller-manager's time zone, usually UTC; set spec.timeZone to be explicit)
 concurrencyPolicy: Forbid       # Allow | Forbid (skip if previous still running) | Replace
 successfulJobsHistoryLimit: 0
 failedJobsHistoryLimit: 0       # keep >0 in real life so you can debug failures!
@@ -218,7 +219,7 @@ tls:
 Internet ─▶ Cloud LB (Service type LoadBalancer of ingress-nginx) ─▶ nginx pods
         ─▶ (host+path match) ─▶ ClusterIP order-service ─▶ Pod :8081
 ```
-Why Ingress vs many LoadBalancers: one LB (cost), TLS termination in one place, path/host routing. Newer: **Gateway API** (`HTTPRoute`) — successor to Ingress. Note: the community ingress-nginx project has been retired/in maintenance mode — mention Gateway API or a vendor controller as the future direction.
+Why Ingress vs many LoadBalancers: one LB (cost), TLS termination in one place, path/host routing. Newer: **Gateway API** (`HTTPRoute`) — successor to Ingress. Note: the community ingress-nginx controller was retired (best-effort maintenance ended March 2026, no further fixes) — mention Gateway API or another controller as the migration path.
 
 ---
 
@@ -351,7 +352,7 @@ kubectl get pod <p> -o jsonpath='{.status.qosClass}'
 kubectl top pod -n shopflow ; kubectl top node        # needs metrics-server
 kubectl describe node <n> | grep -A8 "Allocated resources"
 ```
-CPU throttling metric: `container_cpu_cfs_throttled_periods_total / container_cpu_cfs_periods_total`.
+CPU throttling ratio: `rate(container_cpu_cfs_throttled_periods_total[5m]) / rate(container_cpu_cfs_periods_total[5m])` (only non-zero when a CPU limit is set).
 
 ---
 
@@ -373,14 +374,14 @@ spec:
     scaleDown:
       stabilizationWindowSeconds: 300    # wait 5 min before removing pods (anti-flapping)
 ```
-Formula: `desired = ceil(current × currentMetric / target)`. With 2 pods at 140% of 250m → `ceil(2 × 140/70) = 4`.
+Formula: `desired = ceil(currentReplicas × currentMetric / targetMetric)`, clamped to min/max; no action if the ratio is within the 10% tolerance. With 2 pods averaging 140% of the 250m request → `ceil(2 × 140/70) = 4`.
 
 - Needs **metrics-server** (comment in `hpa.yaml`; `minikube addons enable metrics-server`).
 - **No CPU request = HPA can't compute utilization** → `<unknown>` targets.
 - Custom metrics (RPS, queue length) via Prometheus Adapter or **KEDA**.
 - Dev overlay patches HPA to 1–2, prod to 3–10.
 
-**HPA + `spec.replicas` gotcha**: the Deployment also has `replicas: 2` (prod patch: 3). Every `kubectl apply` resets replicas to that number, then HPA scales again → brief scale-down. With GitOps, common fix: remove `replicas` from the manifest when HPA manages it (or Argo CD `ignoreDifferences` on `/spec/replicas`). Good "what I'd improve" point.
+**HPA + `spec.replicas` gotcha**: the Deployment also has `replicas: 2` (prod patch: 3). The K8s docs warn that applying a manifest that sets `spec.replicas` (e.g. server-side apply, or a GitOps sync) can reset the count to that number, then HPA scales again → brief scale-down. With GitOps, common fix: remove `replicas` from the manifest when HPA manages it (or Argo CD `ignoreDifferences` on `/spec/replicas`). Good "what I'd improve" point.
 
 | | HPA | VPA | Cluster Autoscaler / Karpenter |
 |---|---|---|---|
@@ -402,8 +403,8 @@ spec:
   selector: { matchLabels: { app.kubernetes.io/name: order-service } }
 ```
 - Protects against **voluntary** disruptions: `kubectl drain`, node upgrades, cluster-autoscaler scale-down. **Not** against node crashes (involuntary).
-- The eviction API refuses evictions that would violate the budget.
-- **Gotcha**: dev overlay sets replicas to 1 while PDB `minAvailable: 1` → `kubectl drain` will **hang forever** on that pod. Fine on minikube, but in a real dev cluster use `maxUnavailable: 1` or patch the PDB in dev. Good thing to mention proactively.
+- The eviction API refuses evictions that would violate the budget. Deployment rolling updates and direct `kubectl delete pod` do **not** go through PDBs.
+- **Gotcha**: dev overlay sets replicas to 1 while PDB `minAvailable: 1` → `kubectl drain` keeps retrying that eviction forever (unless `--timeout`). Fine on minikube, but in a real dev cluster use `maxUnavailable: 1` or patch the PDB in dev. Good thing to mention proactively.
 
 ---
 
@@ -435,8 +436,9 @@ kubectl rollout status deploy/order-service -n shopflow
 kubectl rollout history deploy/order-service -n shopflow
 kubectl rollout undo deploy/order-service -n shopflow [--to-revision=3]
 kubectl rollout restart deploy/order-service -n shopflow   # new pods, same spec
-kubectl rollout pause / resume deploy/order-service
-kubectl annotate deploy/x kubernetes.io/change-cause="v1.2.3"   # old manifests use this annotation
+kubectl rollout pause deploy/order-service -n shopflow    # batch several changes...
+kubectl rollout resume deploy/order-service -n shopflow   # ...into one rollout
+kubectl annotate deploy/order-service -n shopflow kubernetes.io/change-cause="v1.2.3" --overwrite   # old manifests set this annotation
 ```
 In GitOps, rollback = `git revert` of the image-tag commit (cluster follows git); `kubectl rollout undo` would be reverted by Argo CD self-heal.
 
@@ -454,12 +456,12 @@ t=5s  preStop done → kubelet sends SIGTERM to PID 1 (java, exec-form ENTRYPOIN
       Spring (server.shutdown: graceful): readiness → REFUSING_TRAFFIC,
       Tomcat stops accepting new connections, waits for in-flight requests
       (spring.lifecycle.timeout-per-shutdown-phase: 20s), closes Hikari pool
-t≤25s JVM exits 0
+t≤25s JVM exits (code 143 = 128+SIGTERM — normal for a signal-driven graceful stop)
 t=45s if still alive → SIGKILL  (terminationGracePeriodSeconds: 45, counted from t=0, includes preStop)
 ```
 Budget check: 5s preStop + 20s Spring phase = 25s < 45s grace ✓.
 
-**Why preStop sleep?** Endpoint removal and SIGTERM happen **in parallel**. Without the sleep, Tomcat closes its listener while ingress-nginx/kube-proxy still send traffic → `502/connection refused` during every deploy. The sleep bridges the propagation delay. (Newer K8s has a native `sleep` lifecycle action; ShopFlow uses `exec sh -c "sleep 5"`, which needs `sh` in the image — exists in Alpine, not in distroless.)
+**Why preStop sleep?** Endpoint removal and SIGTERM happen **in parallel**. Without the sleep, Tomcat closes its listener while ingress-nginx/kube-proxy still send traffic → `502/connection refused` during every deploy. The sleep bridges the propagation delay. (K8s 1.30+ has a native `preStop: sleep: {seconds: 5}` action; ShopFlow uses `exec sh -c "sleep 5"`, which needs `sh` in the image — exists in Alpine, not in distroless.)
 
 ---
 
@@ -505,8 +507,10 @@ rules:
     resources: ["configmaps"]
     verbs: ["get", "list", "watch"]
 ---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-subjects: [{ kind: ServiceAccount, name: order-service, namespace: shopflow }]
+metadata: { name: order-service-config-reader, namespace: shopflow }
+subjects:                                  # example only — ShopFlow pods use the default SA [{ kind: ServiceAccount, name: order-service, namespace: shopflow }]
 roleRef: { kind: Role, name: config-reader, apiGroup: rbac.authorization.k8s.io }
 ```
 - Every Pod runs as a ServiceAccount (`default` if unset); its token is mounted at `/var/run/secrets/kubernetes.io/serviceaccount/`.
@@ -518,7 +522,7 @@ roleRef: { kind: Role, name: config-reader, apiGroup: rbac.authorization.k8s.io 
 
 ## 15. NetworkPolicy
 
-By default **all pods can talk to all pods** in all namespaces. NetworkPolicies are allow-lists, enforced by the CNI (Calico, Cilium). Comment in repo: *minikube: `--cni=calico`*; flannel/kindnet ignore them silently.
+By default **all pods can talk to all pods** in all namespaces. NetworkPolicies are allow-lists, enforced by the CNI (Calico, Cilium). Comment in repo: *minikube: `--cni=calico`*; flannel (and older kindnet) ignore them silently.
 
 `shopflow/k8s/base/network-policies.yaml`:
 ```
@@ -581,7 +585,7 @@ spec: { hard: { requests.cpu: "4", requests.memory: 8Gi, limits.memory: 12Gi, po
 kind: LimitRange          # per-container defaults/min/max if a pod doesn't specify
 spec: { limits: [ { type: Container, defaultRequest: { cpu: 100m, memory: 128Mi }, default: { memory: 256Mi } } ] }
 ```
-If a quota on `requests.cpu` exists, pods **without** requests are rejected.
+If a quota on `requests.cpu` exists, pods **without** CPU requests are rejected — unless a LimitRange injects defaults.
 
 ---
 
@@ -633,9 +637,10 @@ kubectl get pod <pod> -o jsonpath='{.status.containerStatuses[0].lastState}'
 | 1 | App exception: bad config, DB unreachable on startup, Flyway migration failed, `ddl-auto: validate` mismatch |
 | 3 | `ExitOnOutOfMemoryError` — heap OOM |
 | 137 + `OOMKilled` | Memory limit exceeded |
-| 137 without OOMKilled | Liveness/startup probe kill → check events "Liveness probe failed" |
-| 143 | SIGTERM |
+| 137 without OOMKilled | SIGKILL after the grace period — app ignored SIGTERM or shut down too slowly (e.g. after a liveness/startup failure; check events "Liveness probe failed") |
+| 143 | SIGTERM — graceful stop (also typical after a liveness kill for a JVM that handles SIGTERM) |
 | 126/127 | Bad command/ENTRYPOINT |
+
 Debugging tricks: `kubectl debug -it <pod> --image=busybox --target=<container>` (ephemeral container), or temporarily override `command: ["sleep","3600"]` and exec in.
 
 ### ImagePullBackOff / ErrImagePull
@@ -685,7 +690,7 @@ Common causes: selector/label mismatch, `targetPort` wrong (named port `http` mu
 
 ### Others
 - **Running but not Ready** → readiness failing; `kubectl describe` shows `Readiness probe failed: HTTP probe failed with statuscode: 503` → check `/actuator/health/readiness` (DB down?).
-- **Terminating forever** → finalizers, or node unreachable. `kubectl get pod -o yaml | grep finalizers`.
+- **Terminating forever** → finalizers, or node unreachable. `kubectl get pod <p> -o jsonpath='{.metadata.finalizers}'`.
 - **Evicted** → node pressure (disk/memory); `kubectl describe node` conditions.
 - **Rollout stuck** → `kubectl rollout status`; new pods not Ready; PDB/quota.
 
@@ -728,7 +733,7 @@ k diff -k shopflow/k8s/overlays/prod
 k delete -f file.yaml ; k delete po --all
 k scale deploy/order-service --replicas=3
 k set image deploy/order-service order-service=ghcr.io/x/shopflow-order-service:<sha>
-k rollout status|history|undo|restart deploy/order-service
+k rollout status deploy/order-service    # also: history | undo | restart
 k create secret generic mysecret --from-literal=password=changeme --dry-run=client -o yaml
 k create ns testing
 
@@ -768,7 +773,7 @@ CPU over limit is throttled by CFS, and Java's startup and GC are bursty — lim
 Not by themselves — base64 only. Secure them with RBAC, etcd encryption at rest (KMS), and keep them out of git with External Secrets Operator or Sealed Secrets. In ShopFlow dev uses `secretGenerator` with throwaway values; prod's `shopflow-db` comes from AWS Secrets Manager/Vault via ESO.
 
 **Q9. How does HPA work? Why does it need requests?**
-Every 15s it reads metrics from metrics-server and computes `ceil(current × actual/target)`. Utilization is a percentage of the **request**, so without a request it can't compute. Mine targets 70% CPU, 2–6 pods (prod 3–10), with a 5-min scale-down stabilization window to avoid flapping.
+Every 15s (default sync period) it reads metrics from metrics-server and computes `ceil(currentReplicas × current/target)`, ignoring changes within a 10% tolerance. Utilization is a percentage of the **request**, so without a request it can't compute. Mine targets 70% CPU, 2–6 pods (prod 3–10), with a 5-min scale-down stabilization window to avoid flapping.
 
 **Q10. PDB — what does it protect against?**
 Voluntary disruptions — drains, upgrades, autoscaler scale-down — via the eviction API. Not node crashes. `minAvailable: 1` means a drain can't evict the last pod. Watch out: with 1 replica, it blocks drains forever.
@@ -811,7 +816,7 @@ metrics-server missing or pods have no CPU request. `kubectl top pods`, `kubectl
 PDB blocking (e.g., 1 replica + `minAvailable: 1`), or pods with local storage. Scale up temporarily or adjust PDB; `--delete-emptydir-data`.
 
 **S6. "Postgres pod moved to another node and is Pending."**
-EBS volumes are AZ-bound (RWO); the PVC's PV is in zone A, new node in zone B. Use `volumeBindingMode: WaitForFirstConsumer` StorageClass, keep nodes in that AZ, or use a managed DB.
+EBS volumes are AZ-bound; the PV has node affinity to zone A, so the pod can only schedule on a zone-A node. Fix: make sure there's capacity in that AZ (per-AZ node groups / Karpenter), snapshot-and-restore to move zones, or use a managed Multi-AZ DB. `WaitForFirstConsumer` only helps at *creation* time (volume created in the pod's zone), it can't move an existing volume.
 
 **S7. "After enabling NetworkPolicies, Prometheus can't scrape and DNS fails."**
 Ingress: allow monitoring namespace (ShopFlow does). If you add default-deny **egress**, you must explicitly allow DNS to kube-dns on 53 UDP/TCP.

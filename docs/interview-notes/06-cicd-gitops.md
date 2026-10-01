@@ -81,11 +81,11 @@ ShopFlow today = **CI + artifact publishing** (immutable image per commit on mai
 
 ### Stage notes (things to say out loud)
 1. **Path filters** — a change only in `Devops/` doesn't run the ShopFlow pipeline (monorepo efficiency). The workflow file itself is in the paths so editing the pipeline tests it.
-2. **`test`** — `./mvnw -B verify` uses the Maven Wrapper (same Maven version everywhere), `-B` batch mode (no colour/interactive output). `verify` runs unit + integration tests (Spring Boot tests with H2 in PostgreSQL mode, WireMock for inventory — see 01-project-walkthrough.md). Surefire reports uploaded only on failure for debugging.
+2. **`test`** — `./mvnw -B verify` uses the Maven Wrapper (same Maven version everywhere), `-B` batch mode (no colour/interactive output). `verify` runs unit + integration tests (Spring Boot tests with H2 in PostgreSQL mode, WireMock for inventory — see [01-project-walkthrough.md](01-project-walkthrough.md)). Surefire reports uploaded only on failure for debugging.
 3. **`validate-manifests`** — "shift left" for infrastructure:
    - `kustomize build` proves overlays render (broken patch paths fail here).
    - `kubeconform -strict` validates against K8s JSON schemas (typos like `replcas`, wrong types). `-strict` rejects unknown fields.
-   - `promtool check rules` validates PromQL syntax of `monitoring/alert-rules.yml` (run inside the `prom/prometheus:v3.5.0` image with `--entrypoint promtool`).
+   - `promtool check rules` validates PromQL syntax of `monitoring/alert-rules.yml` (run inside the `prom/prometheus:v3.5.0` image with `--entrypoint promtool`). Honest gap: despite the step name, `prometheus.yml` itself is not checked — `promtool check config` would do it.
    - `docker compose config --quiet` validates compose YAML (anchors, merge keys).
    Downloaded tools are installed into `${{ runner.temp }}` and added to `$GITHUB_PATH`. Tools are version-pinned for reproducibility.
 4. **`image`** — matrix fans out per service. Builds once with `load: true` so the image exists in the runner's Docker for Trivy → scans **before** pushing (a vulnerable image never reaches the registry). Push step rebuilds with `cache-from` → effectively instant.
@@ -132,7 +132,7 @@ steps:
       aws-region: ap-south-1
   - uses: aws-actions/amazon-ecr-login@v2
 ```
-AWS IAM role trust policy trusts `token.actions.githubusercontent.com` with condition `sub = repo:<owner>/DevopsComplete:ref:refs/heads/main`. Benefit: no `AWS_ACCESS_KEY_ID` stored in GitHub; credentials expire in ~1h; scoped to repo + branch.
+AWS IAM role trust policy trusts the OIDC provider `token.actions.githubusercontent.com` with conditions `aud = sts.amazonaws.com` and `sub = repo:<owner>/DevopsComplete:ref:refs/heads/main`. Benefit: no `AWS_ACCESS_KEY_ID` stored in GitHub; credentials expire in ~1h; scoped to repo + branch.
 
 ### Caching
 - `actions/setup-java` with `cache: maven` → caches `~/.m2/repository` keyed on hash of `**/pom.xml`.
@@ -182,7 +182,7 @@ pipeline {
             }
           }
           stage('Push') {
-            when { branch 'main' }
+            when { branch 'main' }                     // branch condition works in multibranch pipelines
             steps {
               withCredentials([usernamePassword(credentialsId: 'ghcr', usernameVariable: 'U', passwordVariable: 'P')]) {
                 sh 'echo $P | docker login ghcr.io -u $U --password-stdin'
@@ -231,7 +231,7 @@ Jenkins terms to know: multibranch pipeline, shared libraries (`@Library`), `sta
 | Fits | CI/CD, microservices, SaaS | Versioned/boxed products, mobile, slow release trains |
 | Pain | Needs good tests + flags | Merge conflicts, slow feedback |
 
-ShopFlow pipeline is trunk-shaped: PRs get full CI (no push), `main` publishes images. GitHub Flow = trunk-based with PRs. Protect `main` with branch protection: required status checks (test, validate-manifests, image), required reviews, no force push.
+ShopFlow pipeline is trunk-shaped: PRs get full CI (no push), `main` publishes images. GitHub Flow = trunk-based with PRs. Protect `main` with branch protection: required status checks (by their job `name:` — "Unit + integration tests", "Validate K8s + monitoring config", "Image order-service", "Image inventory-service"), required reviews, no force push.
 
 ---
 
@@ -240,7 +240,7 @@ ShopFlow pipeline is trunk-shaped: PRs get full CI (no push), `main` publishes i
 - **Immutable** artifacts: build once, promote the *same* image through dev → staging → prod (never rebuild per env). Config differences live in overlays/env vars, not in the image.
 - Tag schemes:
   - Git SHA (ShopFlow: `type=sha,format=long,prefix=` → `ghcr.io/<owner>/shopflow-order-service:3f9c2...`) — traceable to exact commit.
-  - SemVer for releases (`v1.4.2`) via git tags (`type=semver,pattern={{version}}` in metadata-action).
+  - SemVer for releases (`v1.4.2`) via git tags (`type=semver,pattern={{version}}` in metadata-action — would also need `on: push: tags: ["v*"]`, which ShopFlow doesn't have).
   - `latest` only as convenience (`enable={{is_default_branch}}`) — never deploy it.
 - Digest (`@sha256:`) is the truly immutable reference.
 - Maven: `1.0.0-SNAPSHOT` (parent pom) vs release versions; `build-info` goal exposes version at `/actuator/info` so you can verify what's running.
@@ -255,7 +255,7 @@ ShopFlow pipeline is trunk-shaped: PRs get full CI (no push), `main` publishes i
 | **Recreate** | Stop all old, start new | Simple, no version mixing | Downtime | `strategy.type: Recreate` |
 | **Rolling** | Replace pods gradually | No extra infra, default | Two versions live together; slow rollback for big fleets | **ShopFlow**: `maxSurge: 1, maxUnavailable: 0` |
 | **Blue-green** | Full new env (green), switch traffic at once | Instant switch & rollback, test green before switch | 2× resources; DB must work for both | Two Deployments + flip Service selector; Argo Rollouts `blueGreen` |
-| **Canary** | Send small % (5%→25%→100%) to new version, watch metrics | Limits blast radius, data-driven | Needs traffic splitting + good metrics | Argo Rollouts / Flagger with ingress-nginx weights or service mesh |
+| **Canary** | Send small % (5%→25%→100%) to new version, watch metrics | Limits blast radius, data-driven | Needs traffic splitting + good metrics | Argo Rollouts / Flagger with ingress/Gateway API weights or service mesh |
 | **Feature flags** | Deploy code dark, enable per user/% at runtime | Decouples deploy from release, instant kill switch | Flag debt, testing combinations | LaunchDarkly, Unleash, Flagsmith, Spring config |
 | A/B testing | Route by user segment to measure business metric | Product experiments | Not a safety mechanism per se | Mesh/ingress header routing |
 | Shadow | Mirror traffic to new version, discard responses | Zero user impact | Side effects (writes!) | Mesh mirroring |
@@ -334,13 +334,15 @@ Adding the tag-bump job to `shopflow.yml` (illustrative):
     steps:
       - uses: actions/checkout@v7
       - run: |
-          cd shopflow/k8s/overlays/prod
+          cd k8s/overlays/prod               # workflow default working-directory is already shopflow/
           kustomize edit set image \
             shopflow/order-service=ghcr.io/rajji01/shopflow-order-service:${GITHUB_SHA} \
             shopflow/inventory-service=ghcr.io/rajji01/shopflow-inventory-service:${GITHUB_SHA}
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "deploy: shopflow ${GITHUB_SHA}" && git push
 ```
-This replaces the placeholder `newTag: latest` in `overlays/prod` with an exact SHA — exactly what the file's comment says CI should do. Better practice: a **separate config repo** (or Argo CD Image Updater) so app commits and deploy commits don't loop through CI; and use `[skip ci]`/path filters to avoid triggering the pipeline. Secrets: prod `shopflow-db` via External Secrets Operator — git never contains secret values.
+This replaces the placeholder `newTag: latest` in `overlays/prod` with an exact SHA — exactly what the file's comment says CI should do. Better practice: a **separate config repo** (or Argo CD Image Updater) so app history and deploy history stay apart. (A push made with `GITHUB_TOKEN` does not trigger new workflow runs, so there's no CI loop; with a PAT/App token you'd need `[skip ci]` or path filters. Branch protection on `main` would block this direct push → open a PR instead.) Secrets: prod `shopflow-db` via External Secrets Operator — git never contains secret values.
 
 Argo CD terms: Application, AppProject, sync, sync waves/hooks (e.g., run a migration Job `PreSync`), health status, app-of-apps / ApplicationSet (one per env/cluster). Flux CD is the alternative.
 
@@ -362,7 +364,7 @@ Argo CD terms: Application, AppProject, sync, sync waves/hooks (e.g., run a migr
 | Least privilege CI | `permissions:` block, OIDC, environments | **Yes**: `contents: read`, `packages: write` only for `image` |
 
 ### Pinning actions to SHA
-ShopFlow uses tags: `actions/checkout@v7`, `aquasecurity/trivy-action@v0.36.0`. Tags are **mutable** — if an action repo is compromised, the attacker can move the tag (real incident: `tj-actions/changed-files`, March 2025, leaked secrets from thousands of repos). Hardening:
+ShopFlow uses tags: `actions/checkout@v7`, `aquasecurity/trivy-action@v0.36.0`. Tags are **mutable** — if an action repo is compromised, the attacker can move the tag (real incident: `tj-actions/changed-files`, March 2025 — tags repointed to a malicious commit that dumped CI secrets into build logs of repos using it, ~23k dependents). Hardening:
 ```yaml
 - uses: actions/checkout@<40-char-commit-sha>  # v7
 ```
@@ -395,7 +397,7 @@ Roll back vs roll forward: rollback when the cause is unclear and the previous v
 
 ShopFlow uses **Flyway** (`flyway-core` + `flyway-database-postgresql`), scripts in `src/main/resources/db/migration/` (`V1__create_tables.sql`, `V2__seed_products.sql` for inventory; `V1__create_orders.sql` for orders). Hibernate is set to `ddl-auto: validate` — the schema is owned by Flyway; Hibernate only checks it at startup.
 
-How it runs: Flyway executes on application startup. Concurrency: with 3 replicas starting together, Flyway takes a DB lock (schema history table) so only one applies migrations. Alternatives: run migrations as a K8s **Job** / Argo CD `PreSync` hook / init container, so app pods don't race and startup probes don't time out on long migrations.
+How it runs: Flyway executes on application startup. Concurrency: with 3 replicas starting together, Flyway takes a lock (a Postgres advisory lock) so only one applies migrations; the others wait and then see them as already applied. Alternatives: run migrations as a K8s **Job** / Argo CD `PreSync` hook / init container, so app pods don't race and startup probes don't time out on long migrations.
 
 Rules:
 - Never edit an applied migration (checksum mismatch → startup fails). Add `V3__...`.
@@ -407,7 +409,7 @@ Release 1 (expand):   V3: ADD COLUMN quantity; backfill; app writes BOTH, reads 
 Release 2 (migrate):  app reads quantity, still writes both
 Release 3 (contract): app stops using qty; V4: DROP COLUMN qty
 ```
-Each step is safe to roll back app-wise because the old app still finds what it needs. Same idea for NOT NULL columns (add nullable → backfill → add constraint), and for splitting tables. Avoid long locking DDL on big tables (`CREATE INDEX CONCURRENTLY` in Postgres — note Flyway runs it outside a transaction only if configured).
+Each step is safe to roll back app-wise because the old app still finds what it needs. Same idea for NOT NULL columns (add nullable → backfill → add constraint), and for splitting tables. Avoid long locking DDL on big tables (`CREATE INDEX CONCURRENTLY` in Postgres can't run inside a transaction — Flyway detects it and runs that migration non-transactionally; keep it in its own script, since mixing it with transactional statements needs `spring.flyway.mixed=true`).
 
 ---
 

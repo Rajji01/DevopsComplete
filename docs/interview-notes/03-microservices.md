@@ -93,7 +93,7 @@ Topic "orders" ── partition 0: [o0][o1][o2][o3] ...  offsets 0,1,2,3
                ── partition 1: [o0][o1] ...
                ── partition 2: [o0][o1][o2] ...
 
-Producer: key = orderRef → hash(key) % partitions → same order always same partition (ordering per key)
+Producer: key = orderRef → murmur2(key) % partitions → same order always same partition (ordering per key)
 Consumer group "inventory-service": each partition assigned to exactly ONE consumer in the group
   3 partitions, 2 pods → pod A: p0,p1  pod B: p2      (max useful consumers = partitions)
 Another group "email-service" reads the same topic independently (pub/sub)
@@ -319,7 +319,7 @@ Resilience4j default: `Retry ( CircuitBreaker ( RateLimiter ( TimeLimiter ( Bulk
 Return cached/default data, queue the request for later, degrade a feature (hide recommendations), or fail fast with a clear 503 (ShopFlow — stock reservation can't be faked).
 
 **Q: How do you monitor it?**
-Resilience4j publishes Micrometer metrics (`resilience4j_circuitbreaker_state`, `..._calls`, failure rate) → Prometheus alert when state = open. ShopFlow has exactly this: `InventoryCircuitOpen` in `monitoring/alert-rules.yml` — `resilience4j_circuitbreaker_state{name="inventory", state="open"} == 1` for 1m, severity `page`.
+Resilience4j publishes Micrometer metrics — `resilience4j_circuitbreaker_state{state=...}` (1 for the current state), `resilience4j_circuitbreaker_calls_seconds_count{kind="successful|failed|ignored"}`, `resilience4j_circuitbreaker_not_permitted_calls_total`, `resilience4j_circuitbreaker_failure_rate` → Prometheus alert when state = open. ShopFlow has exactly this: `InventoryCircuitOpen` in `monitoring/alert-rules.yml` — `resilience4j_circuitbreaker_state{name="inventory", state="open"} == 1` for 1m, severity `page`.
 
 ---
 
@@ -402,15 +402,22 @@ Options: **Spring Cloud Gateway**, Kong, NGINX, AWS API Gateway, Kubernetes Ingr
 | `/api/v1/orders` | `order-service:http` |
 | `/api/v1/products` | `inventory-service:http` |
 
-`/api/v1/reservations` is **not** exposed — only order-service may call it (also enforced by NetworkPolicy). What's missing vs a real gateway: JWT validation, per-client rate limiting, API keys, request transformation. Cheapest next step: NGINX Ingress annotations (`nginx.ingress.kubernetes.io/limit-rps`), or put Spring Cloud Gateway / Kong behind the Ingress.
+`/api/v1/reservations` is **not** exposed by the Ingress rules. The NetworkPolicy adds an L3/L4 layer — inventory pods accept traffic only from order-service, the ingress-nginx and monitoring namespaces — but it cannot filter by URL path, so the path restriction itself comes from the Ingress. What's missing vs a real gateway: JWT validation, per-client rate limiting, API keys, request transformation. Cheapest next step: NGINX Ingress annotations (`nginx.ingress.kubernetes.io/limit-rps`), or put Spring Cloud Gateway / Kong behind the Ingress.
 
 ```yaml
 # Spring Cloud Gateway sketch for ShopFlow
+# (prefix is spring.cloud.gateway.routes in older releases; Spring Cloud 2025.0+ moved it
+#  to spring.cloud.gateway.server.webflux.routes)
 spring.cloud.gateway.routes:
   - id: orders
     uri: http://order-service:8081
     predicates: [ "Path=/api/v1/orders/**" ]
-    filters: [ "name=RequestRateLimiter" ]
+    filters:
+      - name: RequestRateLimiter          # Redis token bucket
+        args:
+          redis-rate-limiter.replenishRate: 10
+          redis-rate-limiter.burstCapacity: 20
+          key-resolver: "#{@userKeyResolver}"
   - id: products
     uri: http://inventory-service:8082
     predicates: [ "Path=/api/v1/products/**" ]
@@ -495,7 +502,7 @@ How to add to ShopFlow:
 ```yaml
 management.tracing.sampling.probability: 0.1       # 10% in prod, 1.0 in dev
 management.otlp.tracing.endpoint: http://otel-collector:4318/v1/traces
-logging.pattern.level: "%5p [${spring.application.name},%X{traceId:-},%X{spanId:-}]"
+logging.pattern.level: "%5p [${spring.application.name},%X{traceId:-},%X{spanId:-}]"   # Boot 3.2+ adds traceId/spanId to logs by default
 ```
 `InventoryClient` already builds its `RestClient` from the **auto-configured `RestClient.Builder`** (comment in the class), which is instrumented with observations — so once a tracer is on the classpath, `traceparent` is propagated to inventory automatically. A `new RestClient` without the builder would lose that.
 
@@ -539,7 +546,7 @@ ACID: atomic, consistent, isolated, durable transactions (inside one DB — Shop
 | 2 Dependencies | declared in `pom.xml`, Maven wrapper (`mvnw`) |
 | 3 Config | env vars `DB_URL`, `DB_PASSWORD`, `INVENTORY_URL`, `DB_POOL_SIZE` |
 | 4 Backing services | Postgres / inventory URL are attachable resources via config |
-| 5 Build, release, run | CI builds one image per commit (tag = git SHA), the same image goes to dev/prod via Kustomize overlays; config injected at deploy time |
+| 5 Build, release, run | CI builds one immutable image per commit (tag = git SHA, plus `latest` on `main`); config is injected at deploy time via env/Secrets and Kustomize overlays. Gap: the prod overlay still references `latest` (dev uses locally built `:dev` images) — pinning the SHA, as the overlay comment describes, makes it true build-once/promote |
 | 6 Processes | stateless services; state in Postgres |
 | 7 Port binding | embedded Tomcat on 8081/8082 |
 | 8 Concurrency | scale out by adding pods |
@@ -639,7 +646,7 @@ Version the API (`/api/v2/reservations`) or make changes backward compatible (ad
 Expand/contract: add new nullable column (V3) → deploy code writing both → backfill → switch reads → later migration drops old column. Never rename/drop in one step while old pods still run. Flyway runs at startup — with several pods, Flyway's schema history lock ensures only one applies it; heavy migrations better as a separate Job.
 
 **S11. One pod of inventory-service is returning 500s, others are fine.**
-Readiness should catch DB issues on that pod (`db` in readiness group) and remove it. If it's another issue (bad node, memory), retries (to a different pod via the Service) and the breaker smooth it over; investigate with per-pod metrics (`instance` label) and logs; liveness restarts only if the JVM is truly stuck.
+Readiness should catch DB issues on that pod (`db` in readiness group) and remove it. If it's another issue (bad node, memory), retries *may* land on a healthy pod (not guaranteed — kube-proxy balances per connection and a keep-alive connection can hit the same pod), and the breaker is per client, not per pod: 1 bad pod of 3 ≈ 33% failures stays under the 50% threshold. Outlier detection (service mesh) is the real fix; investigate with per-pod metrics (`instance` label) and logs; liveness restarts only if the JVM is truly stuck.
 
 **S12. How do you debug a request across services without tracing?**
 Correlation id in a header + MDC in logs, centralised logging (ELK/Loki) and search by id. ShopFlow's `orderRef` is logged in both services (`"reserved {} x {} for order {}"`, `"order {} {}"`) — it acts as a business correlation id for order flows.

@@ -150,7 +150,7 @@ Note: a REJECTED order still returns **201** — the HTTP request succeeded (an 
 
 `POST /api/v1/orders` with body `{"sku":"PS5-SLIM","quantity":1}` and header `Idempotency-Key: checkout-42`.
 
-1. **Validation** — `OrderController.CreateOrderRequest` is a record with `@NotBlank @Size(max=64) sku` and `@Min(1) @Max(100) quantity`. `@Valid` fails → `MethodArgumentNotValidException` → `GlobalExceptionHandler.handleMethodArgumentNotValid` (overridden from `ResponseEntityExceptionHandler`) adds an `errors` list like `["quantity: must be greater than or equal to 1", "sku: must not be blank"]` → **400 ProblemDetail**. Constraints on `@RequestParam`/`@RequestHeader` go through `handleHandlerMethodValidationException` the same way.
+1. **Validation** — `OrderController.CreateOrderRequest` is a record with `@NotBlank @Size(max=64) sku` and `@Min(1) @Max(100) quantity`. Because the `Idempotency-Key` header parameter carries `@Size(max=100)`, Spring 6.1+ method validation applies to the whole method, so an invalid body raises `HandlerMethodValidationException` (not `MethodArgumentNotValidException`) → `GlobalExceptionHandler.handleHandlerMethodValidationException` (overridden from `ResponseEntityExceptionHandler`) adds a sorted `errors` list like `["quantity: must be greater than or equal to 1", "sku: must not be blank"]` → **400 ProblemDetail**. `handleMethodArgumentNotValid` is overridden the same way for plain `@Valid @RequestBody` endpoints (e.g. inventory's reservations).
 2. **Idempotency check** — `OrderService.placeOrder` calls `orderRepository.findByIdempotencyKey(key)`. If found → return existing order with `created=false` → controller returns **200** with the same body. Inventory is **not called again** (test `idempotencyKeyPreventsDuplicateOrders` verifies exactly 1 POST to WireMock).
 3. **Save PENDING** — `Order.pending(sku, qty, key)` generates `orderRef = UUID`, status `PENDING`; `orderRepository.save(...)` commits in its own short transaction (Spring Data repository methods are transactional by default). If two requests with the same key race, the second insert hits the `idempotency_key` unique constraint → `DataIntegrityViolationException` → **409 "Concurrent request"**.
 4. **Remote call** — `inventoryClient.reserve(orderRef, sku, qty)`:
@@ -196,7 +196,7 @@ Rule to say: *"Retries are only safe if the receiver is idempotent. I made the r
 
 The concurrent-first-request case is handled by the **unique constraint**, not by the `findBy...` check (check-then-act is racy). The loser gets a `DataIntegrityViolationException` → 409 "Concurrent request, retry", and on retry it finds the existing row.
 
-Honest gap: the idempotency key is not tied to a request-body hash. Re-using the same key with a different SKU returns the original order silently. Stripe-style APIs store a body fingerprint and return 422 on mismatch. Also keys never expire (a TTL / cleanup job would be needed at scale).
+Honest gap: the idempotency key is not tied to a request-body hash. Re-using the same key with a different SKU returns the original order silently. Production-grade APIs (Stripe, the IETF `Idempotency-Key` draft) store a request fingerprint and reject a mismatched reuse with an error (the IETF draft suggests 422). Also keys never expire (a TTL / cleanup job would be needed at scale).
 
 ### 4.2 Why atomic `UPDATE ... WHERE quantity >= :qty` instead of locking?
 
@@ -220,7 +220,7 @@ Proof: `InventoryServiceApplicationTests.concurrentReservationsNeverOversell` �
 
 `clearAutomatically/flushAutomatically`: bulk JPQL updates bypass the persistence context, so flush pending changes before and clear stale entities after. In `release()` this matters: `r.release()` (dirty entity) is flushed *before* `incrementStock` runs.
 
-Where optimistic locking *is* used: `Order` has `@Version private long version;` — two concurrent updates of the same order (e.g. two cancel calls) → one gets `ObjectOptimisticLockingFailureException` instead of silently overwriting.
+Where optimistic locking *is* used: `Order` has `@Version private long version;` — two concurrent updates of the same order (e.g. two cancel calls) → one gets `ObjectOptimisticLockingFailureException` instead of silently overwriting. Honest gap: `GlobalExceptionHandler` does not map it, so today the loser gets a 500; it should be a 409.
 
 ### 4.3 Why no distributed transaction (2PC / XA)?
 
@@ -279,7 +279,7 @@ resilience4j.circuitbreaker.instances.inventory:
 ```
 
 - CLOSED → (≥5 calls and ≥50% failures in last 10) → OPEN for 10s (fail fast with `CallNotPermittedException`) → HALF_OPEN (2 trial calls) → CLOSED or back to OPEN.
-- Because Retry wraps the breaker, **each attempt** is recorded. Test `circuitBreakerOpensAndFailsFast`: 2 failing orders × 3 attempts = 6 failures ≥ 5 → OPEN; the 3rd order makes **0** HTTP calls.
+- Because Retry wraps the breaker, **each attempt** is recorded. Test `circuitBreakerOpensAndFailsFast`: order 1 = 3 failed attempts, order 2's 2nd attempt is the 5th recorded failure (≥ `minimum-number-of-calls`, 100% ≥ 50%) → OPEN; its 3rd attempt is already rejected with `CallNotPermittedException` (not retried). The test's comment says "6 failures", but only 5 HTTP calls actually reach WireMock. The 3rd order makes **0** HTTP calls.
 
 ### 4.7 Latency budget (good senior-sounding point)
 
@@ -380,7 +380,7 @@ To practise real distributed-system problems: network failures, partial failure,
 A single conditional `UPDATE product SET quantity = quantity - :qty WHERE sku = :sku AND quantity >= :qty`. The row lock serialises concurrent updates and the WHERE is re-checked on the latest committed row. If 0 rows updated → 409. The `CHECK (quantity >= 0)` constraint is a backstop. Proven by a 20-thread test.
 
 **Q3. What if the same reservation request arrives twice at the same time?**
-Both may miss `findByOrderRef`, both decrement, but only one insert passes the `order_ref` unique constraint. The loser's transaction rolls back **including its decrement** (same `@Transactional`), and it returns 409 "Concurrent request". Stock is correct.
+Both may miss `findByOrderRef`, both decrement, but only one insert passes the `order_ref` unique constraint. The loser's transaction rolls back **including its decrement** (same `@Transactional`), and it returns 409 "Concurrent request". Stock is correct. Subtle gap: order-service maps *every* 409 to `InventoryRejectedException` ("Insufficient stock"), so if a retry overlaps the still-running original call, the order could be marked REJECTED although stock was reserved — a distinct status/code for "concurrent request" would fix that.
 
 **Q4. Inventory timed out but actually reserved the stock. Now what?**
 Order is FAILED and the client gets 503 with the `orderId`. The reservation exists. Since `release` is idempotent, cancelling the FAILED order frees the stock. Automatic fix would be a reconciliation job that retries `reserve` with the same `orderRef` — inventory returns the existing reservation, so we learn it succeeded and can mark CONFIRMED.

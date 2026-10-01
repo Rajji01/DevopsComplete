@@ -120,7 +120,7 @@ Security (class loading, file paths), thread safety, string pool reuse, cached `
 
 - Array of buckets (`Node<K,V>[] table`), default capacity **16**, load factor **0.75** → resize (double) when size > 12.
 - `index = (n - 1) & hash`, where `hash = h ^ (h >>> 16)` (spreads high bits).
-- Collision → linked list in the bucket; when a bucket has **≥ 8** entries **and** table size **≥ 64**, it becomes a **red-black tree** (O(log n) worst case). Shrinks back to list at 6.
+- Collision → linked list in the bucket; when a bucket grows **beyond 8** entries (`TREEIFY_THRESHOLD = 8`) **and** table size is **≥ 64**, it becomes a **red-black tree** (O(log n) worst case); if the table is smaller than 64 it resizes instead. A tree bin shrinks back to a list at ≤ 6 (on resize split).
 - Resize rehashes: each entry either stays at index `i` or moves to `i + oldCap`.
 - Allows one `null` key (bucket 0) and null values. Not thread-safe (concurrent resize could corrupt; in Java 7 it could even loop forever).
 
@@ -217,7 +217,7 @@ Thread stacks: one per platform thread (~512KB–1MB)                 -Xss
 Code cache, direct buffers (NIO/Netty), GC structures              native
 ```
 
-GCs: **G1** (default since 9; region-based, pause-time goal `-XX:MaxGCPauseMillis=200`), **ZGC** (sub-ms pauses, large heaps; generational from 21), **Parallel** (throughput, batch), **Serial** (tiny heaps — JVM picks it automatically when it sees < 2 CPUs or < ~1.8GB memory, common in small containers!).
+GCs: **G1** (default since 9; region-based, pause-time goal `-XX:MaxGCPauseMillis=200`), **ZGC** (sub-ms pauses, large heaps; generational mode opt-in in 21 via `-XX:+ZGenerational`, the default from 23), **Parallel** (throughput, batch), **Serial** (tiny heaps — JVM picks it automatically when it sees < 2 CPUs or < ~1.8GB memory, common in small containers!).
 
 ### Containers
 
@@ -308,10 +308,10 @@ All are `@Component` stereotypes found by component scanning. `@Repository` adds
 It's injected once, so you get one instance forever. Use `ObjectProvider<T>`, `@Lookup`, or a scoped proxy.
 
 **Q: How do circular dependencies behave in Boot 2.6+?**
-Disallowed by default (startup fails). Fix the design (extract a third bean, use events). With constructor injection they can never work anyway.
+Disallowed by default (startup fails). Fix the design (extract a third bean, use events); `spring.main.allow-circular-references=true` is only a stopgap. With pure constructor injection they can't be resolved at all (unless one side is `@Lazy`).
 
 **Q: What is a Spring AOP proxy?**
-A wrapper object (JDK dynamic proxy for interfaces, CGLIB subclass otherwise) that intercepts public method calls to add behaviour: `@Transactional`, `@Cacheable`, `@Async`, Resilience4j `@Retry`/`@CircuitBreaker` (why ShopFlow's order-service needs `spring-boot-starter-aop`). Only calls **through the proxy** are intercepted.
+A wrapper object (Spring Framework: JDK dynamic proxy for interfaces, CGLIB subclass otherwise; **Spring Boot defaults to CGLIB** via `spring.aop.proxy-target-class=true`) that intercepts external method calls to add behaviour: `@Transactional`, `@Cacheable`, `@Async`, Resilience4j `@Retry`/`@CircuitBreaker` (why ShopFlow's order-service needs `spring-boot-starter-aop`). Only calls **through the proxy** are intercepted.
 
 **Q: `BeanFactory` vs `ApplicationContext`?**
 `ApplicationContext` extends `BeanFactory` and adds eager singleton init, events, i18n, environment/profiles, AOP integration. You always use `ApplicationContext` in Boot.
@@ -343,7 +343,7 @@ Run with `--debug` (conditions evaluation report) or the actuator `conditions` e
 `@SpringBootApplication(exclude = DataSourceAutoConfiguration.class)` or `spring.autoconfigure.exclude`.
 
 **Q: What happens in `SpringApplication.run`?**
-Create environment (load properties/profiles) → create ApplicationContext → run auto-config + component scan → instantiate singletons → start embedded Tomcat → fire `ApplicationReadyEvent` (readiness becomes ACCEPTING_TRAFFIC).
+Create environment (load properties/profiles) → create ApplicationContext → run auto-config + component scan → instantiate singletons → start embedded Tomcat → `ApplicationStartedEvent` (liveness CORRECT) → run `CommandLineRunner`/`ApplicationRunner` beans → `ApplicationReadyEvent` (readiness becomes ACCEPTING_TRAFFIC).
 
 **Q: How would you write a custom starter?**
 An autoconfigure module with a `@AutoConfiguration` class + conditions + `@ConfigurationProperties`, registered in the `.imports` file, plus a starter POM that pulls it in.
@@ -399,7 +399,7 @@ Add `@Validated` and constraints (`@NotNull URI baseUrl`) on the properties reco
 
 - Implemented with an AOP proxy: begin tx before method, commit after, rollback on exception.
 - **Default rollback**: on `RuntimeException` and `Error` only; **checked exceptions commit** unless `rollbackFor = Exception.class`.
-- Works only on **public** methods called **from outside** the bean (through the proxy).
+- Works only on methods called **from outside** the bean (through the proxy) — public methods, or since Spring 6.0 also protected/package-private ones on class-based (CGLIB) proxies; never private.
 
 In ShopFlow:
 - `ReservationService.reserve` and `.release` are `@Transactional` — decrement + insert must commit or roll back together.
@@ -416,7 +416,7 @@ In ShopFlow:
 | `MANDATORY` | must already be in a tx, else exception |
 | `NOT_SUPPORTED` | suspend tx, run without |
 | `NEVER` | exception if a tx exists |
-| `NESTED` | savepoint inside current tx (JDBC only) |
+| `NESTED` | savepoint inside current tx (needs savepoint support — e.g. `DataSourceTransactionManager`/JDBC) |
 
 ### Isolation
 
@@ -453,7 +453,7 @@ No — the proxy never sees it. Rethrow, or call `TransactionAspectSupport.curre
 An inner `REQUIRED` method threw (marked the shared tx rollback-only), the outer caught it and tried to commit. Use `REQUIRES_NEW` for the inner part or don't swallow.
 
 **Q: What does `readOnly = true` do?**
-Hibernate skips dirty checking and flushing (sets FlushMode MANUAL), driver may route to replicas. It's an optimisation hint, not a security guarantee.
+Spring sets Hibernate's FlushMode to MANUAL and the session to read-only (no dirty-checking snapshots, no flush) and calls `Connection.setReadOnly(true)`; a routing DataSource can use it to send reads to a replica. Mainly an optimisation — whether writes are actually rejected depends on the driver/DB (PostgreSQL's JDBC driver runs the tx as `READ ONLY`, so writes fail there).
 
 **Q: Why not wrap a REST call in a transaction?**
 Holds a DB connection during network latency → pool exhaustion; can't roll back the remote side effect anyway. Exactly the `OrderService` Javadoc.
@@ -493,7 +493,7 @@ Fixes: `JOIN FETCH` in JPQL, `@EntityGraph(attributePaths = "lines")`, `@BatchSi
 | | Optimistic | Pessimistic |
 |---|---|---|
 | How | `@Version` column; `UPDATE ... WHERE id=? AND version=?` | `SELECT ... FOR UPDATE` (`@Lock(LockModeType.PESSIMISTIC_WRITE)`) |
-| Conflict | `OptimisticLockException` at commit → retry | other tx **waits** (or times out) |
+| Conflict | `OptimisticLockException` at flush/commit (Spring: `ObjectOptimisticLockingFailureException`) → retry | other tx **waits** (or times out) |
 | Best for | low contention, long user "think time" | high contention, short tx |
 | Risk | retry storms on hot rows | deadlocks, blocked threads |
 
@@ -535,14 +535,14 @@ First-level: per persistence context, always on. Second-level: shared across ses
 | POST | no | **no** (made idempotent with `Idempotency-Key`) | `POST /api/v1/orders` |
 | PUT | no | yes | — |
 | PATCH | no | not necessarily | — |
-| DELETE | no | yes | `DELETE /api/v1/reservations/{orderRef}` (204 every time) |
+| DELETE | no | yes | `DELETE /api/v1/reservations/{orderRef}` (204 every time). Idempotent = same server *state*, not same response: `DELETE /api/v1/orders/{id}` returns 409 the 2nd time, but nothing changes |
 
 Status codes used in ShopFlow:
 
 | Code | When |
 |---|---|
 | 200 | GET, cancel, idempotent POST replay |
-| 201 + `Location` | new order (`ResponseEntity.created(...)`), new reservation (`@ResponseStatus(CREATED)`) |
+| 201 | new order with `Location` (`ResponseEntity.created(...)`); new reservation via `@ResponseStatus(CREATED)` (no `Location` header) |
 | 204 | release reservation |
 | 400 | validation failure (body or params) |
 | 404 | order / product not found |
@@ -553,7 +553,7 @@ Other practices:
 - **Versioning**: URI `/api/v1/...` (ShopFlow). Alternatives: header (`Accept: application/vnd.shopflow.v2+json`), query param. Breaking change → new version; additive changes don't need one.
 - **Pagination**: `page`/`size` with max size (ShopFlow caps at 100), stable sort (`createdAt DESC`). For big/infinite feeds use **keyset/cursor pagination** (`WHERE created_at < :cursor`) — offset gets slow for deep pages.
 - **Idempotency** for POST via `Idempotency-Key`.
-- **ProblemDetail (RFC 7807)** errors: `type`, `title`, `status`, `detail`, `instance` + custom properties (`orderId`).
+- **ProblemDetail (RFC 7807, superseded by RFC 9457 — same format)** errors: `type`, `title`, `status`, `detail`, `instance` + custom properties (`orderId`).
 - Nouns not verbs, plural resources, DTOs not entities, consistent naming, OpenAPI docs (`/swagger-ui.html`).
 
 ### Q&A
@@ -597,6 +597,7 @@ public PagedModel<OrderResponse> list(@RequestParam(defaultValue = "0") @Min(0) 
 
 - `@Valid` on a body → `MethodArgumentNotValidException`.
 - Constraints directly on method parameters (`@Min` on `@RequestParam`) → Spring 6.1+ built-in **method validation** → `HandlerMethodValidationException`. Both become 400 via `ResponseEntityExceptionHandler`.
+- Gotcha: once **any** parameter has a direct constraint, method validation also covers the `@Valid @RequestBody`, so body errors raise `HandlerMethodValidationException` instead of `MethodArgumentNotValidException`. That is what happens on ShopFlow's `POST /api/v1/orders` (the `Idempotency-Key` header has `@Size`), which is why both handlers are overridden. Inventory's `POST /api/v1/reservations` has no parameter constraints, so it uses `MethodArgumentNotValidException`.
 - ShopFlow's `GlobalExceptionHandler` (both services) **overrides** `handleMethodArgumentNotValid` and `handleHandlerMethodValidationException` to add a sorted `errors` list so clients see *which* field failed:
 
 ```java
@@ -635,7 +636,7 @@ Sample response:
 Validation failure (`POST /api/v1/orders` with `{"sku":"","quantity":0}`, asserted in `validatesRequests`):
 ```json
 { "type": "about:blank", "title": "Bad Request", "status": 400,
-  "detail": "Invalid request content.", "instance": "/api/v1/orders",
+  "detail": "Validation failure", "instance": "/api/v1/orders",
   "errors": ["quantity: must be greater than or equal to 1", "sku: must not be blank"] }
 ```
 
@@ -704,7 +705,7 @@ class InventoryPgTest {
 ### Q&A
 
 **Q: `@Mock` vs `@MockitoBean` (formerly `@MockBean`)?**
-`@Mock` is plain Mockito (no Spring). `@MockitoBean` (Boot 3.4+, replaces deprecated `@MockBean`) replaces a bean in the Spring context.
+`@Mock` is plain Mockito (no Spring). `@MockitoBean` (Spring Framework 6.2 / Boot 3.4+; Boot's `@MockBean` is deprecated since 3.4) replaces a bean in the Spring context with a mock.
 
 **Q: Why WireMock instead of mocking `InventoryClient`?**
 Mocking the client skips the real HTTP layer: serialisation, status mapping (`onStatus`), timeouts, and Resilience4j proxies. WireMock exercises all of it — that's how ShopFlow proves "retry 3 times on 500, 0 calls when breaker is open".
@@ -801,7 +802,7 @@ Pods killed while serving, or new pods getting traffic too early. ShopFlow's ans
 `top -H` / `jcmd Thread.print` a few times → hot threads; frequent GC (heap too small → GC thrashing); infinite loops; regex backtracking; heavy JSON serialisation. Use async-profiler / JFR (`jcmd <pid> JFR.start`).
 
 **S11. Intermittent `ObjectOptimisticLockingFailureException`.**
-Two requests updated the same `@Version` entity (e.g. double cancel of an `Order`). Expected behaviour — map it to 409 and let the client retry, or retry the operation server-side if it's safe.
+Two requests updated the same `@Version` entity (e.g. double cancel of an `Order`). Expected behaviour — map it to 409 and let the client retry, or retry the operation server-side if it's safe. (ShopFlow's handler doesn't map it yet, so today it surfaces as a 500 — an honest gap.)
 
 **S12. Logs show retries hammering a recovering service.**
 Retry storm: many clients retry at the same fixed intervals. Add jitter (randomised backoff), cap attempts, rely on the circuit breaker, and respect `Retry-After`. ShopFlow has exponential backoff but no jitter yet.

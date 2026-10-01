@@ -52,7 +52,7 @@ ShopFlow deployments set:
 - name: LOGGING_STRUCTURED_FORMAT_CONSOLE
   value: ecs                 # JSON logs for Loki / ELK
 ```
-That's Spring Boot's built-in structured logging (Boot 3.4+), bound from env var to `logging.structured.format.console=ecs`. ECS = Elastic Common Schema. Locally (compose) it's not set → human-readable logs; in K8s → one JSON object per line on stdout:
+That's Spring Boot's built-in structured logging (Boot 3.4+), bound from env var to `logging.structured.format.console=ecs`. ECS = Elastic Common Schema. Locally (compose) it's not set → human-readable logs; in K8s → one JSON object per line on stdout (illustrative — exact field layout, dotted vs nested, depends on the Boot version):
 ```json
 {"@timestamp":"2026-10-01T09:12:44.120Z","log.level":"WARN","process.thread.name":"http-nio-8081-exec-3",
  "service.name":"order-service","log.logger":"com.shopflow.order.order.OrderService",
@@ -63,7 +63,7 @@ Why JSON:
 - Multi-line stack traces stay in one event.
 - Easy to add MDC context: `orderRef`, `traceId`, `userId` (not PII!).
 
-12-factor rule: **log to stdout**, let the platform collect (kubelet writes container stdout to `/var/log/containers/*.log` on the node; a DaemonSet agent ships it). Don't write log files inside the container (ShopFlow even has `readOnlyRootFilesystem: true`).
+12-factor rule: **log to stdout**, let the platform collect (the container runtime writes stdout to `/var/log/pods/...` on the node, symlinked as `/var/log/containers/*.log`; a DaemonSet agent ships it). Don't write log files inside the container (ShopFlow even has `readOnlyRootFilesystem: true`).
 
 Log levels: ERROR (needs attention), WARN (unexpected but handled — e.g. a circuit open), INFO (business events), DEBUG (off in prod; switchable via `/actuator/loggers` if exposed). Never log secrets, passwords, tokens, full card numbers.
 
@@ -84,7 +84,7 @@ Log levels: ERROR (needs attention), WARN (unexpected but handled — e.g. a cir
 ```
 - **Pull model**: Prometheus scrapes HTTP endpoints. Pros: knows when a target is down (`up == 0`), targets don't need to know Prometheus. Short-lived jobs use **Pushgateway**.
 - `prometheus.yml` in compose uses `static_configs` with DNS names. In K8s you use `kubernetes_sd_configs` + relabeling on the `prometheus.io/scrape|path|port` pod annotations (ShopFlow's Deployments have them), or with **Prometheus Operator** (kube-prometheus-stack) a `ServiceMonitor`/`PodMonitor` CRD — the Operator ignores annotations by default. NetworkPolicies already allow the `monitoring` namespace to reach 8081/8082.
-- Single Prometheus = single node, local storage, ~15d retention typical. Long-term/HA: Thanos, Cortex/Mimir, VictoriaMetrics, Amazon Managed Prometheus.
+- Single Prometheus = single node, local storage, 15d retention by default (`--storage.tsdb.retention.time`). Long-term/HA: Thanos, Cortex/Mimir, VictoriaMetrics, Amazon Managed Prometheus.
 
 ### Data model
 ```
@@ -156,6 +156,7 @@ resilience4j_circuitbreaker_state{name="inventory", state="open"} == 1
 for: 1m
 ```
 Resilience4j exports a gauge per state (`closed`, `open`, `half_open`...) with value 1 for the current state. Config in order-service: opens when ≥ 50% of the last 10 calls failed (min 5 calls), stays open 10s, then half-open with 2 trial calls. If it's been open for a full minute, order placement is failing fast → page. It's a **cause** signal, but an early, high-confidence one (the file's header: *"Alerts on symptoms users feel (errors, latency), plus the circuit breaker as an early cause signal"*).
+Caveat worth raising yourself: with `wait-duration-in-open-state: 10s` + automatic transition, a failing breaker cycles open → half_open → open. If a rule evaluation catches `half_open`, the `for: 1m` timer resets, so the alert may flap or never fire. More robust: `max_over_time(resilience4j_circuitbreaker_state{name="inventory",state="open"}[1m]) == 1`, or alert on the rate of `resilience4j_circuitbreaker_not_permitted_calls_total`.
 
 ### Rule 4 — `ServiceDown` (page)
 ```promql
@@ -266,7 +267,7 @@ SLI in PromQL (availability, 30d):
   / sum(increase(http_server_requests_seconds_count{application="order-service",uri!~"/actuator.*"}[30d]))
 )
 ```
-**Burn-rate alerting** (better than fixed thresholds): burn rate = error ratio / (1 − SLO). For a 99.5% SLO, ShopFlow's 5% threshold = burn rate 10 (budget gone in 3 days). Google's multi-window approach: page if burn rate > 14.4 over 1h **and** 5m (2% of monthly budget in an hour); ticket if > 1 over 3 days. Tools: Sloth, Pyrra generate these rules.
+**Burn-rate alerting** (better than fixed thresholds): burn rate = error ratio / (1 − SLO). For a 99.5% SLO, ShopFlow's 5% threshold = burn rate 10 (30-day budget gone in 3 days). Google SRE Workbook multi-window approach (30-day SLO): page if burn rate > 14.4 over 1h **and** 5m (2% of budget in 1h — for 99.5% that's an error ratio > 7.2%); page if > 6 over 6h and 30m (5% of budget); ticket if > 1 over 3d and 6h (10% of budget). The short window makes the alert reset quickly after recovery. Tools: Sloth, Pyrra generate these rules.
 
 > Tip: SLO hamesha user-centric ho — "CPU < 70%" SLO nahi hai, wo sirf metric hai.
 
@@ -290,7 +291,7 @@ Trace 4bf92f... (one POST /api/v1/orders)
 
 How to add to ShopFlow (two options):
 1. **Micrometer Tracing** (Spring-native): add `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp`; set `management.tracing.sampling.probability: 0.1` and `management.otlp.tracing.endpoint: http://otel-collector:4318/v1/traces`. The auto-configured `RestClient.Builder` propagates context automatically (if the client is built from the injected builder); trace/span IDs appear in logs (ECS fields) for correlation; exemplars can link histogram buckets to traces in Grafana.
-2. **OpenTelemetry Java agent** (zero code): `JAVA_TOOL_OPTIONS="-javaagent:/otel/opentelemetry-javaagent.jar ..."`, `OTEL_SERVICE_NAME=order-service`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317`. Auto-instruments Spring MVC, JDBC, HTTP clients. Note ShopFlow already uses `JAVA_TOOL_OPTIONS` for heap flags — you'd append to it.
+2. **OpenTelemetry Java agent** (zero code): `JAVA_TOOL_OPTIONS="-javaagent:/otel/opentelemetry-javaagent.jar ..."`, `OTEL_SERVICE_NAME=order-service`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318` (agent 2.x defaults to OTLP http/protobuf on 4318; 4317 is gRPC). Auto-instruments Spring MVC, JDBC, HTTP clients. Note ShopFlow already uses `JAVA_TOOL_OPTIONS` for heap flags — you'd append to it.
 
 Pipeline: apps → **OTel Collector** (DaemonSet/Deployment: batching, sampling, attribute scrubbing) → backend (Jaeger, Grafana Tempo, AWS X-Ray, Datadog). Add the Collector's namespace to NetworkPolicy *egress* rules if egress gets locked down.
 
@@ -344,7 +345,7 @@ Key metrics: **MTTD** (detect), **MTTA** (acknowledge), **MTTR** (restore), MTBF
 ### S1. "p99 latency alert on order-service at 2 AM"
 1. Scope: all endpoints or one? (`sum by (uri)` latency). One pod or all? (`by (pod)`).
 2. Recent change? Deploy in last hour (`kubectl rollout history`, Argo CD history) → rollback first if correlated.
-3. Downstream: order-service calls inventory with `read-timeout: 2s` and up to 3 retries (200ms → 400ms backoff) → one slow inventory makes order p99 multiply. Check inventory's own latency and circuit breaker state.
+3. Downstream: order-service calls inventory with `read-timeout: 2s` and Resilience4j `max-attempts: 3` (= 1 call + 2 retries, waits 200ms → 400ms) → worst case ≈ 3 × 2s + 0.6s ≈ 6.6s, so one slow inventory multiplies order p99. Check inventory's own latency and circuit breaker state.
 4. Saturation: Hikari pending (`hikaricp_connections_pending`), GC pauses (`jvm_gc_pause_seconds`), CPU throttling, pod count vs HPA max (`kubectl get hpa`).
 5. DB: slow queries (`pg_stat_activity`, locks on `products` rows).
 6. Mitigate: rollback / scale out / raise HPA max / shed load; then root cause.
@@ -353,7 +354,7 @@ Key metrics: **MTTD** (detect), **MTTA** (acknowledge), **MTTR** (restore), MTBF
 1. Which service and which status? 500 (bug), 502/504 (ingress can't reach pods/timeouts), 503 (ShopFlow returns 503 ProblemDetail when inventory is unavailable / circuit open).
 2. Logs: `{namespace="shopflow"} | json | log_level="ERROR"` → exception type.
 3. If 503 from order-service + `InventoryCircuitOpen` → inventory is the real problem; investigate there (inhibition rule would hide the duplicate page).
-4. If only during deploys → readiness/graceful shutdown issue (see 05-kubernetes §12).
+4. If only during deploys → readiness/graceful shutdown issue (see [05-kubernetes.md §12](05-kubernetes.md#12-graceful-shutdown-sequence)).
 5. Mitigate: rollback if deploy-related; scale; fix dependency.
 
 ### S3. "Pods restarting repeatedly"

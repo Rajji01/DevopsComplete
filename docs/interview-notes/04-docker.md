@@ -84,7 +84,7 @@ RUN --mount=type=cache,target=/root/.m2 \
 ```
 - ShopFlow is a **multi-module** Maven project (parent `pom.xml` + `order-service` + `inventory-service`), so "copy only pom" would mean copying three poms in the right structure. Instead it does `COPY . .` and relies on a **cache mount**: `/root/.m2` persists across builds on the builder, but is **not** stored in the image.
 - `-pl ${SERVICE} -am` = build only the selected module (`--projects`) plus what it depends on (`--also-make`).
-- Trade-off: `COPY . .` means any source change re-runs `mvn package`, but dependencies come from the cache mount, so it's still fast. In CI the GHA cache (`cache-from: type=gha`) caches layers, not the mount — so CI builds re-download deps unless the layer above is cached. Honest answer if asked.
+- Trade-off: `COPY . .` means any source change re-runs `mvn package`, but dependencies come from the cache mount, so it's still fast locally. In CI the GHA cache (`cache-from: type=gha`) exports **layers, not cache mounts** — and since every commit changes the `COPY . .` layer, CI re-downloads Maven deps on each build. Honest answer if asked (fix: copy-poms-first layer, or a cache-mount export action).
 
 | | Layer cache | Cache mount (`--mount=type=cache`) |
 |---|---|---|
@@ -126,10 +126,11 @@ ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]
 ENTRYPOINT ["java", "-jar", "app.jar"]   # exec form: java is PID 1, gets SIGTERM directly
 ENTRYPOINT java -jar app.jar             # shell form: /bin/sh -c is PID 1; sh does NOT forward SIGTERM
 ```
-With shell form, `docker stop` / pod termination sends SIGTERM to `sh`, the JVM never sees it, Spring's graceful shutdown (`server.shutdown: graceful`) never runs, and after the grace period you get SIGKILL. If you must use a shell wrapper, end it with `exec java ...` — exactly what `microservice01/helperdeployEmptyDirVolume.yaml` does:
+With shell form, `docker stop` / pod termination sends SIGTERM to `sh`, the JVM never sees it (some shells `exec` a single simple command, but don't rely on it; shell form also ignores `CMD`/`docker run` args), Spring's graceful shutdown (`server.shutdown: graceful`) never runs, and after the grace period you get SIGKILL. If you must use a shell wrapper, end it with `exec java ...` — exactly what `microservice01/helperdeployEmptyDirVolume.yaml` does:
 ```yaml
 args: ["-c", "echo '...' > /cache/myfile.txt && exec java -jar /app/app.jar"]
 ```
+PID 1 detail: the kernel does not apply default signal actions to PID 1, so a PID-1 process that installs no SIGTERM handler ignores it. The JVM installs one, so exec-form Java is fine; for other apps (or to reap zombies) use `docker run --init` / `tini`.
 
 ### COPY vs ADD
 - `COPY src dst` — plain copy from build context (or `--from=<stage>`). **Use this by default.**
@@ -167,7 +168,7 @@ ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
 - `EXPOSE` — **documentation only**; doesn't publish anything. Publishing is `-p 8081:8081` or compose `ports:`. (`Devops/Dockerfile` has `EXPOSE 8080`; ShopFlow's Dockerfile omits it since it serves two different ports.)
 - `HEALTHCHECK` — Docker-level health. ShopFlow defines healthchecks in compose instead; Kubernetes **ignores** Dockerfile HEALTHCHECK and uses probes.
 - `LABEL` — metadata (OCI labels). CI adds them via `docker/metadata-action` (`labels: ${{ steps.meta.outputs.labels }}`).
-- `# syntax=docker/dockerfile:1` — first line in `shopflow/Dockerfile`; pins the BuildKit frontend so `RUN --mount` works.
+- `# syntax=docker/dockerfile:1` — first line in `shopflow/Dockerfile`; tells BuildKit to use the latest stable 1.x Dockerfile frontend, so `RUN --mount` works regardless of the engine's built-in frontend version.
 
 ---
 
@@ -247,11 +248,11 @@ Why it matters:
 
 ### Base image choice
 
-| Base | Size (approx) | Shell? | Notes |
+| Base | Size (rough, uncompressed; varies by version — check `docker image ls`) | Shell? | Notes |
 |---|---|---|---|
 | `eclipse-temurin:21-jdk` | ~400 MB+ | yes | Has compiler — only for build stage |
-| `eclipse-temurin:21-jre` (Ubuntu) | ~200 MB | yes | glibc, familiar tools |
-| `eclipse-temurin:21-jre-alpine` | ~100–130 MB | yes (busybox) | **ShopFlow uses this**. musl libc, `wget` available (used by compose healthchecks) |
+| `eclipse-temurin:21-jre` (Ubuntu) | ~250 MB | yes | glibc, familiar tools |
+| `eclipse-temurin:21-jre-alpine` | ~150–200 MB | yes (busybox) | **ShopFlow uses this**. musl libc, `wget` available (used by compose healthchecks) |
 | `gcr.io/distroless/java21-debian12` | ~100–200 MB | **no** | No shell/package manager → smallest attack surface, harder to debug (`kubectl debug` ephemeral containers) |
 | Custom `jlink` runtime | 60–80 MB | depends | Only the JDK modules you need |
 
@@ -299,7 +300,7 @@ Two different "out of memory" events — know the difference:
 | Exit code | With `ExitOnOutOfMemoryError`: `3` | `137` (128 + SIGKILL 9), reason `OOMKilled` |
 | Fix | Leak? Bigger heap? Heap dump | Lower `MaxRAMPercentage` or raise limit; check off-heap/threads |
 
-CPU: JVM sizes GC threads and `ForkJoinPool` from available CPUs. With CPU **limits** it may see 1 CPU and choose SerialGC. ShopFlow sets no CPU limit in K8s (see 05-kubernetes.md). You can force with `-XX:ActiveProcessorCount=2`.
+CPU/GC: the JVM sizes GC threads and `ForkJoinPool` from the CPU count it detects (a CPU **limit**/quota lowers it; requests/shares are ignored since JDK 19). JVM ergonomics pick **SerialGC** when it sees < 2 CPUs **or** < ~1792 MB memory — so with a 512 MiB limit ShopFlow gets SerialGC regardless of CPU (fine for a small heap; force G1 with `-XX:+UseG1GC` if wanted). ShopFlow sets no CPU limit in K8s (see [05-kubernetes.md](05-kubernetes.md)). Override the count with `-XX:ActiveProcessorCount=2`.
 
 Check inside a container:
 ```bash
@@ -349,7 +350,7 @@ ShopFlow compose uses both:
 - **Bind mounts, read-only (`:ro`)** for config: `init-db.sh` into `/docker-entrypoint-initdb.d/`, prometheus.yml, alert-rules.yml, Grafana provisioning.
 - `notes.txt` has the bind-mount example: `-v "D:/.../index.html:/usr/share/nginx/html/index.html"`.
 
-Gotcha: `init-db.sh` runs **only on first start with an empty data dir**. If you change it, you must `docker compose down -v` to wipe `pgdata` — otherwise the script never re-runs. (Comment in `k8s/base/postgres/init-db.sh` says exactly this.)
+Gotcha: `init-db.sh` runs **only on first start with an empty data dir**. If you change it, you must `docker compose down -v` to wipe `pgdata` — otherwise the script never re-runs. (The header comment in `k8s/base/postgres/init-db.sh`: "Runs once, on the first start of an empty Postgres data directory.")
 
 ---
 
@@ -435,9 +436,11 @@ env:
   with:
     images: ${{ env.IMAGE }}
     tags: |
-      type=sha,format=long,prefix=                       # full 40-char git SHA, no "sha-" prefix
-      type=raw,value=latest,enable={{is_default_branch}} # latest only on main
+      type=sha,format=long,prefix=
+      type=raw,value=latest,enable={{is_default_branch}}
 ```
+- `type=sha,format=long,prefix=` → full 40-char git SHA, no `sha-` prefix.
+- `type=raw,value=latest,enable={{is_default_branch}}` → `latest` only on main. (Don't put `#` comments inside a `|` block — they become part of the input string.)
 
 ### Why not `:latest` in deployments
 - **Not immutable**: the same tag points to different images over time → you can't tell what's running, can't reproduce, rollback to "latest" is meaningless.
