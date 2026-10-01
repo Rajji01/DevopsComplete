@@ -1,0 +1,124 @@
+# CI/CD for the ShopFlow microservices.
+# PR:   test -> validate manifests -> build images + vulnerability scan (no push)
+# main: same, then push images to GHCR tagged with the commit SHA
+name: shopflow
+
+on:
+  push:
+    branches: [main]
+    paths: ["shopflow/**", ".github/workflows/shopflow.yml"]
+  pull_request:
+    paths: ["shopflow/**", ".github/workflows/shopflow.yml"]
+
+# a newer push to the same branch cancels the older run
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: shopflow
+
+jobs:
+  test:
+    name: Unit + integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - run: ./mvnw -B verify
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: shopflow/**/target/surefire-reports/
+
+  validate-manifests:
+    name: Validate K8s + monitoring config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install kustomize + kubeconform
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -sSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_amd64.tar.gz | tar xz
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          echo "$PWD" >> "$GITHUB_PATH"
+      - name: kustomize build | kubeconform
+        run: |
+          for overlay in k8s/overlays/*/; do
+            echo "::group::$overlay"
+            kustomize build "$overlay" | kubeconform -strict -summary -
+            echo "::endgroup::"
+          done
+      - name: Prometheus config + alert rules
+        run: |
+          docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v3.5.0 check rules /m/alert-rules.yml
+      - name: docker compose config
+        run: docker compose config --quiet
+
+  image:
+    name: Image ${{ matrix.service }}
+    needs: [test, validate-manifests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write          # push to ghcr.io
+    strategy:
+      matrix:
+        service: [order-service, inventory-service]
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/shopflow-${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=long,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build (load locally for scanning)
+        uses: docker/build-push-action@v7
+        with:
+          context: shopflow
+          build-args: SERVICE=${{ matrix.service }}
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+      - name: Scan image (fail on fixable HIGH/CRITICAL CVEs)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push
+        if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v7
+        with:
+          context: shopflow
+          build-args: SERVICE=${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}

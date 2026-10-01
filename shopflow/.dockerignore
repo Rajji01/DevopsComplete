@@ -1,0 +1,7 @@
+**/target/
+.idea/
+*.iml
+k8s/
+monitoring/
+docker-compose.yml
+*.md

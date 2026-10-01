@@ -1,6 +1,17 @@
 # DevOps Complete
 
-Learning repo: two Spring Boot microservices, Docker images for them, and Kubernetes manifests (run on minikube) for pods, deployments, services, volumes, ConfigMaps, Secrets, Jobs and CronJobs. Command cheatsheet: [`notes.txt`](notes.txt).
+Goal: **mastery in DevOps + Java backend**, by building, shipping, running and debugging real services.
+
+| Start here | What it is |
+|---|---|
+| [`shopflow/`](shopflow/README.md) | Production-style microservices project: order + inventory services (Spring Boot 3.5, Java 21, PostgreSQL, Resilience4j), Docker, Kubernetes (Kustomize, HPA, PDB, NetworkPolicy), CI/CD with image scanning, Prometheus alerts |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | 16-week mastery roadmap built around this repo |
+| [`docs/LABS.md`](docs/LABS.md) | 15 hands-on break/fix labs (OOMKilled, CrashLoopBackOff, circuit breaker, zero-downtime deploy, ...) |
+| [`docs/interview-notes/`](docs/interview-notes/) | Interview notes: project walkthrough, Java/Spring, microservices, Docker, Kubernetes, CI/CD, observability, Linux/networking/cloud |
+
+## Basics (first learning project)
+
+Two simple Spring Boot services, their Docker images, and Kubernetes manifests (run on minikube) for pods, deployments, services, volumes, ConfigMaps, Secrets, Jobs and CronJobs. Command cheatsheet: [`notes.txt`](notes.txt).
 
 ## Services
 
@@ -49,6 +60,6 @@ minikube service backend-service --url
 
 Note: `Devops/backend-cm.yaml` and `Devops/testing-config-map.yaml` both define the `app-properties` ConfigMap; the one applied last wins. The backend needs the `host-port` key from `backend-cm.yaml`.
 
-## CI
+## CI (basics)
 
 `.github/workflows/ci.yml` runs on every push and PR. It runs the Maven tests and a Docker build for both services, then validates every manifest with [kubeconform](https://github.com/yannh/kubeconform).

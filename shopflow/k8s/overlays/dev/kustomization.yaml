@@ -1,0 +1,39 @@
+# kubectl apply -k k8s/overlays/dev
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: shopflow   # also puts generated objects (secret) in the namespace so name references resolve
+resources:
+  - ../../base
+images:
+  # built locally and loaded with: minikube image load shopflow/<service>:dev
+  - name: shopflow/order-service
+    newTag: dev
+  - name: shopflow/inventory-service
+    newTag: dev
+# dev-only throwaway passwords; prod gets them from a secret manager (see overlays/prod)
+secretGenerator:
+  - name: shopflow-db
+    literals:
+      - postgres-password=postgres
+      - orders-db-password=orders
+      - inventory-db-password=inventory
+patches:
+  # single replica is enough on a laptop
+  - target:
+      kind: HorizontalPodAutoscaler
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 2
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent

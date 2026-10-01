@@ -1,0 +1,18 @@
+# Weekly PRs for outdated dependencies (security patches arrive this way)
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /shopflow
+    schedule:
+      interval: weekly
+    groups:
+      spring:
+        patterns: ["org.springframework*"]
+  - package-ecosystem: docker
+    directory: /shopflow
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

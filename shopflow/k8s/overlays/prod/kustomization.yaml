@@ -1,0 +1,44 @@
+# kubectl apply -k k8s/overlays/prod   (normally applied by Argo CD / the CD pipeline, not by hand)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: shopflow   # also puts generated objects (secret) in the namespace so name references resolve
+resources:
+  - ../../base
+# CI pins the exact image built from a commit:
+#   kustomize edit set image shopflow/order-service=ghcr.io/rajji01/shopflow-order-service:<git-sha>
+images:
+  - name: shopflow/order-service
+    newName: ghcr.io/rajji01/shopflow-order-service
+    newTag: latest
+  - name: shopflow/inventory-service
+    newName: ghcr.io/rajji01/shopflow-inventory-service
+    newTag: latest
+# Secret "shopflow-db" is NOT in git: it is synced from AWS Secrets Manager / Vault
+# by External Secrets Operator (or created once with Sealed Secrets).
+patches:
+  - target:
+      kind: HorizontalPodAutoscaler
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 10
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+  - target:
+      kind: Ingress
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: shop.example.com
+      - op: add
+        path: /spec/tls
+        value:
+          - hosts: ["shop.example.com"]
+            secretName: shopflow-tls   # issued by cert-manager

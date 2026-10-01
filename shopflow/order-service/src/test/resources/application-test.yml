@@ -1,0 +1,14 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:orders;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+
+inventory:
+  read-timeout: 500ms
+
+resilience4j:
+  retry:
+    instances:
+      inventory:
+        wait-duration: 10ms

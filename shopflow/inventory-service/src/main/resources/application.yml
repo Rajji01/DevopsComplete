@@ -1,0 +1,45 @@
+server:
+  port: 8082
+  shutdown: graceful            # finish in-flight requests on SIGTERM (K8s pod termination)
+
+spring:
+  application:
+    name: inventory-service
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/inventory}
+    username: ${DB_USERNAME:inventory}
+    password: ${DB_PASSWORD:inventory}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+  jpa:
+    open-in-view: false          # no lazy loading in the web layer
+    hibernate:
+      ddl-auto: validate         # schema is owned by Flyway, Hibernate only checks it
+  mvc:
+    problemdetails:
+      enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true            # /actuator/health/liveness and /readiness for K8s
+      group:
+        readiness:
+          include: readinessState,db
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
