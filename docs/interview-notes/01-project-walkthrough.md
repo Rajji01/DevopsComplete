@@ -334,6 +334,24 @@ Honest limitation: H2 is "Postgres-like", not Postgres. Locking semantics and SQ
 
 ---
 
+## 5b. Deployment & operations (the DevOps half of the story)
+
+| Concern | Where | What to say |
+|---|---|---|
+| Image | `shopflow/Dockerfile` | 3 stages: Maven build (BuildKit cache mount for `~/.m2`, `-pl ${SERVICE} -am`) → `java -Djarmode=tools ... extract --layers` → `eclipse-temurin:21-jre-alpine` runtime, non-root UID 10001, layers copied dependencies-first so a code change ships a tiny layer, `JarLauncher` entrypoint, `JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError` |
+| Local stack | `docker-compose.yml` | Postgres 16 with `init-db.sh` creating both DBs, services wait for `service_healthy`, healthchecks on `/actuator/health/readiness`, 512m memory limits, Prometheus + Grafana |
+| Probes | `k8s/base/*/deployment.yaml` | startupProbe on liveness (2s × 30 = 60s for JVM start), liveness every 10s, readiness every 5s |
+| Resources | same | requests `cpu: 250m`, `memory: 384Mi`; limit `memory: 512Mi`; **no CPU limit** on purpose (throttling slows JVM startup and GC) |
+| Availability | `hpa.yaml`, `pdb.yaml`, `topologySpreadConstraints` | HPA CPU 70%, PDB `minAvailable: 1` for node drains, replicas spread across nodes |
+| Network | `network-policies.yaml`, `ingress.yaml` | default deny ingress; explicit allow-list; Ingress exposes only public paths |
+| Config/secrets | env vars in Deployments, `shopflow-db` Secret | dev: Kustomize `secretGenerator`; prod: synced from AWS Secrets Manager/Vault by External Secrets Operator |
+| Environments | `k8s/overlays/dev`, `k8s/overlays/prod` | dev: 1 replica, `:dev` images, `imagePullPolicy: IfNotPresent`; prod: 3–10 replicas, GHCR images, TLS host `shop.example.com` |
+| Database | `k8s/base/postgres/statefulset.yaml` | demo single-replica StatefulSet with two logical DBs; prod should be managed |
+
+> Tip: Interviewer DevOps side pooche toh "image → compose → k8s → CI → alerts" order me bolo. Har step ka ek reason ready rakho (non-root kyun, CPU limit kyun nahi, preStop kyun).
+
+---
+
 ## 6. What would you improve next? (have 3-4 ready)
 
 | Improvement | Why | How (concretely) |
@@ -436,6 +454,8 @@ STATES    PENDING -> CONFIRMED | REJECTED | FAILED ;  CONFIRMED|FAILED -> CANCEL
 NO TX     no @Transactional around HTTP (pool of 10 would starve)
 PROBES    readiness = readinessState + db (NOT inventory) ; liveness separate
 METRICS   orders_total{status}, inventory_reservations_rejected_total, http histograms
+DEPLOY    layered non-root image, compose + Prom/Grafana, Kustomize dev/prod, HPA, PDB, NetPol, Ingress
+CI        verify -> kubeconform/promtool -> build -> Trivy -> push GHCR (main, sha tag)
 GAPS      stuck PENDING, FAILED may leak stock, no auth, no tracing, H2 not real PG, no jitter
 NEXT      outbox + Kafka, sweeper job, OTel tracing, OAuth2/JWT, Testcontainers, gateway
 ```

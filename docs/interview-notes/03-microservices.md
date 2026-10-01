@@ -13,16 +13,18 @@
 | Idempotency | **In ShopFlow** — `Idempotency-Key` header + `orderRef` |
 | Saga / compensation | **Partly** — orchestrated by `OrderService`, sync, compensation = cancel → release |
 | Health probes / graceful shutdown | **In ShopFlow** — Actuator probes, `server.shutdown: graceful` |
-| Metrics | **In ShopFlow** — Prometheus + custom counters |
-| Externalised config (12-factor) | **In ShopFlow** — `DB_URL`, `DB_PASSWORD`, `INVENTORY_URL`, `DB_POOL_SIZE` env vars |
+| Metrics + alerts | **In ShopFlow** — Prometheus + custom counters; `shopflow/monitoring/alert-rules.yml` (error rate, p99, breaker open, target down) |
+| Externalised config (12-factor) | **In ShopFlow** — `DB_URL`, `DB_PASSWORD`, `INVENTORY_URL`, `DB_POOL_SIZE` env vars, set by K8s Deployments + Secret `shopflow-db` |
+| Containers + orchestration | **In ShopFlow** — `shopflow/Dockerfile`, `docker-compose.yml`, `k8s/` (Kustomize base + dev/prod overlays, HPA, PDB) |
+| Network segmentation | **In ShopFlow (infra)** — `k8s/base/network-policies.yaml` (default deny + allow-list) |
 | Kafka / async messaging | **Not in project** |
 | Transactional outbox | **Not in project** |
 | Bulkhead, rate limiting | **Not in project** |
-| API gateway | **Not in project** |
-| Service discovery | **Not in project** (URL from config; K8s DNS would do it) |
-| Config server | **Not in project** |
+| API gateway | **Partly** — NGINX Ingress `k8s/base/ingress.yaml` does path routing + TLS (prod); no auth / rate limiting at the edge |
+| Service discovery | **In ShopFlow via K8s DNS** — `INVENTORY_URL=http://inventory-service:8082` in the order Deployment; no Eureka |
+| Config server | **Not in project** (env vars + Secrets instead) |
 | Distributed tracing | **Not in project** (the auto-configured `RestClient.Builder` is observation-ready) |
-| Security (OAuth2/JWT, mTLS) | **Not in project** |
+| Security (OAuth2/JWT, mTLS) | **Not in project** (only infra hardening: NetworkPolicies, non-root, Trivy scan) |
 | Caching (Redis) | **Not in project** |
 
 ---
@@ -317,7 +319,7 @@ Resilience4j default: `Retry ( CircuitBreaker ( RateLimiter ( TimeLimiter ( Bulk
 Return cached/default data, queue the request for later, degrade a feature (hide recommendations), or fail fast with a clear 503 (ShopFlow — stock reservation can't be faked).
 
 **Q: How do you monitor it?**
-Resilience4j publishes Micrometer metrics (`resilience4j_circuitbreaker_state`, `..._calls`, failure rate) → Prometheus alert when state = open.
+Resilience4j publishes Micrometer metrics (`resilience4j_circuitbreaker_state`, `..._calls`, failure rate) → Prometheus alert when state = open. ShopFlow has exactly this: `InventoryCircuitOpen` in `monitoring/alert-rules.yml` — `resilience4j_circuitbreaker_state{name="inventory", state="open"} == 1` for 1m, severity `page`.
 
 ---
 
@@ -387,11 +389,20 @@ DB: Hikari `connection-timeout`, statement/query timeout; transaction timeout (`
 
 ---
 
-## 12. API gateway [Not in project]
+## 12. API gateway [Partly: Ingress only]
 
 Single entry point in front of services: routing, authentication (validate JWT once), rate limiting, CORS, TLS termination, request/response transformation, aggregation (BFF), canary routing.
 
 Options: **Spring Cloud Gateway**, Kong, NGINX, AWS API Gateway, Kubernetes Ingress / Gateway API (NGINX Ingress, Traefik, Istio gateway).
+
+**[In ShopFlow]** `k8s/base/ingress.yaml` (ingressClassName `nginx`, host `shopflow.local`; prod overlay switches host to `shop.example.com` with TLS secret `shopflow-tls` from cert-manager):
+
+| Path (Prefix) | Backend |
+|---|---|
+| `/api/v1/orders` | `order-service:http` |
+| `/api/v1/products` | `inventory-service:http` |
+
+`/api/v1/reservations` is **not** exposed — only order-service may call it (also enforced by NetworkPolicy). What's missing vs a real gateway: JWT validation, per-client rate limiting, API keys, request transformation. Cheapest next step: NGINX Ingress annotations (`nginx.ingress.kubernetes.io/limit-rps`), or put Spring Cloud Gateway / Kong behind the Ingress.
 
 ```yaml
 # Spring Cloud Gateway sketch for ShopFlow
@@ -417,9 +428,9 @@ Single point of failure (run multiple replicas), bottleneck, and "god gateway" w
 
 ---
 
-## 13. Service discovery [Not in project]
+## 13. Service discovery [In ShopFlow via Kubernetes DNS — no Eureka]
 
-ShopFlow today: the inventory address is config — `inventory.base-url: ${INVENTORY_URL:http://localhost:8082}`.
+ShopFlow: the inventory address is config — `inventory.base-url: ${INVENTORY_URL:http://localhost:8082}`. In Kubernetes, `k8s/base/order-service/deployment.yaml` sets `INVENTORY_URL=http://inventory-service:8082` (the ClusterIP Service in `k8s/base/inventory-service/service.yaml`); in Docker Compose the service name `inventory-service` resolves the same way.
 
 | | Eureka (Spring Cloud Netflix) | Kubernetes DNS |
 |---|---|---|
@@ -429,7 +440,7 @@ ShopFlow today: the inventory address is config — `inventory.base-url: ${INVEN
 | Use | VMs / non-K8s | anything on K8s |
 
 **Q: What would you do for ShopFlow on Kubernetes?**
-Create a ClusterIP Service `inventory-service` and set `INVENTORY_URL=http://inventory-service:8082` in a ConfigMap. No Eureka. (The repo's `Devops/` backend already calls `helper-service` this way.)
+Exactly what it does: a ClusterIP Service `inventory-service` and `INVENTORY_URL=http://inventory-service:8082` on the Deployment. Readiness probes decide which inventory pods are behind the Service. No Eureka needed. (The repo's older `Devops/` backend calls `helper-service` the same way.)
 
 **Q: Client-side vs server-side discovery?**
 Client-side: client queries registry and chooses an instance (Eureka + LoadBalancer). Server-side: client calls a stable address; a load balancer/proxy chooses (K8s Service, AWS ALB).
@@ -439,9 +450,9 @@ kube-proxy balances per **connection**, so HTTP/2/gRPC keep-alive connections ca
 
 ---
 
-## 14. Config server vs ConfigMaps [Partly: env-var config]
+## 14. Config server vs ConfigMaps [Partly: env vars + Secrets]
 
-**[In ShopFlow]** Config is externalised via env vars with defaults (`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `DB_POOL_SIZE`, `INVENTORY_URL`) and typed with `@ConfigurationProperties` (`InventoryProperties`).
+**[In ShopFlow]** Config is externalised via env vars with defaults (`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `DB_POOL_SIZE`, `INVENTORY_URL`) and typed with `@ConfigurationProperties` (`InventoryProperties`). In K8s, non-secret values are plain `env` entries in the Deployments (no ConfigMap yet) and passwords come from Secret `shopflow-db`: generated by Kustomize `secretGenerator` in `overlays/dev`, synced from AWS Secrets Manager / Vault by External Secrets Operator in prod (per the prod overlay comment).
 
 | | Spring Cloud Config Server | K8s ConfigMap / Secret |
 |---|---|---|
@@ -454,13 +465,19 @@ kube-proxy balances per **connection**, so HTTP/2/gRPC keep-alive connections ca
 On Kubernetes: ConfigMaps + Secrets (+ External Secrets Operator for Vault/AWS SM), deploy changes via rolling restart (or checksum annotation). Config Server makes sense outside K8s or when you need runtime refresh across many services.
 
 ```yaml
-# Deployment snippet (how you'd deploy ShopFlow order-service)
+# Actual: k8s/base/order-service/deployment.yaml (trimmed)
 env:
-  - name: INVENTORY_URL
-    valueFrom: { configMapKeyRef: { name: order-config, key: inventory-url } }
+  - name: DB_URL
+    value: jdbc:postgresql://postgres:5432/orders
   - name: DB_PASSWORD
-    valueFrom: { secretKeyRef: { name: order-db, key: password } }
+    valueFrom:
+      secretKeyRef: { name: shopflow-db, key: orders-db-password }
+  - name: INVENTORY_URL
+    value: http://inventory-service:8082     # K8s DNS name of the Service
+  - name: LOGGING_STRUCTURED_FORMAT_CONSOLE
+    value: ecs                               # JSON logs
 ```
+Possible refactor: move non-secret values into a ConfigMap and use `envFrom: [{configMapRef: {name: order-config}}]`, so overlays can change them with a `configMapGenerator` (its hash suffix triggers a rolling restart automatically).
 
 ---
 
@@ -522,20 +539,20 @@ ACID: atomic, consistent, isolated, durable transactions (inside one DB — Shop
 | 2 Dependencies | declared in `pom.xml`, Maven wrapper (`mvnw`) |
 | 3 Config | env vars `DB_URL`, `DB_PASSWORD`, `INVENTORY_URL`, `DB_POOL_SIZE` |
 | 4 Backing services | Postgres / inventory URL are attachable resources via config |
-| 5 Build, release, run | `target/app.jar` built once; config added at deploy time (Docker/K8s not yet in shopflow) |
+| 5 Build, release, run | CI builds one image per commit (tag = git SHA), the same image goes to dev/prod via Kustomize overlays; config injected at deploy time |
 | 6 Processes | stateless services; state in Postgres |
 | 7 Port binding | embedded Tomcat on 8081/8082 |
 | 8 Concurrency | scale out by adding pods |
 | 9 Disposability | fast start, `server.shutdown: graceful`, 20s shutdown phase |
 | 10 Dev/prod parity | same Flyway migrations everywhere; gap: H2 in tests (fix with Testcontainers) |
-| 11 Logs | SLF4J to stdout; aggregation (ELK/Loki) is the platform's job |
+| 11 Logs | SLF4J to stdout; JSON (ECS) in K8s via `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`; aggregation (ELK/Loki) is the platform's job |
 | 12 Admin processes | Flyway migrations run at startup; one-off jobs could be K8s Jobs |
 
 ---
 
-## 18. Security [Not in project]
+## 18. Security [App-level: not in project · Infra hardening: in ShopFlow]
 
-ShopFlow has **no authentication** today. What to say:
+ShopFlow has **no authentication** in the applications today. It does have infrastructure hardening: NetworkPolicies (default deny; inventory reachable only from order-service, ingress-nginx and monitoring; Postgres only from the two services), containers run as UID 10001 with `readOnlyRootFilesystem`, dropped capabilities and `seccompProfile: RuntimeDefault`, `automountServiceAccountToken: false`, Trivy image scanning in CI, and `/api/v1/reservations` is not routed by the Ingress. What to say about app-level security:
 
 ### OAuth2 / OIDC / JWT
 - **Authorization server** (Keycloak, Auth0, Okta, Cognito) issues tokens. **Resource servers** (our services) validate them.
@@ -572,7 +589,7 @@ Both (defence in depth): gateway rejects junk early; services still validate and
 **Q: Service-to-service security?**
 - **mTLS**: both sides present certificates; proves service identity and encrypts traffic. Usually done by a **service mesh** (Istio, Linkerd) with automatic cert rotation, plus authorization policies ("only order-service may call `/api/v1/reservations`").
 - Or OAuth2 **client credentials** tokens with scopes like `inventory:reserve`.
-- Plus K8s **NetworkPolicies** to restrict which pods can talk.
+- Plus K8s **NetworkPolicies** to restrict which pods can talk — **already in ShopFlow** (`k8s/base/network-policies.yaml`). Note: NetworkPolicies are L3/L4 (IP/port) only and need a CNI that enforces them (Calico/Cilium); they don't authenticate the caller like mTLS does.
 
 **Q: Other security basics for ShopFlow?**
 Secrets from K8s Secrets/Vault (`DB_PASSWORD` already externalised), don't expose `/swagger-ui.html` and `/actuator/prometheus` publicly, validate input (already Bean Validation), don't leak internals in errors (ProblemDetail handlers return generic messages for downstream/DB errors), dependency scanning (OWASP/Snyk/Trivy) in CI, run containers as non-root.
@@ -613,7 +630,7 @@ At-least-once delivery. Make the consumer idempotent — ShopFlow's `reserve` al
 Dual-write problem. Use the transactional outbox (same DB transaction) + relay/CDC.
 
 **S8. After a deployment, order-service pods are Ready but every order fails.**
-Readiness only checks own DB (by design), so config errors to downstreams show up as request failures: check `INVENTORY_URL` (ConfigMap), DNS/NetworkPolicy, breaker state metric, logs "inventory unavailable for order …". Add a smoke test in the pipeline; consider a startup check for config validity (not for downstream availability).
+Readiness only checks own DB (by design), so config errors to downstreams show up as request failures: check `INVENTORY_URL` (Deployment env), DNS, NetworkPolicy (`inventory-service-ingress` only allows pods labelled `app.kubernetes.io/name: order-service`), breaker state metric, logs "inventory unavailable for order …". Add a smoke test in the pipeline; consider a startup check for config validity (not for downstream availability).
 
 **S9. How do you roll out a breaking API change in inventory without breaking order-service?**
 Version the API (`/api/v2/reservations`) or make changes backward compatible (add optional fields, don't remove/rename), deploy provider first, then consumer, remove old version later. Consumer-driven contract tests (Spring Cloud Contract / Pact) in CI.

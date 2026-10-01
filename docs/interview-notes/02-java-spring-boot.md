@@ -226,14 +226,20 @@ GCs: **G1** (default since 9; region-based, pause-time goal `-XX:MaxGCPauseMilli
 - If total process memory > limit → kernel **OOMKilled** (exit code **137**) — no Java stack trace. Different from `java.lang.OutOfMemoryError` (heap) which you see in logs.
 - Useful flags: `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/dumps`, `-XX:+ExitOnOutOfMemoryError` (let K8s restart a broken pod).
 
+In ShopFlow (`shopflow/Dockerfile`, runtime stage, trimmed):
 ```dockerfile
-# Not in shopflow yet — how you'd run app.jar in a container
-FROM eclipse-temurin:21-jre
-COPY target/app.jar /app/app.jar
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+RUN addgroup -S -g 10001 app && adduser -S -u 10001 -G app app
+USER 10001
+COPY --from=extract /extract/out/dependencies/ ./          # rarely changes -> cached layer
+COPY --from=extract /extract/out/spring-boot-loader/ ./
+COPY --from=extract /extract/out/snapshot-dependencies/ ./
+COPY --from=extract /extract/out/application/ ./           # our code -> small layer
 ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
-USER 1001
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]
 ```
+And the K8s Deployment sets `requests.memory: 384Mi`, `limits.memory: 512Mi` → max heap ≈ 384 MiB, ~128 MiB left for metaspace, thread stacks, code cache. No CPU limit (CPU throttling hurts JVM startup and GC threads); a startupProbe gives the JVM up to 60s.
 
 ### Q&A
 
@@ -376,7 +382,7 @@ public record InventoryProperties(String baseUrl, Duration connectTimeout, Durat
 `@Value("${x}")` for one-off values. `@ConfigurationProperties` for groups: type-safe, relaxed binding, `Duration`/`DataSize` conversion, can be validated with `@Validated` + constraints, IDE metadata. Prefer it.
 
 **Q: How do you handle secrets?**
-Never in Git or `application.yml`. Inject as env vars from K8s Secrets / Vault / AWS Secrets Manager (ShopFlow reads `DB_PASSWORD`). The local default `orders` is only for laptop dev.
+Never in Git or `application.yml`. Inject as env vars from K8s Secrets / Vault / AWS Secrets Manager. ShopFlow reads `DB_PASSWORD` from Secret `shopflow-db` (`secretKeyRef` in the Deployment; Kustomize `secretGenerator` in dev, External Secrets Operator in prod). The local default `orders` is only for laptop dev.
 
 **Q: How do you activate a profile?**
 `SPRING_PROFILES_ACTIVE=prod`, `--spring.profiles.active=prod`, or `@ActiveProfiles` in tests. Avoid lots of env-specific profiles — prefer one config + env vars (12-factor).
@@ -591,6 +597,24 @@ public PagedModel<OrderResponse> list(@RequestParam(defaultValue = "0") @Min(0) 
 
 - `@Valid` on a body → `MethodArgumentNotValidException`.
 - Constraints directly on method parameters (`@Min` on `@RequestParam`) → Spring 6.1+ built-in **method validation** → `HandlerMethodValidationException`. Both become 400 via `ResponseEntityExceptionHandler`.
+- ShopFlow's `GlobalExceptionHandler` (both services) **overrides** `handleMethodArgumentNotValid` and `handleHandlerMethodValidationException` to add a sorted `errors` list so clients see *which* field failed:
+
+```java
+@Override
+protected ResponseEntity<Object> handleMethodArgumentNotValid(MethodArgumentNotValidException ex,
+        HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+    ex.getBody().setProperty("errors", messages(ex.getAllErrors()));
+    return super.handleMethodArgumentNotValid(ex, headers, status, request);
+}
+
+private static List<String> messages(List<? extends MessageSourceResolvable> errors) {
+    return errors.stream()
+            .map(e -> e instanceof FieldError fe ? fe.getField() + ": " + fe.getDefaultMessage() : e.getDefaultMessage())
+            .sorted()
+            .toList();
+}
+```
+(Note the Java 16 pattern-matching `instanceof FieldError fe` — a nice "modern Java in my project" example.)
 - `GlobalExceptionHandler extends ResponseEntityExceptionHandler` + `@RestControllerAdvice` → custom exceptions to `ProblemDetail`; `spring.mvc.problemdetails.enabled: true`.
 
 ```java
@@ -608,6 +632,12 @@ Sample response:
   "detail": "Inventory service unavailable, order 7 marked FAILED",
   "instance": "/api/v1/orders", "orderId": 7 }
 ```
+Validation failure (`POST /api/v1/orders` with `{"sku":"","quantity":0}`, asserted in `validatesRequests`):
+```json
+{ "type": "about:blank", "title": "Bad Request", "status": 400,
+  "detail": "Invalid request content.", "instance": "/api/v1/orders",
+  "errors": ["quantity: must be greater than or equal to 1", "sku: must not be blank"] }
+```
 
 ### Q&A
 
@@ -621,7 +651,7 @@ Annotation with `@Constraint(validatedBy = SkuValidator.class)` + a `ConstraintV
 The latter adds `@ResponseBody`. Both apply `@ExceptionHandler`s globally.
 
 **Q: Why extend `ResponseEntityExceptionHandler`?**
-It already maps Spring MVC's own exceptions (validation, 405, 415, missing params…) to proper ProblemDetail responses — you only add domain handlers.
+It already maps Spring MVC's own exceptions (validation, 405, 415, missing params…) to proper ProblemDetail responses — you only add domain handlers, and override the protected `handleXxx` methods when you want to enrich the body (ShopFlow adds the `errors` list).
 
 **Q: Should you expose exception messages to clients?**
 Domain messages yes ("Insufficient stock for PS5-SLIM"); internal ones (SQL, stack traces) no. ShopFlow's downstream handler returns a generic "Try again later". The `DataIntegrityViolationException` handler also hides SQL details.
@@ -717,7 +747,7 @@ meterRegistry.counter("orders", "status", order.getStatus().name()).increment();
 ### Q&A
 
 **Q: Liveness vs readiness vs startup probe?**
-Liveness: "am I broken beyond repair?" → failing = restart. Readiness: "can I take traffic now?" → failing = removed from Service endpoints, no restart. Startup: protects slow-starting apps from liveness kills. Never put external dependencies in liveness.
+Liveness: "am I broken beyond repair?" → failing = restart. Readiness: "can I take traffic now?" → failing = removed from Service endpoints, no restart. Startup: protects slow-starting apps from liveness kills. Never put external dependencies in liveness. ShopFlow Deployments: startupProbe on `/actuator/health/liveness` (2s × 30), livenessProbe every 10s, readinessProbe on `/actuator/health/readiness` every 5s.
 
 **Q: Why is only `health,info,prometheus` exposed?**
 Least privilege: `env`, `heapdump`, `beans`, `configprops` can leak secrets. Expose more only on a separate management port / internal network.
@@ -744,7 +774,7 @@ High cardinality — never tag with userId/orderId. ShopFlow tags by `status` (5
 6. Fix + add a dashboard/alert so you catch it earlier next time.
 
 **S2. Pod OOM / `OutOfMemoryError`.**
-Distinguish: Java `OutOfMemoryError` in logs (heap) vs exit 137 OOMKilled (container limit). Heap: take heap dump (`-XX:+HeapDumpOnOutOfMemoryError`), analyse in MAT — unbounded caches, huge `findAll()` without pagination (ShopFlow's `GET /products` is unpaginated — fine for 4 products, risky for 4 million), large result sets. Container: `MaxRAMPercentage=75`, check thread count and direct memory, set request = limit for memory.
+Distinguish: Java `OutOfMemoryError` in logs (heap) vs exit 137 OOMKilled (container limit). Heap: take heap dump (`-XX:+HeapDumpOnOutOfMemoryError`), analyse in MAT — unbounded caches, huge `findAll()` without pagination (ShopFlow's `GET /products` is unpaginated — fine for 4 products, risky for 4 million), large result sets. Container: ShopFlow already uses `MaxRAMPercentage=75` with a 512Mi limit and `ExitOnOutOfMemoryError` (crash → K8s restarts a clean pod instead of limping); if still OOMKilled, check thread count and direct memory, lower the percentage or raise the limit. Many teams set memory request = limit for predictable scheduling.
 
 **S3. "Connection is not available, request timed out after 30000ms" (Hikari pool exhausted).**
 Causes: long transactions, remote calls inside `@Transactional` (exactly what `OrderService` avoids), OSIV holding connections (ShopFlow disables), connection leaks (unclosed manual JDBC), slow queries, pool too small for load. Diagnose: `hikaricp_connections_active/pending`, `leakDetectionThreshold`, thread dump. Fix root cause before increasing `DB_POOL_SIZE`; remember `pods × pool size ≤ DB max_connections`.
@@ -765,7 +795,7 @@ Check: self-invocation, private method, exception caught inside, checked excepti
 `ddl-auto: validate` found an entity/column mismatch: a Flyway migration wasn't applied or failed, or an entity changed without a migration. Check `flyway_schema_history`; add a new `V{n}__` migration — never edit an applied one (checksum mismatch).
 
 **S9. A deploy causes a burst of 502/connection-reset errors.**
-Pods killed while serving. Use `server.shutdown: graceful` + `timeout-per-shutdown-phase` (ShopFlow: 20s), a `preStop` sleep (~5–10s) so the endpoint is removed first, `terminationGracePeriodSeconds` > shutdown timeout, readiness probes so new pods only get traffic when ready, and rolling update with `maxUnavailable: 0`.
+Pods killed while serving, or new pods getting traffic too early. ShopFlow's answer, all in place: `server.shutdown: graceful` + `timeout-per-shutdown-phase: 20s`, `preStop: sleep 5` so the endpoint is removed from Service/Ingress first, `terminationGracePeriodSeconds: 45` (> 5 + 20), readiness probe so new pods only get traffic when ready, rolling update `maxUnavailable: 0, maxSurge: 1`, and a PDB `minAvailable: 1` for node drains.
 
 **S10. High CPU on one pod.**
 `top -H` / `jcmd Thread.print` a few times → hot threads; frequent GC (heap too small → GC thrashing); infinite loops; regex backtracking; heavy JSON serialisation. Use async-profiler / JFR (`jcmd <pid> JFR.start`).
