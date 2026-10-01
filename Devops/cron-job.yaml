@@ -6,7 +6,7 @@ metadata:
 spec:
   schedule: "* * * * *"  # every min runs
   successfulJobsHistoryLimit: 0
-  concurrencyPolicy: #Either Allow(parallel), Forbid(sequential), or Replace(cancels current creates new one)
+  concurrencyPolicy: Forbid # Either Allow(parallel), Forbid(sequential), or Replace(cancels current creates new one)
   failedJobsHistoryLimit: 0
   # suspend: true # to suspend needs to apply this for resume set it to false
   jobTemplate:

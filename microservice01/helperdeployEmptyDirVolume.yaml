@@ -21,8 +21,11 @@ spec:
         - name: helper-micro001
           image: rajji01/backend-micro002:emptydir
           resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
             limits:
-              memory: "128Mi"
+              memory: "512Mi"
               cpu: "500m"
           ports:
             - containerPort: 8081
@@ -30,7 +33,8 @@ spec:
             - name: cache-volume
               mountPath: /cache
           command: ["/bin/sh"]
-          args: ["-c", "echo 'This file is created by the deployment at start.' > /cache/myfile.txt && sleep 3600"]
+          # write the file into the shared emptyDir, then start the app so GET /api2/readFile can serve it
+          args: ["-c", "echo 'This file is created by the deployment at start.' > /cache/myfile.txt && exec java -jar /app/app.jar"]
       volumes:
         - name: cache-volume
           emptyDir: {}

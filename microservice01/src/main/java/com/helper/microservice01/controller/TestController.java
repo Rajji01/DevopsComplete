@@ -1,36 +1,38 @@
 package com.helper.microservice01.controller;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 
 @RestController
 @RequestMapping("/api2")
 public class TestController {
-    private static final String FILE_PATH = "/cache/myfile.txt";
-
     @Value("${testing.property}")
     private String value;
 
+    @Value("${cache.file.path}")
+    private String filePath;
+
     @GetMapping("/m2")
-    public String restApi(){
-    return value + "it's mine now response";
+    public String restApi() {
+        return value + " it's mine now response";
     }
 
-
+    //reads the file written into the emptyDir volume (helperdeployEmptyDirVolume.yaml)
     @GetMapping("/readFile")
-    public String readFileData() {
+    public ResponseEntity<String> readFileData() {
         try {
-            // Read the content of the file
-            return new String(Files.readAllBytes(Paths.get(FILE_PATH)));
+            return ResponseEntity.ok(Files.readString(Paths.get(filePath), StandardCharsets.UTF_8));
         } catch (IOException e) {
-            // Handle the exception if the file is not found or unreadable
-            return "File not found or unable to read.";
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("File not found or unable to read.");
         }
     }
 }
