@@ -47,7 +47,7 @@ trap 'echo cleaning; exit' TERM INT    # handle signals in bash
 ### A3. systemd
 
 ```bash
-systemctl status|start|stop|restart|reload nginx
+systemctl status nginx               # also: start | stop | restart | reload
 systemctl enable --now docker         # start at boot + now
 systemctl list-units --failed
 systemctl daemon-reload               # after editing unit files
@@ -60,6 +60,7 @@ Running a Spring Boot jar as a service (on a VM, without containers):
 # /etc/systemd/system/order-service.service
 [Unit]
 Description=ShopFlow order-service
+Wants=network-online.target
 After=network-online.target
 [Service]
 User=app
@@ -137,14 +138,15 @@ sed -i 's/newTag: latest/newTag: 3f9c2ab/' kustomization.yaml     # in-place rep
 sed '/^#/d' file                        # delete comment lines
 
 cut -d: -f1 /etc/passwd ; sort -u ; uniq -c ; wc -l ; head -n 50 ; tail -f app.log ; tail -n 200
-xargs: find . -name "*.log" -mtime +7 | xargs rm -f
+find . -name "*.log" -mtime +7 -print0 | xargs -0 rm -f    # xargs; -print0/-0 survive spaces in names
 find /var/log -name "*.gz" -mtime +30 -delete
 jq '.["log.level"]' logs.json ; kubectl get pods -o json | jq -r '.items[].metadata.name'
 ```
 ECS JSON logs (ShopFlow in K8s) are perfect for `jq`:
 ```bash
-kubectl logs deploy/order-service -n shopflow | jq -r 'select(."log.level"=="ERROR") | .message'
+kubectl logs deploy/order-service -n shopflow | jq -rR 'fromjson? | select(."log.level"=="ERROR") | .message'
 ```
+(`-R` + `fromjson?` skips non-JSON lines such as the startup banner; `kubectl logs deploy/...` reads one pod — use `-l app.kubernetes.io/name=order-service` for all.)
 
 ### A7. cron
 
@@ -168,7 +170,7 @@ kubectl logs deploy/order-service -n shopflow | jq -r 'select(."log.level"=="ERR
 crontab -e ; crontab -l
 0 2 * * * /opt/scripts/pg_backup.sh >> /var/log/pg_backup.log 2>&1
 ```
-Gotchas: cron has a minimal `PATH` and no profile → use absolute paths; time zone is the server's (K8s CronJob default UTC; `spec.timeZone` available); redirect output or you'll never see errors; overlapping runs → `flock` (K8s: `concurrencyPolicy: Forbid`).
+Gotchas: cron has a minimal `PATH` and no profile → use absolute paths; time zone is the server's (K8s CronJob: kube-controller-manager's zone, usually UTC; set `spec.timeZone`); redirect output or you'll never see errors; overlapping runs → `flock` (K8s: `concurrencyPolicy: Forbid`).
 
 ### A8. Bash scripting basics
 
@@ -199,7 +201,7 @@ wait_ready() {
 wait_ready inventory-service "$BASE_INV"
 wait_ready order-service "$BASE_ORDER"
 
-status=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_INV/api/v1/products")
+status=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_INV/api/v1/products" || true)   # || true: don't let set -e exit silently
 if [[ "$status" != "200" ]]; then
   echo "ERROR: GET /api/v1/products returned $status" >&2
   exit 1
@@ -260,12 +262,13 @@ Local dev: ShopFlow Ingress uses host `shopflow.local` → add `<minikube ip> sh
 - Status codes: 2xx success, 3xx redirect, 4xx client error (400, 401 unauthenticated, 403 forbidden, 404, 409 conflict, 429 rate-limited), 5xx server (500 bug, **502** bad gateway — proxy got invalid/no response from upstream, **503** unavailable — no healthy backends/overloaded, **504** gateway timeout — upstream too slow).
 - HTTP/1.1 keep-alive; HTTP/2 multiplexing over one TCP connection; HTTP/3 over QUIC/UDP.
 
-TLS 1.3 handshake (simplified):
+TLS 1.3 handshake (1-RTT, simplified):
 ```
-ClientHello (supported ciphers, key share, SNI=shop.example.com)
-   ◀── ServerHello (chosen cipher, key share) + Certificate + Finished
-Client verifies certificate chain → trusted CA, hostname matches SAN, not expired
-   ──▶ Finished ; both derive symmetric session keys → encrypted application data
+ClientHello (cipher suites, ECDHE key share, SNI=shop.example.com, ALPN h2/http1.1)
+   ◀── ServerHello (chosen suite, key share)            ← handshake keys derived from ECDHE here
+       {EncryptedExtensions, Certificate, CertificateVerify, Finished}   ← already encrypted
+Client verifies chain → trusted CA, hostname matches SAN, not expired; CertificateVerify proves key ownership
+   ──▶ {Finished} ; application data flows (TLS 1.2 needed 2 RTTs; 1.3 resumption can do 0-RTT)
 ```
 - Asymmetric crypto for key exchange/authentication, **symmetric** (AES-GCM/ChaCha20) for data.
 - **SNI** lets one IP/LB serve many certs. **mTLS** = client also presents a cert (service mesh).
@@ -354,7 +357,7 @@ Private ranges (RFC1918): `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`. Kuber
 | State | **Stateful** (return traffic auto-allowed) | **Stateless** (must allow return, ephemeral 1024–65535) |
 | Rules | Allow only | Allow + Deny, evaluated in number order |
 | Reference | Other SGs as source | CIDRs only |
-| Default | Deny all in, allow all out | Default NACL allows all |
+| Default | New SG: no inbound, all outbound | Default NACL allows all; a new custom NACL denies all until you add rules |
 
 ### C3. IAM essentials
 - **Policy** = JSON document: `Effect`, `Action`, `Resource`, `Condition`. Explicit **Deny** always wins; default is implicit deny.
@@ -434,13 +437,13 @@ terraform state list | show <addr> | mv | rm ; terraform import <addr> <id>
 - **Remote backend + locking** for teams: S3 bucket (versioned, encrypted) + locking. Two people running `apply` simultaneously would corrupt state; the lock prevents it.
 ```hcl
 terraform {
-  required_version = ">= 1.10"
+  required_version = ">= 1.11"
   backend "s3" {
     bucket       = "shopflow-tfstate-123456789012"
     key          = "prod/ecr/terraform.tfstate"
     region       = "ap-south-1"
     encrypt      = true
-    use_lockfile = true      # native S3 locking (TF 1.10+); older setups use dynamodb_table = "tf-locks"
+    use_lockfile = true      # native S3 lock file (added 1.10, GA 1.11); older setups use dynamodb_table (now deprecated)
   }
   required_providers {
     aws = { source = "hashicorp/aws", version = "~> 6.0" }
@@ -491,7 +494,7 @@ output "repository_urls" {
   value = { for k, r in aws_ecr_repository.svc : k => r.repository_url }
 }
 ```
-Note: `IMMUTABLE` tags conflict with pushing a moving `latest` tag (which `shopflow.yml` does on main) — you'd drop `latest` or use mutable repos. Good trade-off discussion.
+Note: `IMMUTABLE` tags conflict with pushing a moving `latest` tag (which `shopflow.yml` does on main) — you'd drop `latest`, use mutable repos, or (newer ECR feature) `IMMUTABLE_WITH_EXCLUSION` with `latest` excluded. Good trade-off discussion.
 
 ### D4. Modules, workspaces, environments
 - **Module** = reusable folder of `.tf` with inputs/outputs. Use registry modules (`terraform-aws-modules/vpc/aws`, `terraform-aws-modules/eks/aws`) or your own:
@@ -509,8 +512,8 @@ module "vpc" {
 ```
   Always **pin module and provider versions**.
 - **Workspaces**: multiple state files for the same config (`terraform workspace new staging`). Fine for identical envs; many teams prefer **separate directories per env** (`envs/dev`, `envs/prod`) with different backends — clearer, different blast radius, different credentials. (Same idea as ShopFlow's Kustomize `overlays/dev` vs `overlays/prod`.)
-- **Drift**: real infra changed outside Terraform (someone edited an SG in the console). `terraform plan` shows it; `terraform plan -refresh-only` to see/accept drift. Prevent with no console write access, scheduled drift-detection plans in CI.
-- `count` vs `for_each` (prefer `for_each` with maps/sets — removing an item doesn't shift indexes), `lifecycle { prevent_destroy = true, create_before_destroy = true, ignore_changes = [...] }`, `depends_on`.
+- **Drift**: real infra changed outside Terraform (someone edited an SG in the console). `terraform plan` shows it; `terraform plan -refresh-only` shows drift without proposing changes, `terraform apply -refresh-only` accepts it into state. Prevent with no console write access, scheduled drift-detection plans in CI.
+- `count` vs `for_each` (prefer `for_each` with maps/sets — removing an item doesn't shift indexes), `lifecycle` meta-arguments (`prevent_destroy`, `create_before_destroy`, `ignore_changes = [...]` — one per line inside the block; HCL blocks don't take commas), `depends_on`.
 - CI for Terraform: `fmt -check`, `validate`, `tflint`, `checkov`/`trivy config`, `plan` on PR (post as comment), `apply` on merge with approval — Atlantis or Terraform Cloud/HCP. Use OIDC for AWS creds.
 
 Terraform vs others: CloudFormation (AWS-only, managed state), Pulumi (real languages), CDK; OpenTofu = open-source fork of Terraform.
@@ -526,8 +529,8 @@ Terraform vs others: CloudFormation (AWS-only, managed state), Pulumi (real lang
 - hosts: app_servers
   become: true
   tasks:
-    - name: Install docker
-      ansible.builtin.package: { name: docker.io, state: present }
+    - name: Install docker + compose v2 plugin (Ubuntu package names)
+      ansible.builtin.package: { name: [docker.io, docker-compose-v2], state: present }
     - name: Ensure docker running
       ansible.builtin.service: { name: docker, state: started, enabled: true }
     - name: Copy compose stack
