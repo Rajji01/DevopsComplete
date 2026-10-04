@@ -17,15 +17,21 @@ shopflow/k8s/
 │   ├── order-service/      {deployment, service, hpa, pdb, kustomization}.yaml
 │   ├── inventory-service/  {deployment, service, hpa, pdb, kustomization}.yaml
 │   ├── notification-service/ {deployment, service, hpa, pdb, kustomization}.yaml   # Kafka consumer, port 8083
-│   ├── postgres/           {statefulset, service (headless), kustomization (configMapGenerator), init-db.sh}  # 3 logical DBs
+│   ├── payment-service/    {deployment, service, hpa, pdb, kustomization}.yaml   # Kafka consumer + producer, port 8084, DB payments
+│   ├── postgres/           {statefulset, service (headless), kustomization (configMapGenerator), init-db.sh}  # 4 logical DBs
 │   ├── kafka/              {statefulset (KRaft, 1 node, 2Gi PVC), service (headless 9092/9093)}
 │   ├── redis/              {deployment (no volume, allkeys-lru), service}
 │   └── keycloak/           {deployment (realm from ConfigMap, startupProbe /realms/shopflow), service, shopflow-realm.json}
 └── overlays/
-    ├── dev/kustomization.yaml      # tag :dev, secretGenerator (shopflow-db incl. notifications pwd, keycloak-admin), 1 replica, HPA 1-2
+    ├── dev/kustomization.yaml      # tag :dev, secretGenerator (shopflow-db incl. notifications + payments pwd, keycloak-admin), 1 replica, HPA 1-2
     └── prod/kustomization.yaml     # GHCR images pinned by CI, HPA 3-10, TLS host shop.example.com, ExternalSecret;
                                     # $patch: delete postgres/kafka/redis/keycloak (+ their NetworkPolicies) -> RDS/MSK/ElastiCache/Cognito;
-                                    # shopflow-endpoints replaced with managed endpoints; egress to VPC CIDR + 443 for Cognito JWKS
+                                    # shopflow-endpoints replaced with managed endpoints; egress to VPC CIDR + 443 for Cognito JWKS;
+                                    # service-accounts.yaml: SAs order/notification/payment-service with the kafka-clients IRSA role
+shopflow/helm/
+├── shopflow-service/               # generic chart: Chart.yaml, values.yaml, templates/{deployment,service,hpa,pdb,serviceaccount}.yaml, _helpers.tpl, NOTES.txt
+├── values/{order-service,order-service-prod,payment-service}.yaml   # one small values file per service / env
+└── README.md                       # Kustomize vs Helm comparison (see §18)
 ```
 
 ---
@@ -43,11 +49,11 @@ shopflow/k8s/
 | Spread | `topologySpreadConstraints` on `kubernetes.io/hostname`, `maxSkew: 1`, `ScheduleAnyway` | `deployment.yaml` |
 | HPA | `autoscaling/v2`, CPU 70% of request, min 2 / max 6 (prod 3/10), scaleDown window 300s | `hpa.yaml` |
 | PDB | `minAvailable: 1` | `pdb.yaml` |
-| Services | ClusterIP 8081 / 8082 / 8083; Postgres and Kafka headless (`clusterIP: None`; `kafka-0.kafka` for the controller quorum) | `service.yaml` |
+| Services | ClusterIP 8081 / 8082 / 8083 / 8084; Postgres and Kafka headless (`clusterIP: None`; `kafka-0.kafka` for the controller quorum) | `service.yaml` |
 | DB / broker | Postgres StatefulSet, `volumeClaimTemplates` 1Gi RWO, `fsGroup: 70`; Kafka StatefulSet (KRaft combined node) 2Gi PVC, `tcpSocket` readiness on 9092 | `postgres/statefulset.yaml`, `kafka/statefulset.yaml` |
 | Cache / IdP | Redis Deployment (no PVC — "losing it only costs cache misses"), Keycloak Deployment with realm ConfigMap + `startupProbe` on `/realms/shopflow` | `redis/`, `keycloak/` |
 | Endpoints | ConfigMap `shopflow-endpoints` consumed via `configMapKeyRef` (`KAFKA_BOOTSTRAP_SERVERS`, `REDIS_HOST`, `JWT_ISSUER_URI`, `OTLP_ENDPOINT`); prod overlay `configMapGenerator` with `behavior: replace` | `endpoints-configmap.yaml`, overlays |
-| Secrets | dev: `secretGenerator` (`shopflow-db` with 3 DB passwords, `keycloak-admin`); prod: External Secrets Operator / Sealed Secrets (not in git) | overlays |
+| Secrets | dev: `secretGenerator` (`shopflow-db` with 4 DB passwords incl. `payments-db-password`, `keycloak-admin`); prod: External Secrets Operator (`external-secret.yaml`, 4 keys from one Secrets Manager JSON) | overlays |
 | TLS | prod Ingress `tls` with `secretName: shopflow-tls` issued by cert-manager | `overlays/prod` |
 
 ---
@@ -542,8 +548,9 @@ default-deny-ingress         podSelector: {}  → no ingress to any pod in shopf
 order-service-ingress        from ns ingress-nginx, ns monitoring                         → 8081
 inventory-service-ingress    from pods order-service, ns ingress-nginx, ns monitoring     → 8082
 notification-service-ingress from ns monitoring only (no public API, Prometheus scrapes it) → 8083
-postgres-ingress             from pods order-service | inventory-service | notification-service → 5432
-kafka-ingress                from pods order-service | notification-service → 9092 ; from kafka pods → 9093 (controller quorum)
+payment-service-ingress      from ns monitoring only (no public API either: it only talks Kafka)    → 8084
+postgres-ingress             from pods order-service | inventory-service | notification-service | payment-service → 5432
+kafka-ingress                from pods order-service | notification-service | payment-service → 9092 ; from kafka pods → 9093 (controller quorum)
 redis-ingress                from pods inventory-service                    → 6379
 keycloak-ingress             from ns ingress-nginx (login/token), pods order-service (JWKS) → 8180
 ```
@@ -551,13 +558,14 @@ keycloak-ingress             from ns ingress-nginx (login/token), pods order-ser
 ingress-nginx ──▶ order-service ──▶ inventory-service ──▶ redis
      │              │   │   └──▶ keycloak (JWKS)   │
      │              │   └──▶ kafka ◀── notification-service
+     │              │        ▲  ◀── payment-service   (consumes orders.events, produces payments.events)
      └──────────────┼──▶ keycloak (token)          │
-monitoring (Prometheus) scrapes all three; apps send traces to monitoring:4318
-                    └──────▶ postgres ◀────────────┘   (only the three services can reach 5432)
+monitoring (Prometheus) scrapes all four; apps send traces to monitoring:4318
+                    └──────▶ postgres ◀────────────┘   (only the four services can reach 5432)
 ```
 - Multiple items in one `from` list = **OR**. A `namespaceSelector` and `podSelector` in the **same** item = **AND** (common bug).
 - Selecting namespaces uses the automatic label `kubernetes.io/metadata.name`.
-- Egress is locked down too: `default-deny-egress-allow-dns` selects every pod, denies all egress, and allows only UDP/TCP 53 to `k8s-app: kube-dns` in `kube-system`; then `order-service-egress` (→ inventory 8082, postgres 5432, kafka 9092, keycloak 8180, monitoring ns 4318 for traces), `notification-service-egress` (→ postgres, kafka, monitoring 4318) and `inventory-service-egress` (→ postgres, redis 6379, monitoring 4318). **Forgetting DNS** is the classic egress-policy mistake: every Service lookup fails and it looks like the app is broken.
+- Egress is locked down too: `default-deny-egress-allow-dns` selects every pod, denies all egress, and allows only UDP/TCP 53 to `k8s-app: kube-dns` in `kube-system`; then `order-service-egress` (→ inventory 8082, postgres 5432, kafka 9092, keycloak 8180, monitoring ns 4318 for traces), `notification-service-egress` (→ postgres, kafka, monitoring 4318), `payment-service-egress` (same three destinations — a payment pod has no business calling inventory or Keycloak) and `inventory-service-egress` (→ postgres, redis 6379, monitoring 4318). **Forgetting DNS** is the classic egress-policy mistake: every Service lookup fails and it looks like the app is broken.
 - Prod overlay: the in-cluster postgres/kafka/redis/keycloak NetworkPolicies are deleted with the workloads, and the egress policies get extra `ipBlock` rules — `10.0.0.0/16` (VPC CIDR) on 5432/9092/**9098** (MSK IAM listener) and 6379, plus `0.0.0.0/0:443` for order-service to fetch Cognito's JWKS. Managed services live **outside** the cluster, so pod selectors cannot describe them.
 
 ---
@@ -630,6 +638,47 @@ kubectl diff -k shopflow/k8s/overlays/prod                # what would change
 kubectl apply -k shopflow/k8s/overlays/dev
 ```
 `notes.txt` mentions the office using Helm: `helm install chartname chartfoldername -n namespace`. Know: `helm template`, `helm upgrade --install -f values-prod.yaml`, `helm rollback <release> <rev>`, `helm list -n ns`.
+
+### The ShopFlow Helm chart (`shopflow/helm/shopflow-service`) — same workload, other packaging
+
+One **generic chart** renders what `k8s/base/<service>/` contains (Deployment, Service, HPA, PDB) plus a ServiceAccount, driven by a values file per service:
+
+```yaml
+# helm/values/payment-service.yaml (complete file — this is the whole per-service difference)
+name: payment-service
+image:
+  repository: shopflow/payment-service
+port: 8084
+db:
+  name: payments
+  secretKey: payments-db-password
+env:
+  - name: KAFKA_BOOTSTRAP_SERVERS
+    valueFrom: { configMapKeyRef: { name: shopflow-endpoints, key: kafka-bootstrap-servers } }
+  - name: OTLP_ENDPOINT
+    valueFrom: { configMapKeyRef: { name: shopflow-endpoints, key: otlp-endpoint } }
+```
+`values.yaml` holds the defaults every service shares (`db.secretName: shopflow-db`, `poolSize: 5`, requests 250m/384Mi, memory limit 512Mi, HPA 2–6 at 70% CPU, PDB `minAvailable: 1`, `startupFailureThreshold: 30`), `helm/values/order-service-prod.yaml` layers the prod differences, and `--set image.tag=$(git rev-parse HEAD)` pins the build:
+
+```sh
+helm template order-service helm/shopflow-service -f helm/values/order-service.yaml | kubeconform -strict -   # CI-style validation
+helm upgrade --install order-service helm/shopflow-service -n shopflow -f helm/values/order-service.yaml \
+  -f helm/values/order-service-prod.yaml --set image.tag=$(git rev-parse HEAD)
+helm rollback order-service 1
+```
+
+What the comparison looks like with both in hand (`helm/README.md`):
+
+| | Kustomize (`k8s/`) | Helm (`helm/`) |
+|---|---|---|
+| Model | copy + patch (overlays) | template + values |
+| Reuse across services | `k8s/base/<service>` is copied per service (4 copies now) | one chart, N values files (~15 lines each) |
+| Logic in manifests | none — readable, but repetitive | `if`/`range`/helpers in `_helpers.tpl` — powerful, harder to read and to diff |
+| Releases / rollback | git history + `kubectl rollout undo` (Argo CD does the rest) | `helm history` / `helm rollback` per release |
+| Third-party software | awkward | the standard (ingress-nginx, External Secrets, Argo CD are Helm charts) |
+| Typical team setup | **both**: Helm for vendor charts, Kustomize (or Helm values per env) for your own apps | |
+
+Rule of thumb from the README: when you find yourself copying `k8s/base/<service>` for the fourth time, you want a chart — adding payment-service was exactly that fourth copy. Both outputs are validated the same way in CI terms (`kubeconform -strict`); Argo CD can sync either (it detects a `Chart.yaml` or a `kustomization.yaml`).
 
 ---
 
@@ -797,13 +846,13 @@ Every 15s (default sync period) it reads metrics from metrics-server and compute
 Voluntary disruptions — drains, upgrades, autoscaler scale-down — via the eviction API. Not node crashes. `minAvailable: 1` means a drain can't evict the last pod. Watch out: with 1 replica, it blocks drains forever.
 
 **Q11. What is a NetworkPolicy and how did you use it?**
-Pod-level firewall enforced by the CNI. Default-deny all ingress (and egress except DNS) in the namespace, then allow ingress-nginx and monitoring to the apps, order-service to inventory, order/notification to Kafka, inventory to Redis, order-service to Keycloak for the JWKS, and only the three services to Postgres on 5432.
+Pod-level firewall enforced by the CNI. Default-deny all ingress (and egress except DNS) in the namespace, then allow ingress-nginx and monitoring to the apps, order-service to inventory, order/notification/payment to Kafka, inventory to Redis, order-service to Keycloak for the JWKS, and only the four services to Postgres on 5432.
 
 **Q12. Pod is in CrashLoopBackOff — what do you do?**
 `kubectl describe` for exit code/reason and events, `kubectl logs --previous`. 137+OOMKilled → memory; probe failures → probe timing / startup probe; exit 1 → app logs (bad env, DB, Flyway). Fix and redeploy; `kubectl debug` if the image has no shell.
 
 **Q13. Kustomize or Helm — why Kustomize here?**
-For my own three services with small env differences, plain YAML + overlays is readable, needs no templating and is built into kubectl — and `$patch: delete` in the prod overlay cleanly swaps in-cluster Postgres/Kafka/Redis/Keycloak for managed AWS services. I'd use Helm to install third-party things like ingress-nginx, kube-prometheus-stack, cert-manager.
+For my own four services with small env differences, plain YAML + overlays is readable, needs no templating and is built into kubectl — and `$patch: delete` in the prod overlay cleanly swaps in-cluster Postgres/Kafka/Redis/Keycloak for managed AWS services. The honest counter-argument is in the repo too: by the fourth service `k8s/base/<service>` is a fourth copy, so I also wrote a generic chart (`helm/shopflow-service`) where a service is a 15-line values file; `helm/README.md` compares both. I'd use Helm for third-party things like ingress-nginx, kube-prometheus-stack, cert-manager, and for my own apps once the copies outnumber the readability benefit.
 
 **Q14. How do taints/tolerations differ from node affinity?**
 Taints are on nodes and repel pods that don't tolerate them; affinity is on pods and attracts them to nodes. A toleration only *allows* scheduling on a tainted node — to *force* it there you also need affinity.

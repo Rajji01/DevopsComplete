@@ -1,9 +1,9 @@
 # 04 — Docker (Interview Notes)
 
 > Source of truth in this repo:
-> - `shopflow/Dockerfile` — one multi-stage Dockerfile for all three services (build arg `SERVICE`)
+> - `shopflow/Dockerfile` — one multi-stage Dockerfile for all four services (build arg `SERVICE`)
 > - `shopflow/.dockerignore`
-> - `shopflow/docker-compose.yml` — postgres + kafka (KRaft) + redis + keycloak + order/inventory/notification services + prometheus + grafana + tempo + loki + alloy
+> - `shopflow/docker-compose.yml` — postgres + kafka (KRaft) + redis + keycloak + order/inventory/notification/payment services (8081–8084) + prometheus + grafana + tempo + loki + alloy
 > - Older learning versions: `Devops/Dockerfile`, `microservice01/Dockerfile`, Docker commands in `notes.txt`
 >
 > Rule: when you talk about "my project", only quote what is in these files. For anything else say
@@ -272,7 +272,7 @@ USER 10001
 - Non-root numeric user, drop capabilities (`capabilities.drop: ["ALL"]` in K8s).
 - **No secrets** in `ENV`/`ARG`/layers. Deleting a file in a later layer does not remove it from the earlier layer. Use BuildKit `--mount=type=secret` for build-time secrets; inject runtime secrets via env from K8s Secrets (ShopFlow: `DB_PASSWORD` from `shopflow-db`).
 - Scan images: **Trivy** in CI (`aquasecurity/trivy-action`, `severity: HIGH,CRITICAL`, `ignore-unfixed: true`, `exit-code: "1"`). Alternatives: Grype, Snyk, Docker Scout, ECR scanning.
-- Sign images (cosign/Sigstore) and generate SBOM (Syft) — not in the project; mention as next step.
+- Sign images and generate an SBOM — **in the pipeline now**: `anchore/sbom-action` (Syft) writes a CycloneDX SBOM per image, and after the push on `main` `cosign sign --yes <image>@<digest>` signs the digest keyless with the workflow's OIDC token (see [06](06-cicd-gitops.md) §9). Next step: verify signatures at admission (Kyverno).
 
 ---
 
@@ -328,7 +328,7 @@ Compose project `name: shopflow` → network `shopflow_default`. Each service is
 DB_URL: jdbc:postgresql://postgres:5432/orders          # "postgres" = service name
 INVENTORY_URL: http://inventory-service:8082            # container-to-container: container port
 ```
-Prometheus scrapes `order-service:8081` and `inventory-service:8082` (`monitoring/prometheus.yml`), Grafana reaches `http://prometheus:9090` (datasource provisioning).
+Prometheus scrapes `order-service:8081`, `inventory-service:8082`, `notification-service:8083` and `payment-service:8084` (`monitoring/prometheus.yml`), Grafana reaches `http://prometheus:9090` (datasource provisioning).
 
 Classic mistake: using `localhost` inside a container — `localhost` is the container itself, not the host or another container. From container → host service use `host.docker.internal` (Docker Desktop; on Linux add `extra_hosts: ["host.docker.internal:host-gateway"]`).
 
@@ -358,12 +358,13 @@ Gotcha: `init-db.sh` runs **only on first start with an empty data dir**. If you
 
 ```
                       host ports
-   8081          8082          8083         8180        9090        3000
+   8081          8082          8083         8180        9090        3000      (+ payment-service on 8084)
     │             │              │            │           │           │
 ┌───▼────────┐ ┌──▼──────────┐ ┌─▼─────────┐ ┌▼────────┐ ┌▼─────────┐ ┌▼───────┐
 │ order-     │─▶ inventory-  │ │notification│ │keycloak │ │prometheus│─▶grafana│◀─ tempo (traces)
 │ service    │ │ service     │ │ -service  │ │ realm   │ │ scrapes  │ │        │◀─ loki  (logs)  ◀─ alloy (docker.sock)
-│ JWT, outbox│ │ @Cacheable  │ │ consumer  │ │ shopflow│ │ 3 targets│ └────────┘
+│ JWT, outbox│ │ @Cacheable  │ │ consumer  │ │ shopflow│ │ 4 targets│ └────────┘   payment-service :8084 (not drawn): consumes kafka,
+│            │ │             │ │           │ │         │ │          │              own DB "payments", outbox → payments.events
 └──┬─────┬───┘ └──┬─────┬────┘ └─┬─────┬───┘ └─────────┘ └──────────┘
    │     │        │     │        │     │     all services: OTLP_ENDPOINT=http://tempo:4318/v1/traces,
    │     ▼        │     ▼        │     │     LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs, KAFKA_BOOTSTRAP_SERVERS=kafka:9092
@@ -374,7 +375,7 @@ Gotcha: `init-db.sh` runs **only on first start with an empty data dir**. If you
    │  └──────────────┘ └───────┘ │     │
    ▼                             ▼     │
    ┌──────────────────────────────┐    │
-   │ postgres:16-alpine           │◀───┘   init: init-db.sh → DBs "orders" + "inventory" + "notifications"
+   │ postgres:16-alpine           │◀───┘   init: init-db.sh → DBs "orders" + "inventory" + "notifications" + "payments"
    │ max_connections=200          │              (database-per-service)
    └──────────────────────────────┘
           network: shopflow_default (DNS by service name)
@@ -533,7 +534,7 @@ Modern JVMs read cgroup limits, but the default heap is only 25% of it. `MaxRAMP
 Compose puts all services on one user-defined bridge network with built-in DNS, so order-service uses `http://inventory-service:8082` and `jdbc:postgresql://postgres:5432/orders`. Container ports, not host ports. `localhost` would point to the container itself.
 
 **Q9. `depends_on` doesn't wait for the DB to be ready — how did you handle it?**
-Postgres has a healthcheck with `pg_isready`, Kafka with `kafka-broker-api-versions.sh`, Redis with `redis-cli ping`, and all three services use `depends_on: ... condition: service_healthy` (via the `x-service-defaults` anchor; inventory adds redis). Apps also have healthchecks on `/actuator/health/readiness` with a 40s `start_period`. In Kubernetes there's no depends_on — readiness probes and retries handle it (the outbox relay simply retries until Kafka is up; the Kafka consumer reconnects).
+Postgres has a healthcheck with `pg_isready`, Kafka with `kafka-broker-api-versions.sh`, Redis with `redis-cli ping`, and all four services use `depends_on: ... condition: service_healthy` (via the `x-service-defaults` anchor; inventory adds redis). Apps also have healthchecks on `/actuator/health/readiness` with a 40s `start_period`. In Kubernetes there's no depends_on — readiness probes and retries handle it (the outbox relay simply retries until Kafka is up; the Kafka consumer reconnects).
 
 **Q10. Volume vs bind mount?**
 Named volumes are Docker-managed and right for data like `pgdata`. Bind mounts map a host path and are right for config — I mount `prometheus.yml`, alert rules and `init-db.sh` read-only with `:ro`.

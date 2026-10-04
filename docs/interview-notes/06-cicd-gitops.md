@@ -1,10 +1,11 @@
 # 06 — CI/CD, GitOps & DevSecOps (Interview Notes)
 
 > Source of truth in this repo:
-> - `.github/workflows/shopflow.yml` — ShopFlow pipeline: test → validate manifests/config + Terraform fmt/validate → build 3 images + Trivy scan → push to GHCR (main only) → `deploy-manifests` pins the SHA into the prod overlay
+> - `.github/workflows/shopflow.yml` — ShopFlow pipeline: test → validate manifests/config + Terraform fmt/validate → build 4 images + Trivy scan + CycloneDX SBOM → push to GHCR (main only) + keyless cosign signature → `k6 inspect` on the load-test script → `deploy-manifests` pins the SHA into the prod overlay
 > - `.github/workflows/ci.yml` — older pipeline for `Devops/` and `microservice01/` (matrix build, docker build, kubeconform)
 > - `.github/dependabot.yml` — weekly Maven, Docker, GitHub Actions and Terraform updates
-> - `shopflow/Jenkinsfile` — the same stages as a Declarative Jenkins pipeline (matrix over the three services)
+> - `shopflow/Jenkinsfile` — the same stages as a Declarative Jenkins pipeline (matrix over the four services)
+> - `shopflow/helm/` — generic Helm chart `shopflow-service` + `values/*.yaml` + `README.md` with the Kustomize-vs-Helm comparison (the manifests Argo CD syncs are still the Kustomize overlays)
 > - `shopflow/argocd/application-dev.yaml`, `application-prod.yaml` — Argo CD Applications (dev: manual sync; prod: automated + prune + selfHeal)
 > - `shopflow/k8s/overlays/prod/kustomization.yaml` — image tags written by CI (`newTag: set-by-ci` until the first push to main)
 >
@@ -17,15 +18,16 @@
 | Concept | In ShopFlow | Where |
 |---|---|---|
 | Triggers | `push` to `main` + `pull_request`, filtered by `paths: ["shopflow/**", "infra/**", ".github/workflows/shopflow.yml"]` | `shopflow.yml` |
-| Jobs | `test`, `validate-manifests`, `terraform` (parallel) → `image` (`needs: [test, validate-manifests]`) → `deploy-manifests` (`needs: [image]`, main only) | `shopflow.yml` |
-| Matrix | `service: [order-service, inventory-service, notification-service]` | `image` job |
+| Jobs | `test`, `validate-manifests`, `terraform`, `loadtest-syntax` (parallel) → `image` (`needs: [test, validate-manifests]`) → `deploy-manifests` (`needs: [image]`, main only) | `shopflow.yml` |
+| Matrix | `service: [order-service, inventory-service, notification-service, payment-service]` | `image` job |
 | Terraform | `terraform fmt -check -recursive`, `init -backend=false`, `validate` on `infra/terraform/aws` (no plan/apply — needs the OIDC role) | `terraform` job |
-| GitOps step | `kustomize edit set image` ×3 with `${{ github.sha }}` in `k8s/overlays/prod`, commit + push with `GITHUB_TOKEN` (`contents: write`) | `deploy-manifests` job |
+| GitOps step | `kustomize edit set image` ×4 with `${{ github.sha }}` in `k8s/overlays/prod`, commit + push with `GITHUB_TOKEN` (`contents: write`) | `deploy-manifests` job |
 | Caching | `setup-java cache: maven`; Docker `cache-from/to: type=gha,scope=<service>` | `shopflow.yml` |
-| Permissions | top-level `contents: read`; `image` job adds `packages: write` | `shopflow.yml` |
+| Permissions | top-level `contents: read`; `image` job adds `packages: write` + `id-token: write` (OIDC for the AWS role and keyless cosign); `deploy-manifests` gets `contents: write` | `shopflow.yml` |
 | Concurrency | `group: ${{ github.workflow }}-${{ github.ref }}`, `cancel-in-progress: true` | `shopflow.yml` |
 | Tagging | full git SHA (+ `latest` on default branch) via `docker/metadata-action` | `image` job |
-| Security | Trivy (HIGH/CRITICAL, ignore-unfixed, exit 1), Dependabot | `shopflow.yml`, `dependabot.yml` |
+| Security | Trivy (HIGH/CRITICAL, ignore-unfixed, exit 1), CycloneDX SBOM (`anchore/sbom-action`, artifact `sbom-<service>.cdx.json`), keyless `cosign sign` of the pushed digest, Dependabot | `shopflow.yml`, `dependabot.yml` |
+| Load test | `loadtest-syntax` job: `grafana/setup-k6-action` + `k6 inspect shopflow/loadtest/flash-sale.js` (parses + evaluates options, no traffic) | `shopflow.yml` |
 | Push gating | `if: github.ref == 'refs/heads/main'` on login + push | `image` job |
 | Failure artifacts | `upload-artifact` surefire reports `if: failure()` | `test` job |
 
@@ -64,28 +66,32 @@ ShopFlow today = **CI + artifact publishing** (immutable image per commit on mai
  │ checkout, JDK 21     │ │ install kustomize v5.7.1 +       │ │ setup-terraform 1.13.3   │
  │ (temurin, maven cache) │   kubeconform v0.6.7             │ │ fmt -check -recursive    │
  │ ./mvnw -B verify     │ │ for each overlay (dev, prod):    │ │ init -backend=false      │
- │  (31 tests: H2,      │ │   kustomize build | kubeconform  │ │ validate                 │
+ │  (46 tests: H2,      │ │   kustomize build | kubeconform  │ │ validate                 │
  │   EmbeddedKafka,     │ │   -strict -summary -             │ │ (infra/terraform/aws)    │
  │   WireMock, jwt())   │ │ promtool check rules alert-rules │ └──────────────────────────┘
- │ on failure: upload   │ │ docker compose config --quiet    │
- │  surefire-reports    │ └───────────────┬──────────────────┘
- └──────────┬───────────┘                 │
-            └──────────────────┬──────────┘
+ │ on failure: upload   │ │ docker compose config --quiet    │   ┌──────────────────────────┐
+ │  surefire-reports    │ └───────────────┬──────────────────┘   │ loadtest-syntax          │
+ └──────────┬───────────┘                 │                      │ setup-k6 → k6 inspect    │
+            └──────────────────┬──────────┘                      │  loadtest/flash-sale.js  │
+                               │                                 └──────────────────────────┘
                                ▼  needs: [test, validate-manifests]
              ┌─────────────────────────────────────────────────────────────────┐
-             │ image  (matrix: order-service, inventory-service, notification-service)
+             │ image  (matrix: order-service, inventory-service, notification-service, payment-service)
              │ setup-buildx                                                    │
              │ metadata-action → tags: <sha>, latest(main)                     │
              │ build (load: true, GHA cache per service)                       │
              │ Trivy scan  → fail on fixable HIGH/CRITICAL                     │
+             │ SBOM: anchore/sbom-action → CycloneDX sbom-<svc>.cdx.json        │
              │ ── only on refs/heads/main ──                                   │
              │ login ghcr.io (GITHUB_TOKEN)                                    │
-             │ build-push (cache hit → fast) → GHCR                            │
+             │ build-push (cache hit → fast) → GHCR  (outputs.digest)          │
+             │ cosign sign --yes IMAGE@digest  (keyless, OIDC id-token)        │
+             │ optional: assume AWS role (OIDC) → mirror to ECR                │
              └───────────────────────────────┬─────────────────────────────────┘
                                              ▼  needs: [image], main only, permissions: contents: write
              ┌─────────────────────────────────────────────────────────────────┐
              │ deploy-manifests                                                │
-             │ kustomize edit set image shopflow/<svc>=ghcr.io/<owner>/shopflow-<svc>:<sha>  (×3)
+             │ kustomize edit set image shopflow/<svc>=ghcr.io/<owner>/shopflow-<svc>:<sha>  (×4)
              │ kustomize build . > /dev/null   (still renders?)                │
              │ git commit "deploy(prod): pin images to <sha7>" && git push     │
              │   → Argo CD (argocd/application-prod.yaml) syncs overlays/prod  │
@@ -101,11 +107,12 @@ ShopFlow today = **CI + artifact publishing** (immutable image per commit on mai
    - `promtool check rules` validates PromQL syntax of `monitoring/alert-rules.yml` (run inside the `prom/prometheus:v3.5.0` image with `--entrypoint promtool`). Honest gap: despite the step name, `prometheus.yml` itself is not checked — `promtool check config` would do it.
    - `docker compose config --quiet` validates compose YAML (anchors, merge keys).
    Downloaded tools are installed into `${{ runner.temp }}` and added to `$GITHUB_PATH`. Tools are version-pinned for reproducibility.
-4. **`image`** — matrix fans out per service (three). Builds once with `load: true` so the image exists in the runner's Docker for Trivy → scans **before** pushing (a vulnerable image never reaches the registry). Push step rebuilds with `cache-from` → effectively instant.
+4. **`image`** — matrix fans out per service (four). Builds once with `load: true` so the image exists in the runner's Docker for Trivy → scans **before** pushing (a vulnerable image never reaches the registry). Then `anchore/sbom-action` writes a **CycloneDX SBOM** of the local image and uploads it as the artifact `sbom-<service>.cdx.json` — when the next Log4Shell drops you grep the SBOMs instead of rescanning every image. Push step rebuilds with `cache-from` → effectively instant and exposes the pushed **digest**. `sigstore/cosign-installer` + `cosign sign --yes "$IMAGE@<digest>"` then signs that digest **keyless**: the job's OIDC token (`permissions: id-token: write`) proves "workflow X in repo Y on ref Z" to Fulcio, which issues a short-lived certificate; the signature and certificate go to the Rekor transparency log and next to the image in GHCR. No private key exists anywhere to leak. A Kyverno / sigstore policy-controller rule in the cluster can then refuse unsigned images (not in the repo yet).
+   **`loadtest-syntax`** — `grafana/setup-k6-action` + `k6 inspect shopflow/loadtest/flash-sale.js`: compiles the script and evaluates `options` (scenarios, thresholds) without sending traffic, so a typo in a threshold expression fails the PR instead of the night before the sale. The real run is manual against compose/minikube.
    **`terraform`** — runs in parallel: `fmt -check`, `init -backend=false` (providers only, no state bucket), `validate`. A real deploy job would assume the OIDC role from `ci-oidc.tf`, `plan` on PRs and `apply` on main behind an approval environment (the workflow comment says exactly this).
    **`deploy-manifests`** — the GitOps hand-off (details in §8).
 5. **`concurrency`** — a new push to the same branch/PR cancels the older run (saves minutes, and avoids an older run pushing after a newer one).
-6. **`permissions`** — least privilege: whole workflow `contents: read`; only `image` gets `packages: write`.
+6. **`permissions`** — least privilege: whole workflow `contents: read`; only `image` gets `packages: write` + `id-token: write` (one OIDC token serves both the AWS role assumption and keyless cosign), only `deploy-manifests` gets `contents: write`.
 
 Older `ci.yml` for contrast: runs on **every** push/PR (no path filter), matrix over `[Devops, microservice01]` with `defaults.run.working-directory: ${{ matrix.service }}`, Java 17, `mvn -B verify`, `docker build` without push, kubeconform on raw YAML.
 
@@ -154,7 +161,7 @@ AWS IAM role trust policy trusts the OIDC provider `token.actions.githubusercont
 
 ### Caching
 - `actions/setup-java` with `cache: maven` → caches `~/.m2/repository` keyed on hash of `**/pom.xml`.
-- Docker: `cache-from: type=gha,scope=${{ matrix.service }}` / `cache-to: type=gha,mode=max,...`. `scope` keeps the three services' caches separate (otherwise they overwrite each other). `mode=max` caches all stages (build + extract), not only final layers.
+- Docker: `cache-from: type=gha,scope=${{ matrix.service }}` / `cache-to: type=gha,mode=max,...`. `scope` keeps the four services' caches separate (otherwise they overwrite each other). `mode=max` caches all stages (build + extract), not only final layers.
 
 ---
 
@@ -341,7 +348,7 @@ spec:
       jsonPointers: [/spec/replicas]
 ```
 
-The tag-bump job in `shopflow.yml` (simplified — the real one sets all three images and has no `environment:` gate yet):
+The tag-bump job in `shopflow.yml` (simplified — the real one sets all four images and has no `environment:` gate yet):
 ```yaml
   deploy-prod:
     needs: image
@@ -375,11 +382,12 @@ Argo CD terms: Application, AppProject, sync, sync waves/hooks (e.g., run a migr
 | SCA / dependency scan | Dependabot, OWASP Dependency-Check, Snyk, `trivy fs` | **Dependabot** weekly for Maven (Spring deps grouped), Docker base images, GitHub Actions |
 | IaC / manifest scan | kubeconform (schema), Checkov, kube-linter, Trivy config, Kyverno policies | **kubeconform** (schema only) |
 | Container image scan | Trivy, Grype, Snyk, ECR scan | **Trivy**: `HIGH,CRITICAL`, `ignore-unfixed: true`, `exit-code: "1"` |
-| SBOM | Syft, `trivy image --format cyclonedx`, buildx `sbom: true` | Not yet — add `sbom: true` / `provenance` in build-push-action |
-| Signing / provenance | cosign (keyless via OIDC), SLSA provenance, admission verification (Kyverno/Connaisseur) | Not yet |
+| SBOM | Syft, `trivy image --format cyclonedx`, buildx `sbom: true` | **Yes**: `anchore/sbom-action@v0` (Syft) → CycloneDX JSON uploaded as `sbom-<service>.cdx.json` per image |
+| Signing / provenance | cosign (keyless via OIDC), SLSA provenance, admission verification (Kyverno/Connaisseur) | **Signing yes**: `sigstore/cosign-installer@v3` + `cosign sign --yes <image>@<digest>` with the job's OIDC identity on `main`. Not yet: SLSA provenance attestation, admission-time verification |
 | DAST | OWASP ZAP against staging | Not yet |
 | Runtime | Falco, PSA restricted, NetworkPolicies | PSA-compliant securityContext + NetworkPolicies in k8s/ |
-| Least privilege CI | `permissions:` block, OIDC, environments | **Yes**: `contents: read`, `packages: write` only for `image` |
+| Least privilege CI | `permissions:` block, OIDC, environments | **Yes**: `contents: read`, `packages: write` + `id-token: write` only for `image`, `contents: write` only for `deploy-manifests` |
+| Architecture rules | ArchUnit, Konsist | **Yes**: `order-service` `ArchitectureTest` (7 rules: controllers never touch repositories/entities, services never depend on Spring Web, no field injection, no `System.out`/JUL) runs inside `./mvnw verify` |
 
 ### Pinning actions to SHA
 ShopFlow uses tags: `actions/checkout@v7`, `aquasecurity/trivy-action@v0.36.0`. Tags are **mutable** — if an action repo is compromised, the attacker can move the tag (real incident: `tj-actions/changed-files`, March 2025 — tags repointed to a malicious commit that dumped CI secrets into build logs of repos using it, ~23k dependents). Hardening:
@@ -434,7 +442,7 @@ Each step is safe to roll back app-wise because the old app still finds what it 
 ## 12. Interview Q&A
 
 **Q1. Walk me through your pipeline.**
-On PRs and pushes to main touching `shopflow/` or `infra/`, three jobs run in parallel: tests with `./mvnw -B verify` on JDK 21 with Maven cache (31 tests incl. embedded Kafka and fake JWTs), config validation — every Kustomize overlay rendered and checked with kubeconform strict, Prometheus rules with promtool, the compose file — and Terraform `fmt`/`validate`. If tests and validation pass, a matrix job builds each of the three service images with Buildx and GHA cache, tags them with the full commit SHA, scans with Trivy and fails on fixable HIGH/CRITICAL CVEs. Only on main does it log in to GHCR with the GITHUB_TOKEN and push, and then a `deploy-manifests` job pins the SHA into `k8s/overlays/prod` and commits it; Argo CD syncs that overlay. Concurrency cancels superseded runs; permissions are read-only except `packages: write` for the image job and `contents: write` for the pin job.
+On PRs and pushes to main touching `shopflow/` or `infra/`, three jobs run in parallel: tests with `./mvnw -B verify` on JDK 21 with Maven cache (46 tests incl. embedded Kafka, fake JWTs and ArchUnit rules), config validation — every Kustomize overlay rendered and checked with kubeconform strict, Prometheus rules with promtool, the compose file — Terraform `fmt`/`validate`, and `k6 inspect` on the load-test script. If tests and validation pass, a matrix job builds each of the four service images with Buildx and GHA cache, tags them with the full commit SHA, scans with Trivy and fails on fixable HIGH/CRITICAL CVEs, and attaches a CycloneDX SBOM. Only on main does it log in to GHCR with the GITHUB_TOKEN and push, sign the pushed digest keyless with cosign using the job's OIDC token, and then a `deploy-manifests` job pins the SHA into `k8s/overlays/prod` and commits it; Argo CD syncs that overlay. Concurrency cancels superseded runs; permissions are read-only except `packages: write` for the image job and `contents: write` for the pin job.
 
 **Q2. CI vs continuous delivery vs continuous deployment?**
 CI: merge often, build and test automatically. Continuous delivery: every change produces a deployable artifact and deploying to prod is a manual decision. Continuous deployment: no manual gate. My project is at GitOps continuous **deployment** for prod (every main commit is pinned and auto-synced by Argo CD); adding a GitHub `environment: production` with required reviewers on the pin job would turn it into continuous delivery with an approval gate.
@@ -452,7 +460,7 @@ Groups runs by workflow + ref; a new push cancels the in-progress older run for 
 (Table §7.) Rolling is the default and what I use; blue-green for instant switch/rollback at 2× cost; canary for gradual exposure with metric-based analysis — I'd use the same 5xx-ratio PromQL as my HighErrorRate alert as the canary gate.
 
 **Q7. What is GitOps, and how is it done here?**
-Git is the source of truth; an in-cluster agent like Argo CD pulls and reconciles. CI's `deploy-manifests` job runs `kustomize edit set image` with the new SHA for all three services in `overlays/prod` and commits it; `argocd/application-prod.yaml` syncs that path with prune and self-heal (dev is synced manually). Rollback is `git revert` of the pin commit. No cluster credentials in CI. Improvement: a separate config repo so app and deploy history stay apart.
+Git is the source of truth; an in-cluster agent like Argo CD pulls and reconciles. CI's `deploy-manifests` job runs `kustomize edit set image` with the new SHA for all four services in `overlays/prod` and commits it; `argocd/application-prod.yaml` syncs that path with prune and self-heal (dev is synced manually). Rollback is `git revert` of the pin commit. No cluster credentials in CI. Improvement: a separate config repo so app and deploy history stay apart.
 
 **Q8. How do you handle DB schema changes with zero downtime?**
 Flyway versioned migrations, backward compatible, using expand-contract across releases so old and new pods can coexist during a rolling update. Hibernate `validate` catches drift at startup.
@@ -464,7 +472,13 @@ Trunk-based for microservices with CI/CD: small PRs, short-lived branches, featu
 Tags are mutable; a compromised action can retag malicious code and steal secrets (tj-actions incident). SHA pins are immutable; Dependabot updates them.
 
 **Q11. What is an SBOM and why care?**
-Software Bill of Materials — list of every component and version in an artifact (CycloneDX/SPDX). When a new CVE drops (like Log4Shell), you can query which images contain the library instantly instead of rescanning everything.
+Software Bill of Materials — list of every component and version in an artifact (CycloneDX/SPDX). When a new CVE drops (like Log4Shell), you can query which images contain the library instantly instead of rescanning everything. ShopFlow: `anchore/sbom-action` (Syft) produces `sbom-<service>.cdx.json` for every image build and keeps it as a workflow artifact; the next step would be attaching it to the image as a cosign attestation (`cosign attest --type cyclonedx`) so it travels with the digest.
+
+**Q11b. How does keyless signing work and what does it buy you?**
+`cosign sign` with no key: the workflow's OIDC token (claims `repo`, `ref`, `workflow`) is exchanged at Fulcio for a short-lived signing certificate, the signature is recorded in the Rekor transparency log and stored next to the image in the registry. Verification pins the *identity* (`--certificate-identity-regexp 'https://github.com/<owner>/<repo>/.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com`), so a image pushed by anything other than this pipeline fails even with a valid GHCR login. Nothing to rotate or leak. The missing half in the repo is admission: Kyverno `verifyImages` / sigstore policy-controller would make the cluster refuse unsigned digests.
+
+**Q11c. Kustomize or Helm for your own services?**
+ShopFlow ships both for the same Deployment/Service/HPA/PDB: Kustomize overlays in `k8s/` (what Argo CD syncs) and a generic chart `helm/shopflow-service` with one small values file per service (`helm/values/payment-service.yaml` is ~15 lines: name, image, port, DB name/secret key, Kafka/OTLP env). `helm/README.md` has the comparison: Kustomize = copy + patch, no logic, very readable, but `k8s/base/<service>` is copied per service; Helm = template + values, one chart for N services, `helm history`/`helm rollback` per release, and the standard for vendor software (ingress-nginx, External Secrets, Argo CD). Rule of thumb from the README: when you copy `k8s/base/<service>` for the fourth time, you want a chart — payment-service *was* the fourth copy. Either way the output is validated the same: `helm template ... | kubeconform -strict -`.
 
 **Q12. How do you make pipelines fast?**
 Path filters, parallel jobs, `needs` only where required, matrix, dependency caching (`cache: maven`), Docker layer cache (`type=gha`, per-service scope, `mode=max`), cancel superseded runs, fail fast (cheap checks first).

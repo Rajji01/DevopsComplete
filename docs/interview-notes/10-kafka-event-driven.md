@@ -16,25 +16,27 @@
 
 | Item | ShopFlow value | Where |
 |---|---|---|
-| Topic | `orders.events` (`OrderEvent.TOPIC`), DLT `orders.events.DLT` | `OrderEvent.java`, `KafkaErrorConfig` |
+| Topics | `orders.events` (`OrderEvent.TOPIC`; consumers: groups `notification-service`, `payment-service`) and `payments.events` (`PaymentEvent.TOPIC`; consumer: group `order-service`), DLTs `orders.events.DLT` / `payments.events.DLT` | `OrderEvent.java`, `PaymentEvent.java`, `KafkaErrorConfig` (×3) |
 | Key | `aggregateId` = `orderRef` → all events of one order on one partition, in order | `OutboxRelay.publishPending` |
-| Value | JSON string of `OrderEvent(eventId, type, orderRef, sku, quantity, status, occurredAt)` | `OrderService.toJson` |
-| Event types | `OrderConfirmed`, `OrderRejected`, `OrderFailed`, `OrderCancelled` (`"Order" + Capitalize(status)`) | `OrderEvent.from` |
+| Value | JSON string of `OrderEvent(eventId, type, orderRef, sku, quantity, status, occurredAt)` / `PaymentEvent(eventId, type, orderRef, amount, failureReason, occurredAt)` | `OutboxPublisher.toJson` (shared module) |
+| Event types | `OrderConfirmed`, `OrderPaid`, `OrderRejected`, `OrderFailed`, `OrderCancelled` (`"Order" + Capitalize(status)`); `PaymentCaptured`, `PaymentFailed` | `OrderEvent.from`, `PaymentEvent.captured/failed` |
 | Producer | `acks: all`, `enable.idempotence: true`, `KafkaTemplate<String,String>`, `send(...).get(5s)` | `application.yml`, `OutboxRelay` |
-| Outbox table | `outbox_event(id, aggregate_type, aggregate_id, event_type, payload, created_at, published_at)` + index `(published_at, created_at)` | `V2__outbox.sql` |
-| Relay | `@Scheduled(fixedDelayString = "${outbox.relay.delay:1s}")`, batch 100, `@Transactional`, `FOR UPDATE SKIP LOCKED` | `OutboxRelay`, `OutboxRepository` |
+| Outbox table | `outbox_event(id, topic, aggregate_type, aggregate_id, event_type, payload, created_at, published_at)` + index `(published_at, created_at)` — one per publishing service | order `V2__outbox.sql` + `V4__outbox_topic.sql`, payment `V1__payment.sql` |
+| Relay | shared module `shopflow-outbox`: `@Scheduled(fixedDelayString = "${outbox.relay.delay:1s}")`, batch 100, `@Transactional`, `FOR UPDATE SKIP LOCKED`, `send(event.getTopic(), aggregateId, payload)` | `OutboxRelay`, `OutboxRepository`, `OutboxPublisher` |
 | Cleanup | `@Scheduled(cron = "${outbox.cleanup.cron:0 30 3 * * *}")` (03:30 UTC daily) → `deletePublishedBefore(now - ${outbox.cleanup.retention:7d})`; unpublished rows never deleted | `OutboxRelay.cleanup`, `OutboxRepository` |
-| Saga timeout | `OrderReconciler` `@Scheduled(fixedDelay 60s)` → `reconcileFailedOrders(grace 2m)`: FAILED → idempotent `release` → CANCELLED + `OrderCancelled` event | `OrderReconciler`, `OrderService` |
-| MSK client auth | profile `aws` (`application-aws.yml`): `SASL_SSL` + `AWS_MSK_IAM` + `IAMLoginModule` + `IAMClientCallbackHandler`; runtime dep `aws-msk-iam-auth 2.3.9`; `SPRING_PROFILES_ACTIVE=aws` in the prod overlay | both services, `overlays/prod/kustomization.yaml` |
+| Saga step 2/3 | payment-service `OrderConfirmedListener` (group `payment-service`): `OrderConfirmed` → charge → `payment` row (PK = eventId) + `PaymentCaptured`/`PaymentFailed` outbox in one tx; order-service `PaymentEventListener` (group `order-service`): `processed_event` dedupe → PAID or release + CANCELLED | `OrderConfirmedListener`, `PaymentEventListener`, `OrderService.onPayment*` |
+| Saga timeout | `OrderReconciler` `@Scheduled(fixedDelay 60s)` → `reconcileFailedOrders(grace 2m)`: FAILED or PENDING → idempotent `release` → CANCELLED + `OrderCancelled` event | `OrderReconciler`, `OrderService` |
+| MSK client auth | profile `aws` (`application-aws.yml`): `SASL_SSL` + `AWS_MSK_IAM` + `IAMLoginModule` + `IAMClientCallbackHandler`; runtime dep `aws-msk-iam-auth 2.3.9`; `SPRING_PROFILES_ACTIVE=aws` in the prod overlay | order-, notification- and payment-service, `overlays/prod/kustomization.yaml` |
 | Backlog metric | gauge `outbox.unpublished` → Prometheus `outbox_unpublished` | `OutboxRelay` constructor |
-| Consumer | group `notification-service`, `enable-auto-commit: false`, `auto-offset-reset: earliest`, `isolation.level: read_committed` | notification `application.yml` |
-| Idempotency | `processed_event(event_id PK)` checked + inserted in the same `@Transactional` as the side effect | `OrderEventListener`, `ProcessedEvent` |
-| Errors | `DefaultErrorHandler(DeadLetterPublishingRecoverer, ExponentialBackOff(500ms, ×2, max 10s))` | `KafkaErrorConfig` |
-| Tracing | `spring.kafka.template.observation-enabled` / `listener.observation-enabled: true` → trace context in headers | both `application.yml` |
+| Consumers | groups `notification-service`, `payment-service` (both on `orders.events`, independent offsets) and `order-service` (on `payments.events`); all `enable-auto-commit: false`, `auto-offset-reset: earliest`, `isolation.level: read_committed` | notification / payment / order `application.yml` |
+| Idempotency | inbox table `processed_event(event_id PK)` checked + inserted in the same `@Transactional` as the side effect (notification-service, order-service `V5`); **PK = eventId** variant in payment-service (`payment.event_id`); `ProcessedEventCleanup` daily, 7d | `OrderEventListener`, `PaymentEventListener`, `Payment`, `ProcessedEventCleanup` |
+| Event-type filter | consumers act only on the types they own: payment-service returns early unless `type == "OrderConfirmed"`; order-service switches on `PaymentCaptured` / `PaymentFailed` and logs unknown types | `OrderConfirmedListener`, `PaymentEventListener` |
+| Errors | `DefaultErrorHandler(DeadLetterPublishingRecoverer, ExponentialBackOff(500ms, ×2, max 10s))` in all three consumers | `KafkaErrorConfig` (notification, payment, order) |
+| Tracing | `spring.kafka.template.observation-enabled` / `listener.observation-enabled: true` → trace context in headers | all Kafka `application.yml`s |
 | Broker (local) | `apache/kafka:4.1.0`, KRaft (`KAFKA_PROCESS_ROLES: broker,controller`), `KAFKA_NUM_PARTITIONS: 3`, RF 1 | compose + `k8s/base/kafka` |
 | Broker (prod) | Amazon MSK: 3 brokers / 3 AZs, `default.replication.factor=3`, `min.insync.replicas=2`, `num.partitions=6`, `auto.create.topics.enable=false`, IAM auth, TLS | `infra/terraform/aws/msk.tf` |
-| Alerts | `OutboxBacklogGrowing` (`outbox_unpublished > 100` for 5m, page), `KafkaConsumerLagHigh` (lag > 1000 for 10m, ticket) | `monitoring/alert-rules.yml` |
-| Tests | `@EmbeddedKafka(partitions = 1, topics = ...)`, `${spring.embedded.kafka.brokers}` in `application-test.yml`, relay delay 100ms | both test classes |
+| Alerts | `OutboxBacklogGrowing` (`outbox_unpublished > 100` for 5m, page), `KafkaConsumerLagHigh` (lag > 1000 for 10m, ticket), `PaymentFailureRateHigh` (`payments_total{status="FAILED"}` ratio > 0.5 for 10m, page) | `monitoring/alert-rules.yml` |
+| Tests | `@EmbeddedKafka(partitions = 1, topics = ...)`, `${spring.embedded.kafka.brokers}` in `application-test.yml`, relay delay 100ms | order, notification and payment test classes |
 
 ---
 
@@ -235,6 +237,25 @@ OrderEventListener.onOrderEvent(String payload)
    ├─ notify(event)   → log "EMAIL -> customer: Your order ... is confirmed"  (stand-in for SES/SNS/FCM)
    ├─ processedEvents.save(new ProcessedEvent(eventId, orderRef))   same tx as the side effect
    └─ return → container commits the Kafka offset
+   │
+   ▼  payment-service  @KafkaListener(topics="orders.events", groupId="payment-service")  @Transactional   (same records, own offsets)
+OrderConfirmedListener.onOrderEvent(String payload)
+   ├─ type != "OrderConfirmed" → return                        (OrderCancelled etc. are not ours; offset still committed)
+   ├─ payments.existsById(event.eventId()) → count payments.duplicates, return   (PK = eventId = the inbox)
+   ├─ amount = PriceList.priceOf(sku) × quantity ; gateway.charge(orderRef, amount)   (FakePaymentGateway: declined if > payment.card-limit 100000)
+   ├─ payments.save(new Payment(eventId, orderRef, amount, CAPTURED|FAILED, reason))
+   ├─ outbox.publish("payments.events", "Payment", orderRef, "PaymentCaptured"|"PaymentFailed", event)   INSERT outbox_event, same tx
+   └─ COMMIT → both rows or neither ; counter payments_total{status}
+   │
+   ▼  OutboxRelay (same shared class, payment-service pod) → topic payments.events (key = orderRef)
+   │
+   ▼  order-service  @KafkaListener(topics="payments.events", groupId="order-service")  @Transactional
+PaymentEventListener.onPaymentEvent(String payload)
+   ├─ processedEvents.existsById(eventId) → skip                (processed_event, V5__processed_event.sql)
+   ├─ "PaymentCaptured" → orderService.onPaymentCaptured(orderRef) → if CONFIRMED: markPaid() + saveWithEvent (OrderPaid)
+   ├─ "PaymentFailed"   → orderService.onPaymentFailed(orderRef, reason) → if CONFIRMED: inventoryClient.release + cancel("payment failed: …") + saveWithEvent (OrderCancelled)
+   ├─ default → log.warn unknown type
+   └─ processedEvents.save(new ProcessedEvent(eventId)) → COMMIT → offset committed
 ```
 
 Details worth saying out loud:
@@ -269,6 +290,9 @@ Details worth saying out loud:
 - check `existsById` → skip (and count `notifications.duplicates`),
 - otherwise do the side effect **and** insert the row **in the same `@Transactional`**: if the insert fails, the side effect's DB work rolls back; if two pods race on the same `eventId` (possible after a rebalance), the second insert hits the PK → exception → the record is retried, finds the row, and is skipped.
 - Honest limit: the "email" here is a log line. With a real SES call, the email could be sent and then the DB commit fail → the email goes twice on redelivery. Mitigation: make the provider call idempotent (SES/SNS message dedup ids) or move the send **after** commit with an outbox of its own.
+- **Variant without a separate table (payment-service):** the business row *is* the inbox — `payment.event_id` is the primary key and equals the `OrderConfirmed` `eventId`. One table, one constraint, and the duplicate check is `existsById`. It works because exactly one payment per triggering event is the business rule anyway (`order_ref` is unique too). The trade-off: it only dedupes events that *create* a row; a consumer that reacts to several event types for the same aggregate (order-service on `PaymentCaptured` and `PaymentFailed`) needs the general `processed_event` table, which is why order-service got one (`V5`). Also, a producer that re-emits the same business fact with a *new* `eventId` would be charged twice — the PK protects against redelivery, not against upstream re-emission (see [12](12-hard-interview-questions.md) D11).
+- **Retention:** `ProcessedEventCleanup` (notification- and order-service, `@Scheduled(cron = "${processed-events.cleanup-cron:0 50 3 * * *}")`, `processed-events.retention: 7d`) deletes rows older than the topic's retention — a redelivery older than that cannot happen anymore, so the table no longer grows forever.
+- **Event-type filtering:** every consumer reads the whole topic but acts only on its own types — payment-service returns before any DB lookup unless `type == "OrderConfirmed"` (`ignoresOtherOrderEvents` test), order-service `switch`es on the type and logs unknown ones. Ignored records still commit their offset; a thin topic-per-type design would avoid the reads but lose per-order ordering across types.
 
 Test: `processesEachEventExactlyOnceEvenWhenDeliveredTwice` sends the same JSON twice (same `eventId`), waits for `notifications.duplicates ≥ 1`, and asserts `notifications.sent{type=OrderConfirmed} == 1`.
 
@@ -317,11 +341,12 @@ return new DefaultErrorHandler(new DeadLetterPublishingRecoverer(template), back
 ### Choreography vs orchestration (and where ShopFlow sits)
 
 ```
-Orchestration (ShopFlow: reserve stock)          Choreography (ShopFlow: notify)
-OrderService ──HTTP──▶ inventory reserve         order-service ──event──▶ orders.events ──▶ notification-service
-    ◀── 201/409/5xx ──                                                        (could add: analytics, loyalty, search index)
-decides CONFIRMED/REJECTED/FAILED itself         producer does not know who listens
-cancel = compensation (release) by the same orchestrator
+Orchestration (ShopFlow: reserve stock)          Choreography (ShopFlow: payment + notify)
+OrderService ──HTTP──▶ inventory reserve         order-service ──OrderConfirmed──▶ orders.events ──▶ notification-service (group notification-service)
+    ◀── 201/409/5xx ──                                                                   └──▶ payment-service      (group payment-service)
+decides CONFIRMED/REJECTED/FAILED itself         payment-service ──PaymentCaptured|PaymentFailed──▶ payments.events ──▶ order-service (group order-service)
+cancel = compensation (release) by the same      order-service reacts: PAID, or release + CANCELLED (compensation triggered by an event)
+orchestrator                                     producer does not know who listens (could add: analytics, loyalty, search index)
 ```
 
 | | Orchestration | Choreography |
@@ -332,19 +357,19 @@ cancel = compensation (release) by the same orchestrator
 | Failure handling | explicit compensation steps (cancel → release) | each service handles its own compensation events |
 | Fits | a business transaction needing an immediate answer (stock yes/no) | fan-out side effects (email, analytics) |
 
-Why ShopFlow mixes both: the customer must know **now** whether stock was reserved → synchronous orchestration with timeouts/retry/breaker. Notifications must not slow down or fail the order → asynchronous event through the outbox. A fully event-driven reservation (order PENDING → `OrderPlaced` → inventory consumes → `StockReserved` → order CONFIRMED) is the next step and would remove the "inventory down = orders fail" coupling, at the cost of a PENDING state the UI must poll.
+Why ShopFlow mixes both: the customer must know **now** whether stock was reserved → synchronous orchestration with timeouts/retry/breaker. Payment and notifications must not slow down or fail the order → asynchronous events through the outbox; payment-service being down means lag, not failed orders, and order-service has no payment client, timeout or breaker to tune. The price is visibility: the saga is only visible end to end in Tempo (the `traceparent` header travels through both topics), so the state machine stays explicit in `OrderStatus` and both listeners are status-guarded (`Order::isConfirmed`) to make late/duplicate events harmless. A fully event-driven reservation (order PENDING → `OrderPlaced` → inventory consumes → `StockReserved` → order CONFIRMED) is the next step and would remove the "inventory down = orders fail" coupling, at the cost of a PENDING state the UI must poll.
 
-**Saga timeout handling — reconciliation of FAILED orders (as implemented).** A saga needs an answer for "the step neither succeeded nor failed": inventory timed out, or the breaker was open, so the order is FAILED and we do not know whether stock is reserved. `OrderReconciler` (`@Scheduled(fixedDelayString = "${orders.reconcile.delay:60s}")`) calls `OrderService.reconcileFailedOrders(grace)` with `orders.reconcile.grace: 2m`: `findTop100ByStatusAndUpdatedAtBefore(FAILED, now - grace)` (index `idx_orders_status_updated`) → for each order `inventoryClient.release(orderRef)` → `order.cancel()` → `saveWithEvent` → `OrderCancelled` through the outbox. Properties that make it safe: `release` is **idempotent** (unknown or already-released `orderRef` → no-op, RESERVED → stock back), so the worst case is a harmless no-op; the batch **stops on the first `RestClientException`/`CallNotPermittedException`** (inventory still down → try again in 60s, do not amplify the outage); the grace period gives the customer time to retry/cancel before the system decides. Design choice: compensate (release + CANCELLED) rather than re-run `reserve` to confirm — the customer already received a 503, and a surprise CONFIRMED later is worse than a definite CANCELLED. Test `reconcilerCancelsStaleFailedOrdersOnceInventoryIsBack`. Still open: a stuck **PENDING** (crash before the reserve result) is not swept yet — the same scheduler would be the place.
+**Saga timeout handling — reconciliation of FAILED orders (as implemented).** A saga needs an answer for "the step neither succeeded nor failed": inventory timed out, or the breaker was open, so the order is FAILED and we do not know whether stock is reserved. `OrderReconciler` (`@Scheduled(fixedDelayString = "${orders.reconcile.delay:60s}")`) calls `OrderService.reconcileFailedOrders(grace)` with `orders.reconcile.grace: 2m`: `findTop100ByStatusInAndUpdatedAtBefore(List.of(FAILED, PENDING), now - grace)` (index `idx_orders_status_updated`) → for each order `inventoryClient.release(orderRef)` → `order.cancel()` → `saveWithEvent` → `OrderCancelled` through the outbox. Properties that make it safe: `release` is **idempotent** (unknown or already-released `orderRef` → no-op, RESERVED → stock back), so the worst case is a harmless no-op; the batch **stops on the first `RestClientException`/`CallNotPermittedException`** (inventory still down → try again in 60s, do not amplify the outage); the grace period gives the customer time to retry/cancel before the system decides. Design choice: compensate (release + CANCELLED) rather than re-run `reserve` to confirm — the customer already received a 503, and a surprise CONFIRMED later is worse than a definite CANCELLED. Test `reconcilerCancelsStaleFailedOrdersOnceInventoryIsBack`. Still open: a stuck **PENDING** (crash before the reserve result) is not swept yet — the same scheduler would be the place.
 
 ### Amazon MSK notes (prod, from `infra/terraform/aws/msk.tf`)
 - 3 brokers across 3 AZs, `default.replication.factor=3`, `min.insync.replicas=2` → with `acks=all` a write needs leader + 1 follower; one AZ down still accepts writes. `auto.create.topics.enable=false` → topics are created deliberately (Terraform / admin), unlike the dev broker where `orders.events` is auto-created with 3 partitions on first send.
-- **IAM authentication** (`client_authentication.sasl.iam = true`): no passwords in the cluster; the pod's **IRSA** role is allowed `kafka-cluster:Connect/WriteData/ReadData` on specific topics. Client side: both Kafka services ship `software.amazon.msk:aws-msk-iam-auth:2.3.9` as a `runtime` dependency and an `application-aws.yml` with `security.protocol: SASL_SSL`, `sasl.mechanism: AWS_MSK_IAM`, `sasl.jaas.config: software.amazon.msk.auth.iam.IAMLoginModule required;`, `sasl.client.callback.handler.class: software.amazon.msk.auth.iam.IAMClientCallbackHandler`; the prod overlay patches `SPRING_PROFILES_ACTIVE=aws` onto both Deployments, so the default `application.yml` stays PLAINTEXT for the dev broker and nothing changes locally. The library takes credentials from the AWS default chain = the IRSA web-identity token. Honest note: this has never been run against a real MSK cluster. Port **9098** = IAM listener: the prod overlay's `kafka-bootstrap-servers` placeholder already uses `:9098`, the egress NetworkPolicy allows 9092 and 9098 to the VPC CIDR, and `service-accounts.yaml` gives order- and notification-service the IRSA-annotated ServiceAccounts (`serviceAccountName` patches) the `shopflow-kafka-clients` role trusts.
+- **IAM authentication** (`client_authentication.sasl.iam = true`): no passwords in the cluster; the pod's **IRSA** role is allowed `kafka-cluster:Connect/WriteData/ReadData/*Topic*` on topic ARNs `topic/<cluster>/*/orders.events*` and `topic/<cluster>/*/payments.events*`, and `AlterGroup/DescribeGroup` on group ARNs `group/<cluster>/*/notification-service`, `.../payment-service`, `.../order-service` (`irsa.tf`); the trust policy lists SAs `shopflow:order-service`, `shopflow:notification-service`, `shopflow:payment-service`. Client side: all three Kafka services ship `software.amazon.msk:aws-msk-iam-auth:2.3.9` as a `runtime` dependency and an `application-aws.yml` with `security.protocol: SASL_SSL`, `sasl.mechanism: AWS_MSK_IAM`, `sasl.jaas.config: software.amazon.msk.auth.iam.IAMLoginModule required;`, `sasl.client.callback.handler.class: software.amazon.msk.auth.iam.IAMClientCallbackHandler`; the prod overlay patches `SPRING_PROFILES_ACTIVE=aws` onto the three Deployments, so the default `application.yml` stays PLAINTEXT for the dev broker and nothing changes locally. The library takes credentials from the AWS default chain = the IRSA web-identity token. Honest note: this has never been run against a real MSK cluster. Port **9098** = IAM listener: the prod overlay's `kafka-bootstrap-servers` placeholder already uses `:9098`, the egress NetworkPolicy allows 9092 and 9098 to the VPC CIDR, and `service-accounts.yaml` gives order- and notification-service the IRSA-annotated ServiceAccounts (`serviceAccountName` patches) the `shopflow-kafka-clients` role trusts.
 - TLS in transit (`client_broker = "TLS"`, `in_cluster = true`), broker logs to CloudWatch, EBS 100 GB per broker.
 - Endpoints come from `terraform output` into the `shopflow-endpoints` ConfigMap (`behavior: replace` in `overlays/prod`); the in-cluster `kafka` StatefulSet and its NetworkPolicy are deleted by `$patch: delete`.
 
 ---
 
-## 4. Interview Q&A (29)
+## 4. Interview Q&A (31)
 
 **Q1. What is Kafka in one sentence, and why not RabbitMQ?**
 A distributed, partitioned, replicated commit log: producers append, consumers pull and track their own offsets, data is retained and replayable. RabbitMQ is a smart broker/dumb consumer queue (routing, per-message ack, delete on consume) — better for task queues and complex routing; Kafka for event streams, replay, multiple independent consumer groups and high throughput.
@@ -380,7 +405,7 @@ Key decides partition → ordering for all events of one order. `eventId` is uni
 No extra infrastructure (Kafka Connect, replication slots), one indexed query per second is negligible, 1s latency is fine for emails. I would move to Debezium when event volume or latency requirements grow.
 
 **Q12. How does the consumer guarantee a notification is not sent twice?**
-`@KafkaListener` + `@Transactional`: look up `processed_event` by `eventId`; if present, skip and count a duplicate; otherwise notify and insert the row in the same transaction. Offsets are committed only after the method returns (`enable-auto-commit: false`).
+`@KafkaListener` + `@Transactional`: look up `processed_event` by `eventId`; if present, skip and count a duplicate; otherwise notify and insert the row in the same transaction. Offsets are committed only after the method returns (`enable-auto-commit: false`). payment-service does the same with no extra table: `payment.event_id` is the primary key, so `existsById(eventId)` is the check and the PK is the race guard (`redeliveredEventChargesOnlyOnce`).
 
 **Q13. What is a poison pill and how do you handle it?**
 A record that fails every time (bad JSON, unexpected type). `DefaultErrorHandler` retries with `ExponentialBackOff(500ms, ×2)` up to 10s, then `DeadLetterPublishingRecoverer` moves it to `orders.events.DLT` with exception headers; the partition continues. Someone monitors and replays the DLT.
@@ -410,10 +435,10 @@ Avro: compact, explicit contract, enforced compatibility, codegen; needs a regis
 KRaft replaces ZooKeeper with an internal Raft quorum for metadata — one system, faster failover, more partitions; Kafka 4.x is KRaft-only. ShopFlow runs a combined broker+controller node for dev; MSK manages this in prod.
 
 **Q22. How do you secure Kafka?**
-TLS in transit; authentication via SASL (SCRAM, OAUTHBEARER) or mTLS, on MSK **IAM** via IRSA; ACLs per topic/group; network-level restriction (ShopFlow: `kafka-ingress` NetworkPolicy allows only order- and notification-service to 9092; MSK security group allows only EKS node SGs).
+TLS in transit; authentication via SASL (SCRAM, OAUTHBEARER) or mTLS, on MSK **IAM** via IRSA; ACLs per topic/group; network-level restriction (ShopFlow: `kafka-ingress` NetworkPolicy allows only order-, notification- and payment-service to 9092; MSK security group allows only EKS node SGs; the IAM policy names the two topics and the three consumer groups, so a compromised pod cannot read a topic it does not own).
 
 **Q23. Does Kafka replace your REST call to inventory?**
-Not today: stock reservation needs an immediate answer, so it stays synchronous (orchestration). Kafka carries the side effects (notifications). Moving reservation to events would decouple availability but introduce a PENDING state the UI must handle.
+Not for the reservation: it needs an immediate answer, so it stays synchronous (orchestration). Kafka carries the rest of the saga — payment (`orders.events` → payment-service → `payments.events` → order-service) and notifications — as choreography. Moving reservation to events too would decouple availability but introduce a PENDING state the UI must handle.
 
 **Q24. How do you trace a request across Kafka?**
 Micrometer observation on `KafkaTemplate` and the listener container (`observation-enabled: true`) propagates `traceparent` in record headers; Tempo shows order-service HTTP span → producer span → notification-service consumer span. Logs carry `trace.id` for correlation (see note 11).
@@ -431,7 +456,13 @@ Minimum ISR count for an `acks=all` write to succeed. RF 3 / min ISR 2 tolerates
 Not anymore: `OutboxRelay.cleanup` runs daily at 03:30 UTC (`outbox.cleanup.cron`) and deletes rows with `published_at < now - 7d` (`outbox.cleanup.retention`) via `OutboxRepository.deletePublishedBefore`; unpublished rows are never deleted, so a backlog survives housekeeping. Retention equals the broker's 7-day log retention. At high volume I would partition by day and drop partitions instead of bulk deletes.
 
 **Q29. How does your saga handle a step that times out?**
-The order is FAILED (outcome unknown) and the client gets 503 with the `orderId`. `OrderReconciler` runs every 60s and, for FAILED orders older than a 2-minute grace, calls inventory's idempotent `release` and marks them CANCELLED with an `OrderCancelled` event; if inventory is still down it stops the batch and retries next minute. So a timeout always converges to a definite state and leaked reservations are freed without a human.
+The order is FAILED (outcome unknown) and the client gets 503 with the `orderId`. `OrderReconciler` runs every 60s and, for FAILED **or PENDING** orders older than a 2-minute grace (a pod that died mid-request leaves PENDING), calls inventory's idempotent `release` and marks them CANCELLED with an `OrderCancelled` event; if inventory is still down it stops the batch and retries next minute. So a timeout always converges to a definite state and leaked reservations are freed without a human. Honest gap: there is no timeout from CONFIRMED yet — if payment-service is down, orders wait (with stock reserved) until it is back; the symptom is `KafkaConsumerLagHigh` on group `payment-service`.
+
+**Q30. Walk me through the payment step.**
+`OrderConfirmed` lands on `orders.events`; group `payment-service` reads it (notification-service reads the same record with its own offsets). `OrderConfirmedListener` ignores every other type, skips the record if a `payment` row with that `eventId` exists, otherwise charges `PriceList × quantity` through the `PaymentGateway` interface (`FakePaymentGateway` declines above `payment.card-limit`), and in one transaction saves the `payment` row plus a `PaymentCaptured` or `PaymentFailed` outbox row. The shared `OutboxRelay` publishes it to `payments.events` keyed by `orderRef`. order-service (group `order-service`) dedupes on `processed_event` and either marks the order PAID or releases the stock and cancels it with `failureReason = "payment failed: <reason>"`. Both branches run only while the order is still CONFIRMED, so a duplicate or late event is a no-op. Failures in either listener roll back the DB transaction, leave the offset uncommitted, retry with backoff and finally go to the topic's `.DLT`.
+
+**Q31. Why does order-service need a `processed_event` table when payment-service manages with a primary key?**
+payment-service creates exactly one row per triggering event, so the row's PK can double as the inbox. order-service *updates* an existing row (the order) in reaction to two different event types; there is no new row whose key could be the `eventId`, and the status guard alone would not count duplicates or protect a `PaymentFailed` arriving twice from calling `release` twice (harmless here because release is idempotent, but not in general). Hence the general inbox table (`V5__processed_event.sql`) with `ProcessedEventCleanup` to keep it bounded.
 
 ---
 

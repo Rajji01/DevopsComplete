@@ -14,19 +14,19 @@
 | Kubernetes | EKS **1.33**, managed node group `general`: t3.large, ON_DEMAND, min 2 / desired 3 / max 6 (`eks.tf`) |
 | Add-ons | coredns, kube-proxy, vpc-cni, eks-pod-identity-agent, aws-ebs-csi-driver, metrics-server |
 | Pod → AWS identity | IRSA (OIDC) roles: external-secrets, kafka-clients, aws-load-balancer-controller (`irsa.tf`) |
-| Registry | 3 ECR repos, IMMUTABLE tags, scan on push, keep last 30 (`ecr.tf`). CI pushes to GHCR **and mirrors the same SHA-tagged image to ECR via OIDC** when the repo variable `AWS_ROLE_ARN` is set (`aws-actions/configure-aws-credentials@v6` + `amazon-ecr-login@v2`); the prod overlay still names the GHCR images |
+| Registry | 4 ECR repos (`order-service`, `inventory-service`, `notification-service`, `payment-service`), IMMUTABLE tags, scan on push, keep last 30 (`ecr.tf`). CI pushes to GHCR **and mirrors the same SHA-tagged image to ECR via OIDC** when the repo variable `AWS_ROLE_ARN` is set (`aws-actions/configure-aws-credentials@v6` + `amazon-ecr-login@v2`); the prod overlay still names the GHCR images |
 | Database | RDS PostgreSQL 16, `db.t4g.medium` (Graviton), Multi-AZ, gp3 50→200 GB autoscaling, encrypted, 7-day backups, Performance Insights, Enhanced Monitoring 60s (`rds.tf`) |
 | DB params | `max_connections=300` (pending-reboot), `log_min_duration_statement=500` ms |
 | Cache | ElastiCache Redis 7.1 replication group, 2 nodes (primary + replica), Multi-AZ auto-failover, TLS + at-rest encryption (`elasticache.tf`) |
 | Messaging | MSK Kafka 3.6.0, 3 brokers `kafka.t3.small`, 100 GB each, IAM auth (SASL/IAM, port 9098), TLS, `default.replication.factor=3`, `min.insync.replicas=2`, `num.partitions=6`, `auto.create.topics.enable=false`, 7-day retention, JMX + node exporter (`msk.tf`) |
 | Identity | Cognito user pool (email login, MFA optional, 12-char passwords), public app client with PKCE, groups `customer` / `support`, access/ID token 15 min, refresh 30 days (`cognito.tf`) |
-| Secrets | Secrets Manager `shopflow/prod/db` (JSON: master, orders, inventory, notifications, host, port) → External Secrets Operator → K8s Secret `shopflow-db`, refresh 1h |
+| Secrets | Secrets Manager `shopflow/prod/db` (JSON: master, orders, inventory, notifications, **payments**, host, port) → External Secrets Operator → K8s Secret `shopflow-db` (keys `*-db-password` incl. `payments-db-password`), refresh 1h |
 | CI → AWS | GitHub OIDC provider + role `shopflow-github-actions`, trust pinned to `repo:Rajji01/DevopsComplete:ref:refs/heads/main`, ECR push only (`ci-oidc.tf`) |
 | State | S3 backend, `use_lockfile = true` (S3 native locking, TF ≥ 1.11), encrypted, versioned bucket (`versions.tf`) |
 | Providers | `hashicorp/aws ~> 6.0`, `random ~> 3.6`; modules `terraform-aws-modules/vpc ~> 6.0`, `eks ~> 21.0`, `iam ~> 5.0` |
 | Ingress | AWS Load Balancer Controller, `ingressClassName: alb`, internet-facing, `target-type: ip`, HTTPS 443 with ACM cert, health check `/actuator/health/readiness` (prod overlay); NetworkPolicy ingress from the VPC CIDR `10.0.0.0/16` on 8081/8082 so the ALB ENIs can reach the pods |
 | DNS / TLS | `dns.tf`: `aws_acm_certificate` (DNS validation) + `aws_route53_record` validation records + `aws_acm_certificate_validation`, created only when `hosted_zone_id` is set; output `acm_certificate_arn` goes into the Ingress annotation (overlay placeholder is `REPLACE-ME`) |
-| Pod identity in the overlay | `k8s/overlays/prod/service-accounts.yaml`: ServiceAccounts `order-service` / `notification-service` annotated with `eks.amazonaws.com/role-arn` (kafka-clients role) + `serviceAccountName` patches on the two Deployments; `external-secrets-sa` in `external-secret.yaml` |
+| Pod identity in the overlay | `k8s/overlays/prod/service-accounts.yaml`: ServiceAccounts `order-service` / `notification-service` / `payment-service` annotated with `eks.amazonaws.com/role-arn` (kafka-clients role) + `serviceAccountName` patches on the three Kafka Deployments; `external-secrets-sa` in `external-secret.yaml` |
 | Cost | ~**$400–600/month** at these defaults (README) |
 
 ---
@@ -58,7 +58,7 @@
  Cognito (JWT issuer, JWKS)   Secrets Manager (db passwords)   ECR (images)   STS (IRSA)   CloudWatch
 ```
 
-Narrative: *"Only the three stateless Spring Boot services run on EKS; everything stateful is a managed service. The ALB terminates TLS with an ACM cert and routes `/api/v1/orders` to order-service and `/api/v1/products` to inventory-service. order-service validates Cognito JWTs, calls inventory over HTTP, writes orders plus an outbox row to RDS, and a relay publishes to MSK with IAM auth. notification-service consumes from MSK. inventory-service caches in ElastiCache. No passwords live in Git: External Secrets pulls them from Secrets Manager using an IRSA role. GitHub Actions gets AWS credentials via OIDC, no access keys."*
+Narrative: *"Only the four stateless Spring Boot services run on EKS; everything stateful is a managed service. The ALB terminates TLS with an ACM cert and routes `/api/v1/orders` to order-service and `/api/v1/products` to inventory-service. order-service validates Cognito JWTs, calls inventory over HTTP, writes orders plus an outbox row to RDS, and a relay publishes to MSK with IAM auth. notification-service consumes from MSK. inventory-service caches in ElastiCache. No passwords live in Git: External Secrets pulls them from Secrets Manager using an IRSA role. GitHub Actions gets AWS credentials via OIDC, no access keys."*
 
 ### 1.1 File → resource map
 
@@ -68,12 +68,12 @@ Narrative: *"Only the three stateless Spring Boot services run on EKS; everythin
 | `variables.tf` | region, env, sizes, `db_multi_az`, `github_repository`, `domain_name` | One place to turn prod → cheap dev (`db_multi_az=false`, smaller types) |
 | `vpc.tf` | VPC module: 9 subnets, NAT/AZ, DB subnet group, LB-controller subnet tags | Subnet tags `kubernetes.io/role/elb` / `internal-elb` are how the controller finds subnets |
 | `eks.tf` | EKS module v21: cluster, IRSA OIDC provider, add-ons, managed node group | `enable_cluster_creator_admin_permissions` = the applier becomes admin via access entries |
-| `ecr.tf` | 3 repos, immutable, scan-on-push, lifecycle keep 30 | What the overlay names is exactly what runs; rollbacks to any of the last 30 SHAs |
+| `ecr.tf` | 4 repos (`for_each` over the service names), immutable, scan-on-push, lifecycle keep 30 | What the overlay names is exactly what runs; rollbacks to any of the last 30 SHAs |
 | `rds.tf` | SG (5432 from node SG only), parameter group, instance, Enhanced Monitoring role, Secrets Manager secret | DB is reachable only from the cluster's node security group |
 | `elasticache.tf` | SG, subnet group, replication group | Cache loss = cache misses, so small + 1 replica is enough |
 | `msk.tf` | SG (9092–9098 from nodes), MSK configuration, log group, cluster | RF 3 / ISR 2 survives one broker or AZ loss without losing acknowledged writes |
 | `cognito.tf` | user pool, app client, hosted domain, groups | Replaces Keycloak; `JwtRolesConverter` already reads `cognito:groups` |
-| `irsa.tf` | 3 IRSA roles + 2 policies | Pods get scoped IAM roles via ServiceAccount, no keys |
+| `irsa.tf` | 3 IRSA roles + 2 policies; the kafka-clients role trusts SAs `order-service`, `notification-service`, `payment-service` and allows topics `orders.events*` + `payments.events*`, groups `notification-service` / `payment-service` / `order-service` | Pods get scoped IAM roles via ServiceAccount, no keys |
 | `ci-oidc.tf` | GitHub OIDC provider, role, ECR push policy | CI pushes images without a stored secret |
 | `dns.tf` | ACM certificate for `domain_name`, Route 53 DNS-validation records, `aws_acm_certificate_validation` (all `count`-gated on `hosted_zone_id != ""`) | Validation waits until ACM has issued the cert, so the output ARN is usable; the ALB's own DNS name only exists after the Ingress, hence external-dns or a manual alias record |
 | `outputs.tf` | endpoints, ARNs, `configure_kubectl` | Paste into `k8s/overlays/prod/kustomization.yaml` + `external-secret.yaml` |
@@ -186,7 +186,7 @@ works with Fargate, self-managed, outside EKS  EKS EC2 nodes only (no Fargate at
 
 ShopFlow uses **IRSA** (`enable_irsa = true`, `irsa.tf` modules) because External Secrets and the LB controller docs assume it; the `eks-pod-identity-agent` add-on is installed so the Kafka-clients role could be moved to Pod Identity later. How a pod gets creds (full answer in Q&A): the EKS pod-identity webhook sees the annotated SA, injects env vars `AWS_ROLE_ARN` + `AWS_WEB_IDENTITY_TOKEN_FILE` and a projected token volume; the AWS SDK's default credential chain exchanges the token at STS.
 
-**How the overlay wires it:** the base Deployments set `automountServiceAccountToken: false` and no `serviceAccountName`. The prod overlay adds `service-accounts.yaml` (ServiceAccounts `order-service` and `notification-service`, annotated `eks.amazonaws.com/role-arn: .../shopflow-kafka-clients`) and patches `serviceAccountName` onto the two Deployments; the role's trust policy lists exactly `shopflow:order-service` and `shopflow:notification-service` (`irsa.tf`). IRSA still works with `automountServiceAccountToken: false` because the webhook mounts its own projected-token volume. The same patch also sets `SPRING_PROFILES_ACTIVE=aws`, which activates the services' MSK IAM client config (see §7.2).
+**How the overlay wires it:** the base Deployments set `automountServiceAccountToken: false` and no `serviceAccountName`. The prod overlay adds `service-accounts.yaml` (ServiceAccounts `order-service` and `notification-service`, annotated `eks.amazonaws.com/role-arn: .../shopflow-kafka-clients`) and patches `serviceAccountName` onto the two Deployments; the role's trust policy lists exactly `shopflow:order-service`, `shopflow:notification-service` and `shopflow:payment-service` (`irsa.tf`). IRSA still works with `automountServiceAccountToken: false` because the webhook mounts its own projected-token volume. The same patch also sets `SPRING_PROFILES_ACTIVE=aws`, which activates the services' MSK IAM client config (see §7.2).
 
 ### 3.5 Access: who can `kubectl`?
 
@@ -329,9 +329,9 @@ b-1           b-2           b-3           number_of_broker_nodes = 3 (must be a 
 
 ### 7.2 Auth and encryption
 
-- `client_authentication.sasl.iam = true`: clients connect to port **9098** (attribute `bootstrap_brokers_sasl_iam`, exported as output `kafka_bootstrap_servers_iam`) with `SASL_SSL` + `AWS_MSK_IAM` and sign with their IAM identity (IRSA role `shopflow-kafka-clients`). Policy in `irsa.tf`: `kafka-cluster:Connect` on the cluster, `WriteData/ReadData/*Topic*` on `topic/shopflow/*/orders.events*` (covers `.DLT`), `AlterGroup/DescribeGroup` on `group/shopflow/*/notification-service`. **Least privilege at topic level.**
+- `client_authentication.sasl.iam = true`: clients connect to port **9098** (attribute `bootstrap_brokers_sasl_iam`, exported as output `kafka_bootstrap_servers_iam`) with `SASL_SSL` + `AWS_MSK_IAM` and sign with their IAM identity (IRSA role `shopflow-kafka-clients`). Policy in `irsa.tf`: `kafka-cluster:Connect` on the cluster, `WriteData/ReadData/*Topic*` on `topic/shopflow/*/orders.events*` and `topic/shopflow/*/payments.events*` (the wildcard suffix covers `.DLT`), `AlterGroup/DescribeGroup` on `group/shopflow/*/notification-service`, `.../payment-service` and `.../order-service` (order-service consumes `payments.events`). **Least privilege at topic and group level** — a pod with this role cannot create or read any other topic, and a new topic/group means a Terraform change, which is the point.
 - `encryption_in_transit.client_broker = "TLS"`, `in_cluster = true`. No PLAINTEXT listener → the prod overlay ConfigMap placeholder already uses the `:9098` IAM listener (`kafka-bootstrap-servers=b-1...:9098,b-2...:9098`); replace it with the `kafka_bootstrap_servers_iam` output. The egress NetworkPolicy allows both 9092 and 9098 to the VPC CIDR.
-- Client side (implemented): order- and notification-service declare `software.amazon.msk:aws-msk-iam-auth:2.3.9` (`runtime` scope, version in the parent pom) and ship `src/main/resources/application-aws.yml` with the four properties under `spring.kafka.properties`: `security.protocol: SASL_SSL`, `sasl.mechanism: AWS_MSK_IAM`, `sasl.jaas.config: software.amazon.msk.auth.iam.IAMLoginModule required;`, `sasl.client.callback.handler.class: software.amazon.msk.auth.iam.IAMClientCallbackHandler`. The prod overlay (`overlays/prod/kustomization.yaml`) adds `SPRING_PROFILES_ACTIVE=aws` to both Deployments next to the `serviceAccountName` patch, so the profile and the IRSA identity arrive together; dev/compose keep the PLAINTEXT `application.yml`. The library picks up the IRSA web-identity credentials from the AWS default chain — no username/password anywhere. **Not yet verified against a real MSK cluster** (see the honesty box); first thing to check on a real run: `kafka-bootstrap-servers` points at the `:9098` IAM listener and the pod's `AWS_WEB_IDENTITY_TOKEN_FILE` is present.
+- Client side (implemented): order-, notification- and payment-service declare `software.amazon.msk:aws-msk-iam-auth:2.3.9` (`runtime` scope, version in the parent pom) and ship `src/main/resources/application-aws.yml` with the four properties under `spring.kafka.properties`: `security.protocol: SASL_SSL`, `sasl.mechanism: AWS_MSK_IAM`, `sasl.jaas.config: software.amazon.msk.auth.iam.IAMLoginModule required;`, `sasl.client.callback.handler.class: software.amazon.msk.auth.iam.IAMClientCallbackHandler`. The prod overlay (`overlays/prod/kustomization.yaml`) adds `SPRING_PROFILES_ACTIVE=aws` to both Deployments next to the `serviceAccountName` patch, so the profile and the IRSA identity arrive together; dev/compose keep the PLAINTEXT `application.yml`. The library picks up the IRSA web-identity credentials from the AWS default chain — no username/password anywhere. **Not yet verified against a real MSK cluster** (see the honesty box); first thing to check on a real run: `kafka-bootstrap-servers` points at the `:9098` IAM listener and the pod's `AWS_WEB_IDENTITY_TOKEN_FILE` is present.
 
 ### 7.3 Provisioned vs Serverless
 
@@ -394,13 +394,13 @@ Which token to send? The **access token** (has `cognito:groups`, `scope`, `clien
 ## 9. Secrets Manager + External Secrets Operator
 
 ```
-Terraform: random_password x4 ─▶ aws_secretsmanager_secret "shopflow/prod/db"
-                                   { master, orders, inventory, notifications, host, port }
+Terraform: random_password x5 ─▶ aws_secretsmanager_secret "shopflow/prod/db"
+                                   { master, orders, inventory, notifications, payments, host, port }
                                               │ GetSecretValue (IRSA role shopflow-external-secrets, policy = that ARN only)
                                               ▼
 K8s: SecretStore(aws, SecretsManager, ap-south-1, jwt auth via SA external-secrets-sa)
      ExternalSecret shopflow-db (refreshInterval 1h) ─▶ Secret shopflow-db
-        keys: orders-db-password / inventory-db-password / notifications-db-password
+        keys: orders-db-password / inventory-db-password / notifications-db-password / payments-db-password
                                               │ secretKeyRef (unchanged from base Deployments)
                                               ▼
      DB_PASSWORD env in each pod
@@ -420,7 +420,7 @@ K8s: SecretStore(aws, SecretsManager, ap-south-1, jwt auth via SA external-secre
 | Principle | Where in ShopFlow |
 |---|---|
 | **Roles, not users**: no IAM users, no access keys anywhere | Pods (IRSA), CI (OIDC), RDS monitoring (service role), nodes (instance role) |
-| Least privilege, resource-scoped | `read_db_secret` → one secret ARN; `kafka_clients` → one topic prefix + one group; `github_actions_ecr` → three repo ARNs (`ecr:GetAuthorizationToken` must be `*`, it is account-level) |
+| Least privilege, resource-scoped | `read_db_secret` → one secret ARN; `kafka_clients` → two topic prefixes (`orders.events*`, `payments.events*`) + three groups; `github_actions_ecr` → four repo ARNs (`ecr:GetAuthorizationToken` must be `*`, it is account-level) |
 | Separate roles per workload | External Secrets cannot touch Kafka; LB controller cannot read secrets |
 | Temporary credentials | STS tokens 1 h (IRSA) / job lifetime (GitHub) |
 | Managed policy where AWS maintains it | `AmazonRDSEnhancedMonitoringRole`, `attach_load_balancer_controller_policy` (the module ships the ~200-line controller policy) |

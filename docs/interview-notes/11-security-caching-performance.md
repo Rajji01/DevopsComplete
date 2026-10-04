@@ -1,9 +1,9 @@
 # 11 — Security, Caching, Performance & Tracing (Interview Notes)
 
 > Source of truth in this repo:
-> - Security: `shopflow/order-service/src/main/java/com/shopflow/order/security/SecurityConfig.java`, `JwtRolesConverter.java`; `application.yml` (`spring.security.oauth2.resourceserver.jwt.issuer-uri`); Keycloak realm `shopflow/k8s/base/keycloak/shopflow-realm.json`; compose `keycloak` service; `infra/terraform/aws/cognito.tf`; tests using `SecurityMockMvcRequestPostProcessors.jwt()`
+> - Security: `shopflow/order-service/src/main/java/com/shopflow/order/security/SecurityConfig.java`, `JwtRolesConverter.java`, `JwtDecoderConfig.java` (+ test `AudienceValidatorTest`); `application.yml` (`spring.security.oauth2.resourceserver.jwt.issuer-uri`, `jwt.audience: ${JWT_AUDIENCE:}`); Keycloak realm `shopflow/k8s/base/keycloak/shopflow-realm.json`; compose `keycloak` service; `infra/terraform/aws/cognito.tf`; tests using `SecurityMockMvcRequestPostProcessors.jwt()`
 > - Caching: `inventory-service` — `InventoryServiceApplication` (`@EnableCaching`), `ProductController.get` (`@Cacheable`), `ReservationService` (`@CacheEvict`), `config/CacheConfig.java` (`RedisCacheManagerBuilderCustomizer` → JSON values via `GenericJackson2JsonRedisSerializer`), `application.yml` (`spring.cache.type=${CACHE_TYPE:simple}`, Redis TTL 60s), compose/k8s `redis`, tests `productReadIsCachedAndEvictedOnReserve` + `CacheSerializationTest` (11 inventory tests in total)
-> - Performance: `@RateLimiter(name = "orders")` on `OrderController.create`, `resilience4j.ratelimiter` config, `GlobalExceptionHandler.handleRateLimited` (429), test `rateLimitExceededIs429`; `spring.threads.virtual.enabled: true` in all three services; Hikari pool sizes
+> - Performance: `@RateLimiter(name = "orders")` on `OrderController.create`, `resilience4j.ratelimiter` config, `GlobalExceptionHandler.handleRateLimited` (429), test `rateLimitExceededIs429`; `spring.threads.virtual.enabled: true` in all four services; Hikari pool sizes; k6 script `shopflow/loadtest/flash-sale.js` (CI job `loadtest-syntax`); ArchUnit `order-service/src/test/.../architecture/ArchitectureTest.java`
 > - Tracing: parent `pom.xml` (`micrometer-tracing-bridge-otel`, `opentelemetry-exporter-otlp`), `management.tracing.*` / `management.otlp.tracing.endpoint`, `spring.kafka.*.observation-enabled`, `docker-compose.yml` (Tempo, Loki, Alloy, Grafana), `monitoring/tempo.yml`, `monitoring/alloy.river`, `monitoring/grafana/provisioning/datasources/datasources.yml`
 >
 > Honest scope: only **order-service** validates JWTs (inventory and notification have no Spring Security; inventory is protected by NetworkPolicy and is not routed by the Ingress for `/reservations`). The rate limiter is **per pod**, not distributed. Say these out loud before the interviewer finds them.
@@ -16,7 +16,7 @@
 |---|---|---|
 | Auth model | OAuth2 **resource server**, JWT bearer tokens, **stateless**, CSRF disabled | `SecurityConfig` |
 | Issuer | `${JWT_ISSUER_URI:http://localhost:8180/realms/shopflow}` → Keycloak locally; Cognito pool URL in prod (`shopflow-endpoints` ConfigMap) | `application.yml`, overlays |
-| Validation | signature via issuer's **JWKS** (auto-discovered from `issuer-uri`), `exp`, `iss`; algorithm RS256 (asymmetric) | Spring Security defaults |
+| Validation | signature via issuer's **JWKS** (auto-discovered from `issuer-uri`, fetched lazily by `SupplierJwtDecoder` so the pod starts even if the IdP is down), `exp`, `iss`, **and `aud`** when `jwt.audience` is set: accepted if any of `aud` / `azp` (Keycloak) / `client_id` (Cognito access token) equals it; empty = not checked (local dev); algorithm RS256 (asymmetric) | `JwtDecoderConfig`, `AudienceValidatorTest` |
 | Roles | `realm_access.roles` (Keycloak) **or** `cognito:groups` (Cognito) → `ROLE_<name>` authorities | `JwtRolesConverter` |
 | Rules | `/actuator/**`, swagger → `permitAll`; `GET /api/v1/orders/**` → `customer` or `support`; other `/api/v1/orders/**` → `customer`; everything else `denyAll` | `SecurityConfig` |
 | Ownership | `Order.customerId` = JWT `sub`; `Caller(customerId, support)` from the `Authentication`; `get`/`cancel` → 404 unless owner or support, `list` → `findByCustomerId` unless support; foreign `Idempotency-Key` → 422 | `Caller`, `OrderService`, `V3__order_owner.sql` |
@@ -130,7 +130,7 @@ Claims you must know: `iss` (issuer), `sub` (subject = user id), `aud` (audience
 
 What Spring's resource server does with `issuer-uri` set:
 1. At startup (lazily on first request) fetch `<issuer>/.well-known/openid-configuration` → read `jwks_uri`.
-2. On each request: parse the bearer token, pick the key by **`kid`** from the cached JWKS, verify the **RS256** signature, validate `exp` (with 60s clock skew), validate `iss` equals the configured issuer. **`aud` is not validated by default** — add `JwtValidators`/`spring.security.oauth2.resourceserver.jwt.audiences` in a real deployment (honest gap).
+2. On each request: parse the bearer token, pick the key by **`kid`** from the cached JWKS, verify the **RS256** signature, validate `exp` (with 60s clock skew), validate `iss` equals the configured issuer. **`aud` is not validated by default** — ShopFlow adds it in `JwtDecoderConfig`: the bean is a `SupplierJwtDecoder` (issuer metadata fetched lazily on the first request, so the service still starts when the IdP is down) wrapping `NimbusJwtDecoder.withIssuerLocation(issuer)` with `DelegatingOAuth2TokenValidator(JwtValidators.createDefaultWithIssuer(issuer), audienceValidator(audience))`. The validator passes if **any** of `aud` (list), `azp` or `client_id` equals `jwt.audience` (`${JWT_AUDIENCE:}`) — Keycloak puts the client in `aud`/`azp`, Cognito access tokens only have `client_id`; otherwise `OAuth2Error("invalid_token", "token was not issued for this API ...")` → 401. Empty audience = not checked (local dev). Tests: `AudienceValidatorTest.acceptsKeycloakAndCognitoShapes`, `rejectsTokensMintedForAnotherApi`. Why it matters: without it, any token the same issuer minted for *another* API (a mobile BFF, an admin tool) would be accepted here.
 3. Convert to an `Authentication`: ShopFlow's `JwtRolesConverter` builds `JwtAuthenticationToken(jwt, authorities, jwt.getSubject())` with `ROLE_` prefixed authorities.
 
 **Key rotation**: the IdP publishes several keys in the JWKS with different `kid`s; new tokens are signed with the new key while old tokens still validate against the old one until they expire. Spring's `NimbusJwtDecoder` refetches the JWKS when it sees an unknown `kid` (with rate limiting), so rotation needs no restart.
@@ -218,7 +218,7 @@ Say: *"Defense in depth: NetworkPolicy today, and I would add client-credentials
 | Risk | ShopFlow status |
 |---|---|
 | API1 Broken object-level authorization | **closed**: `Order.customerId` = JWT `sub`; `Caller.mayAccess` in `OrderService.get/list/cancel` (owner or support); foreign ids → 404, foreign `Idempotency-Key` → 422 (A4.1) |
-| API2 Broken authentication | JWT validated (signature, exp, iss); short-lived tokens; direct grant only for local testing |
+| API2 Broken authentication | JWT validated (signature, exp, iss, **aud/azp/client_id** when `JWT_AUDIENCE` is set); short-lived tokens; direct grant only for local testing |
 | API3 Broken object property level auth | DTO records (`OrderResponse`) — entities and `version`/internal fields are never exposed |
 | API4 Unrestricted resource consumption | `@RateLimiter` 50 rps/pod → 429; pagination `size ≤ 100`; `quantity ≤ 100`; timeouts on downstream calls; memory limits |
 | API5 Broken function-level authorization | method-based rules: writes need `customer`, `support` is read-only; `denyAll` default |
@@ -230,6 +230,8 @@ Say: *"Defense in depth: NetworkPolicy today, and I would add client-credentials
 
 Classic OWASP web items still apply: injection (JPA parameters, no string concatenation), Bean Validation on input, no secrets in error bodies.
 
+**Architecture rules as a security/quality guardrail (ArchUnit).** `order-service/src/test/.../architecture/ArchitectureTest.java` (`archunit-junit5` 1.5.1, 7 `@ArchTest` rules, run by `./mvnw verify`) fails the build when a `@RestController` depends on a `*Repository` or an `@Entity` class (controllers return DTOs — API3 above stays true by construction, no accidental `version`/`customerId` leaks), when a `*Service` depends on `org.springframework.web.bind..`/`jakarta.servlet..` (services must stay callable from Kafka listeners and schedulers), on field injection, `System.out` and `java.util.logging` (all logging goes through SLF4J → ECS JSON → Loki). It is the cheapest form of "policy as code" for the application layer.
+
 ## A8. Security headers & TLS
 
 Spring Security adds defaults: `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `X-XSS-Protection: 0`, and `Strict-Transport-Security` on HTTPS. For a pure JSON API also set a restrictive `Content-Security-Policy` and `Referrer-Policy`; CORS only for the real front-end origin. TLS terminates at the Ingress (cert-manager, `shopflow-tls`) / ALB (ACM) — inside the cluster a mesh would add mTLS.
@@ -239,7 +241,8 @@ Spring Security adds defaults: `Cache-Control: no-store`, `X-Content-Type-Option
 - **Trivy** in both pipelines (`shopflow.yml` and `Jenkinsfile`): `--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1` **before** push; `ignore-unfixed` avoids blocking on CVEs without a patch.
 - **Dependabot** (`.github/dependabot.yml`): weekly Maven (Spring grouped), Docker, GitHub Actions, Terraform updates.
 - Images: `eclipse-temurin:21-jre-alpine` (JRE only), pinned tags, non-root UID 10001; layered jar so a dependency CVE fix is a small layer.
-- Would add: SBOM (`syft`/CycloneDX), image signing (`cosign`) + admission policy (Kyverno), `trivy config`/`checkov` for Terraform and K8s YAML, secret scanning (gitleaks).
+- **SBOM + signing (implemented in `shopflow.yml`, `image` job):** `anchore/sbom-action` writes a CycloneDX SBOM per image (`sbom-<service>.cdx.json` artifact) after the Trivy scan; after the push on `main`, `sigstore/cosign-installer` + `cosign sign --yes <image>@<digest>` signs the pushed digest **keyless** with the job's OIDC identity (`permissions: id-token: write`), so a Kyverno / sigstore policy-controller admission rule can refuse unsigned images.
+- Would add: the admission policy itself (Kyverno `verifyImages`), `trivy config`/`checkov` for Terraform and K8s YAML, secret scanning (gitleaks).
 
 ---
 
@@ -364,7 +367,7 @@ Why limit `POST /orders` specifically: every order costs a DB insert, an HTTP ca
 ## C2. Virtual threads (Java 21)
 
 - A virtual thread is a cheap, JVM-scheduled thread **mounted** on a small pool of carrier (platform) threads. When it blocks on IO (JDBC socket, HTTP, `Future.get`), it **unmounts** and the carrier runs another virtual thread. Millions are possible; stack lives on the heap.
-- `spring.threads.virtual.enabled: true` (all three services) makes Tomcat handle each request on a virtual thread, and also `@Scheduled` tasks (the outbox relay) and the Kafka listener container threads. Effect: a hung inventory call no longer eats one of 200 Tomcat threads — thread exhaustion stops being the first bottleneck; the **DB pool** (10 or 5) becomes the real limiter, which is why it is sized explicitly.
+- `spring.threads.virtual.enabled: true` (all four services) makes Tomcat handle each request on a virtual thread, and also `@Scheduled` tasks (the outbox relay) and the Kafka listener container threads. Effect: a hung inventory call no longer eats one of 200 Tomcat threads — thread exhaustion stops being the first bottleneck; the **DB pool** (10 or 5) becomes the real limiter, which is why it is sized explicitly.
 - **Pinning**: a virtual thread cannot unmount while inside a `synchronized` block or native frame → it pins the carrier. Java 21: affects old JDBC drivers / libraries using `synchronized` (fixed in JDK 24, JEP 491). Detect with `-Djdk.tracePinnedThreads=full` or JFR `jdk.VirtualThreadPinned`. Postgres JDBC ≥ 42.6 and Hikari are virtual-thread friendly.
 - **When NOT to use**: CPU-bound work (no benefit, use a bounded platform pool), code relying on `ThreadLocal` heavy caching (each virtual thread gets its own → memory), tasks needing thread-pool **limiting** as a backpressure mechanism (virtual threads are unlimited — protect pools with semaphores/bulkheads), or libraries that pin heavily.
 - Interview one-liner: *"Virtual threads give the scalability of reactive code with blocking-style code; they don't make anything faster, they let you wait cheaply."*
@@ -394,61 +397,56 @@ Why limit `POST /orders` specifically: every order costs a DB insert, an HTTP ca
 | `inventory.connect-timeout` / `read-timeout` | 1s / 2s | the real latency budget lever |
 | `resilience4j.ratelimiter.instances.orders.*` | 50 / 1s / 0 | raise with pod count; move to gateway for per-user limits |
 
-## C4. Load testing with k6 — flash-sale script
+## C4. Load testing with k6 — `shopflow/loadtest/flash-sale.js` (in the repo)
+
+The script lives at `shopflow/loadtest/flash-sale.js` and CI job `loadtest-syntax` runs `k6 inspect` on it (parses the script and evaluates `options`, sends no traffic), so a broken threshold expression fails the build. Run it for real against compose: `docker compose up -d && TOKEN=$(...) k6 run -e TOKEN=$TOKEN loadtest/flash-sale.js` (`BASE_URL` / `INVENTORY_URL` default to `localhost:8081` / `8082`). Pass/fail is encoded in **thresholds**, so the same run can gate a pipeline. The essential parts (abridged from the real file):
 
 ```javascript
-// k6 run -e TOKEN=$TOKEN -e BASE=http://localhost:8081 flash-sale.js
-import http from 'k6/http';
-import { check, sleep } from 'k6';
-import { Counter, Rate, Trend } from 'k6/metrics';
-
+// shopflow/loadtest/flash-sale.js — 300 virtual buyers rush the 3 PS5 units, while others browse products
 const confirmed = new Counter('orders_confirmed');
 const rejected  = new Counter('orders_rejected');
-const limited   = new Rate('rate_limited_429');
-const createLatency = new Trend('create_latency', true);
+const throttled = new Counter('orders_throttled');
+const orderLatency = new Trend('order_latency', true);
 
 export const options = {
   scenarios: {
-    flash_sale: {                       // 500 shoppers hit "buy" within 30s, then taper
-      executor: 'ramping-arrival-rate',
-      startRate: 10, timeUnit: '1s',
-      preAllocatedVUs: 100, maxVUs: 500,
-      stages: [
-        { target: 200, duration: '30s' },   // burst: well above 50 rps/pod -> expect 429s
-        { target: 50,  duration: '1m'  },
-        { target: 0,   duration: '15s' },
-      ],
-    },
+    buyers:   { executor: 'shared-iterations', vus: 300, iterations: 300, maxDuration: '1m', exec: 'buy' },   // the flash sale itself
+    browsers: { executor: 'constant-arrival-rate', rate: 200, timeUnit: '1s', duration: '30s',
+                preAllocatedVUs: 50, exec: 'browse' },                                                        // background reads hitting the cache
   },
   thresholds: {
-    http_req_failed:   ['rate<0.01'],            // 5xx only (429 is handled below, see responseCallback)
-    create_latency:    ['p(95)<800', 'p(99)<1500'],
-    rate_limited_429:  ['rate<0.5'],              // more than half limited => add pods or raise the limit
+    http_req_failed: ['rate<0.01'],                        // 5xx are failures; 409/429 are not (see check below)
+    'http_req_duration{scenario:browse}': ['p(99)<300'],   // cached product read
+    'order_latency': ['p(95)<800'],                        // POST /orders incl. the inventory hop
+    'orders_confirmed': ['count==3'],                      // exactly the stock, never more: the whole point
   },
 };
-// treat 429 as an expected, non-failed response so http_req_failed measures real errors
-http.setResponseCallback(http.expectedStatuses({ min: 200, max: 299 }, 429));
 
-export default function () {
-  const idem = `${__VU}-${__ITER}-${Date.now()}`;            // unique per attempt; reuse to test idempotent replay
-  const res = http.post(`${__ENV.BASE}/api/v1/orders`,
-    JSON.stringify({ sku: 'PS5-SLIM', quantity: 1 }),
-    { headers: { 'Content-Type': 'application/json',
-                 'Authorization': `Bearer ${__ENV.TOKEN}`,
-                 'Idempotency-Key': idem } });
-
-  createLatency.add(res.timings.duration);
-  limited.add(res.status === 429);
+export function buy() {
+  const res = http.post(`${BASE}/api/v1/orders`, JSON.stringify({ sku: 'PS5-SLIM', quantity: 1 }),
+    { headers, tags: { name: 'POST /orders' } });
+  orderLatency.add(res.timings.duration);
   if (res.status === 201) {
     const status = res.json('status');
     if (status === 'CONFIRMED') confirmed.add(1);
-    if (status === 'REJECTED')  rejected.add(1);               // out of stock: correct, not an error
+    if (status === 'REJECTED') rejected.add(1);
+  } else if (res.status === 429) {
+    throttled.add(1);
   }
-  check(res, { 'no 5xx': r => r.status < 500 });
+  check(res, { 'no server error': (r) => r.status < 500 });
+}
+
+export function browse() {
+  const res = http.get(`${INVENTORY}/api/v1/products/PS5-SLIM`, { tags: { name: 'GET /products/{sku}' } });
+  check(res, { 'product readable': (r) => r.status === 200 });
   sleep(0.1);
 }
+// handleSummary prints: confirmed=3 rejected=… throttled=…  (expected: confirmed==3)
 ```
-What to look at while it runs (Grafana): p99 of `http_server_requests_seconds` for `POST /api/v1/orders`, `orders_total{status}` (CONFIRMED must stop exactly at the seeded stock — the oversell check at scale), `inventory_reservations_rejected_total`, `hikaricp_connections_pending`, 429 ratio, `outbox_unpublished` (relay keeping up?), `kafka_consumer_fetch_manager_records_lag_max` on notification-service, JVM heap/GC. Run it against compose first (`TOKEN` from the Keycloak `curl` in the README), then against minikube with 2–3 pods to see the per-pod limit multiply.
+
+Why these numbers: `V2__seed_products.sql` seeds **3** PS5-SLIM units, so `orders_confirmed count==3` is the oversell proof at scale (the 20-thread unit test, now with 300 concurrent HTTP clients). `shared-iterations` with `vus == iterations` means every buyer tries exactly once, as in a real drop. 429s are counted (`orders_throttled`), not failed — with one order-service pod and a 50 rps limit most of the 300 buyers *will* be throttled, which is the rate limiter doing its job; `http_req_failed` therefore only counts real 5xx. The browse scenario is a separate arrival-rate load so the p99 threshold measures the cached read path independent of how long the buyers take. Note the script sends no `Idempotency-Key` — add one per VU to also exercise the replay path.
+
+What to look at while it runs (Grafana): p99 of `http_server_requests_seconds` for `POST /api/v1/orders`, `orders_total{status}` (CONFIRMED must stop exactly at the seeded stock — the oversell check at scale), `inventory_reservations_rejected_total`, `hikaricp_connections_pending`, 429 ratio, `outbox_unpublished` (relay keeping up?), `kafka_consumer_fetch_manager_records_lag_max` on notification-service and payment-service (the saga's async half must keep up), `payments_total{status}`, JVM heap/GC. Run it against compose first (`TOKEN` from the Keycloak `curl` in the README), then against minikube with 2–3 pods to see the per-pod limit multiply.
 
 ## C5. Profiling, N+1, indexes, p99 tactics
 
@@ -494,7 +492,7 @@ trace 4bf92f3577b34da6a3ce929d0e0e4736  (one POST /api/v1/orders)
 | Cost | dependency only | more code | startup time, memory, version coupling |
 | Fits | Spring Boot 3 apps (recommended) | non-Spring / library authors | legacy apps you cannot change, polyglot fleets |
 
-ShopFlow config: `management.tracing.sampling.probability: ${TRACING_SAMPLE:1.0}` (100% locally; 0.1 typical in prod), `management.otlp.tracing.endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}` (OTLP/HTTP; compose: `http://tempo:4318/v1/traces`; K8s: `http://tempo.monitoring:4318/v1/traces` from the `shopflow-endpoints` ConfigMap; prod: an **ADOT / OTel Collector** at `otel-collector.monitoring:4318` forwarding to X-Ray or Tempo). Tests set `management.otlp.tracing.export.enabled: false` so no exporter thread tries to reach `localhost:4318`. NetworkPolicy egress rules allow port 4318 to the `monitoring` namespace for all three services.
+ShopFlow config: `management.tracing.sampling.probability: ${TRACING_SAMPLE:1.0}` (100% locally; 0.1 typical in prod), `management.otlp.tracing.endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}` (OTLP/HTTP; compose: `http://tempo:4318/v1/traces`; K8s: `http://tempo.monitoring:4318/v1/traces` from the `shopflow-endpoints` ConfigMap; prod: an **ADOT / OTel Collector** at `otel-collector.monitoring:4318` forwarding to X-Ray or Tempo). Tests set `management.otlp.tracing.export.enabled: false` so no exporter thread tries to reach `localhost:4318`. NetworkPolicy egress rules allow port 4318 to the `monitoring` namespace for all four services.
 
 ## D3. Sampling
 
@@ -553,13 +551,13 @@ Field names depend on the ECS layout (`log.level` → `log_level`, `trace.id` �
 ## E. Interview Q&A (30)
 
 **Q1. How is order-service secured?**
-It is an OAuth2 resource server: stateless, CSRF off, every `/api/v1/orders` request needs a bearer JWT issued by the configured issuer (Keycloak locally, Cognito in prod). Spring fetches the issuer's JWKS, verifies the RS256 signature, `exp` and `iss`, and my `JwtRolesConverter` maps `realm_access.roles` or `cognito:groups` to `ROLE_*`. Reads need `customer` or `support`, writes need `customer`; actuator/swagger are open but network-restricted; anything else is denied.
+It is an OAuth2 resource server: stateless, CSRF off, every `/api/v1/orders` request needs a bearer JWT issued by the configured issuer (Keycloak locally, Cognito in prod). Spring fetches the issuer's JWKS (lazily, `SupplierJwtDecoder`), verifies the RS256 signature, `exp`, `iss` and — when `JWT_AUDIENCE` is set — that `aud`/`azp`/`client_id` names this API (`JwtDecoderConfig`), and my `JwtRolesConverter` maps `realm_access.roles` or `cognito:groups` to `ROLE_*`. Reads need `customer` or `support`, writes need `customer`; actuator/swagger are open but network-restricted; anything else is denied.
 
 **Q2. Authorization code + PKCE vs client credentials?**
 Code+PKCE when a human logs in (browser/mobile; PKCE protects public clients without a secret). Client credentials when a service calls a service with no user; the token's scopes describe the service's rights.
 
 **Q3. Where does Spring get the public key?**
-From `issuer-uri` → `/.well-known/openid-configuration` → `jwks_uri`; keys are cached and re-fetched on an unknown `kid`, which is how key rotation works without restarts.
+From `issuer-uri` → `/.well-known/openid-configuration` → `jwks_uri`; keys are cached and re-fetched on an unknown `kid`, which is how key rotation works without restarts. ShopFlow wraps the decoder in a `SupplierJwtDecoder` so that discovery happens on the first request, not at startup — a Keycloak/Cognito outage must not stop pods from starting.
 
 **Q4. Why RS256 and not HS256?**
 Asymmetric: only the IdP holds the private key; services hold public keys, so a compromised service cannot forge tokens and keys can rotate centrally. HS256 would spread a shared secret across all services.
@@ -583,7 +581,7 @@ NetworkPolicy: only pods labelled `order-service` reach inventory:8082, and `/ap
 Kubernetes Secrets generated in dev, `ExternalSecret` from Secrets Manager (ESO + IRSA) in prod; GHCR via `GITHUB_TOKEN`; AWS via OIDC; only `health,info,prometheus` actuator endpoints; Trivy + Dependabot for supply-chain.
 
 **Q11. Which OWASP API risk is your biggest gap?**
-It *was* API1 broken object-level authorization — now closed with the `Caller`/`customerId` ownership check (404 for foreign ids, 422 for a foreign Idempotency-Key). The remaining one is `aud`: it is not validated, so a token minted for another API of the same issuer would be accepted; and inventory/notification trust the network (NetworkPolicy) rather than a caller identity.
+It *was* API1 broken object-level authorization — now closed with the `Caller`/`customerId` ownership check (404 for foreign ids, 422 for a foreign Idempotency-Key). The `aud` gap is closed too (`JwtDecoderConfig`: `aud`/`azp`/`client_id` must equal `JWT_AUDIENCE`). The remaining one is API6/service identity: inventory, notification and payment trust the network (NetworkPolicy) rather than a caller identity, and nothing stops a bot with a valid token from buying all stock except the per-pod rate limit.
 
 **Q12. Cache-aside vs write-through?**
 Cache-aside: the app reads through the cache and on writes updates the DB then evicts — simple, tolerant to cache outages (ShopFlow's `LoggingCacheErrorHandler` turns a Redis error into a logged miss), briefly stale. Write-through: writes go to the cache which writes the DB synchronously — consistent but slower and the cache becomes critical. ShopFlow is cache-aside with evict.
@@ -619,7 +617,7 @@ Blocking IO no longer occupies a scarce platform thread, so thread exhaustion di
 Small: ~10 per pod; total across pods under the DB's `max_connections` with headroom. ShopFlow: `DB_POOL_SIZE=5` × 10 pods × 2 services = 100 < 200. At scale use PgBouncer/RDS Proxy. Fail fast with a short `connection-timeout`.
 
 **Q23. How would you load-test the flash sale?**
-k6 with a ramping-arrival-rate scenario (script above), thresholds on p95/p99 and 5xx, 429 treated as expected; watch `orders_total{status}` to prove no oversell, pool pending, outbox backlog, consumer lag and GC.
+With the k6 script in the repo, `shopflow/loadtest/flash-sale.js`: 300 buyers (`shared-iterations`) race for the 3 seeded PS5s while a `constant-arrival-rate` scenario browses at 200 rps; thresholds `orders_confirmed count==3` (no oversell), order p95 < 800ms, browse p99 < 300ms, `http_req_failed` < 1% (429/409 are expected, not failures). CI runs `k6 inspect` on it so the thresholds stay valid; the real run is manual against compose/minikube. While it runs I watch `orders_total{status}`, `hikaricp_connections_pending`, `outbox_unpublished`, consumer lag on `payment-service`/`notification-service`, and GC.
 
 **Q24. JFR vs async-profiler?**
 JFR: built in, always safe to run, great for GC/locks/IO/pinning. async-profiler: sampling CPU/allocation flame graphs without safepoint bias, needs perf access. Use JFR first in prod, async-profiler for CPU hot spots.
@@ -674,7 +672,7 @@ Structured logging not active (`LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs` missing i
 
 ## G. Common mistakes
 
-- HS256 shared secrets across services; accepting `alg: none`; skipping `iss`/`aud` checks; multi-hour access tokens.
+- HS256 shared secrets across services; accepting `alg: none`; skipping `iss`/`aud` checks (Spring skips `aud` by default — ShopFlow adds it); multi-hour access tokens.
 - Validating the JWT only at the gateway and trusting internal traffic blindly (zero trust says every service validates).
 - Storing JWTs in `localStorage` for SPAs (XSS) without discussion of the trade-off vs httpOnly cookies + CSRF.
 - Exposing `/actuator/env`, `/heapdump`; leaking stack traces in error bodies.

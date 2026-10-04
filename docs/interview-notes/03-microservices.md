@@ -11,22 +11,22 @@
 | Retry with exponential backoff | **In ShopFlow** — `resilience4j.retry.instances.inventory` (no jitter) |
 | Circuit breaker | **In ShopFlow** — `resilience4j.circuitbreaker.instances.inventory` |
 | Idempotency | **In ShopFlow** — `Idempotency-Key` header + `orderRef` |
-| Saga / compensation | **Partly** — orchestrated by `OrderService`, sync, compensation = cancel → release; notifications are choreographed via events |
+| Saga / compensation | **In ShopFlow** — step 1 reserve is **orchestrated** by `OrderService` (sync REST); step 2 payment and step 3 are **choreographed**: payment-service reacts to `OrderConfirmed`, order-service reacts to `PaymentCaptured` (→ PAID) / `PaymentFailed` (→ release + CANCELLED); client cancel = release; `OrderReconciler` = saga timeout for FAILED/PENDING |
 | Health probes / graceful shutdown | **In ShopFlow** — Actuator probes, `server.shutdown: graceful` |
 | Metrics + alerts | **In ShopFlow** — Prometheus + custom counters; `shopflow/monitoring/alert-rules.yml` (error rate, p99, breaker open, target down, outbox backlog, consumer lag) |
 | Externalised config (12-factor) | **In ShopFlow** — `DB_URL`, `DB_PASSWORD`, `INVENTORY_URL`, `DB_POOL_SIZE`, `KAFKA_BOOTSTRAP_SERVERS`, `JWT_ISSUER_URI`, `REDIS_HOST`, `OTLP_ENDPOINT` env vars, set by K8s Deployments + ConfigMap `shopflow-endpoints` + Secret `shopflow-db` |
 | Containers + orchestration | **In ShopFlow** — `shopflow/Dockerfile`, `docker-compose.yml`, `k8s/` (Kustomize base + dev/prod overlays, HPA, PDB) |
 | Network segmentation | **In ShopFlow (infra)** — `k8s/base/network-policies.yaml` (default deny ingress + egress, allow-list incl. Kafka/Redis/Keycloak) |
-| Kafka / async messaging | **In ShopFlow** — topic `orders.events` (key `orderRef`), producer `acks=all` + idempotence, consumer group `notification-service` → see [10](10-kafka-event-driven.md) |
-| Transactional outbox | **In ShopFlow** — `outbox_event` table, `OrderService.saveWithEvent` (`TransactionTemplate`), `OutboxRelay` (`@Scheduled`, `FOR UPDATE SKIP LOCKED`), gauge `outbox_unpublished` |
-| Idempotent consumer / DLT | **In ShopFlow** — `processed_event` table in `OrderEventListener` (`@KafkaListener` + `@Transactional`); `DefaultErrorHandler` + `ExponentialBackOff` → `orders.events.DLT` |
+| Kafka / async messaging | **In ShopFlow** — topics `orders.events` (groups `notification-service`, `payment-service`) and `payments.events` (group `order-service`), key `orderRef`, producer `acks=all` + idempotence → see [10](10-kafka-event-driven.md) |
+| Transactional outbox | **In ShopFlow** — shared module `shopflow-outbox` (`OutboxEvent` with `topic` column, `OutboxPublisher`, `OutboxRelay` `@Scheduled` + `FOR UPDATE SKIP LOCKED`, nightly cleanup, gauge `outbox_unpublished`) used by order-service (`saveWithEvent`, `TransactionTemplate`) and payment-service (`OrderConfirmedListener`) |
+| Idempotent consumer / DLT | **In ShopFlow** — `processed_event` inbox table in notification-service (`OrderEventListener`) and order-service (`PaymentEventListener`, `V5`), `payment.event_id` PK in payment-service; `DefaultErrorHandler` + `ExponentialBackOff` → `orders.events.DLT` / `payments.events.DLT` |
 | Rate limiting | **In ShopFlow** — `@RateLimiter(name = "orders")` on `OrderController.create`, 50/s per pod, `timeout-duration: 0` → 429 ProblemDetail |
 | Bulkhead | **Not in project** |
 | API gateway | **Partly** — NGINX Ingress `k8s/base/ingress.yaml` does path routing + TLS (prod); auth is in the service, rate limiting is per pod, nothing at the edge |
 | Service discovery | **In ShopFlow via K8s DNS** — `INVENTORY_URL=http://inventory-service:8082` in the order Deployment; no Eureka |
 | Config server | **Not in project** (env vars + ConfigMap + Secrets instead) |
 | Distributed tracing | **In ShopFlow** — `micrometer-tracing-bridge-otel` + OTLP exporter → Tempo; `observation-enabled` on KafkaTemplate/listener; Grafana traces↔logs (Loki) → see [11](11-security-caching-performance.md) |
-| Security (OAuth2/JWT, mTLS) | **In ShopFlow (order-service)** — OAuth2 resource server, stateless JWT, roles from Keycloak `realm_access.roles` / Cognito `cognito:groups` (`JwtRolesConverter`); no mTLS; inventory/notification protected by NetworkPolicy only |
+| Security (OAuth2/JWT, mTLS) | **In ShopFlow (order-service)** — OAuth2 resource server, stateless JWT, roles from Keycloak `realm_access.roles` / Cognito `cognito:groups` (`JwtRolesConverter`), audience pinned via `JwtDecoderConfig` when `JWT_AUDIENCE` is set; no mTLS; inventory/notification/payment protected by NetworkPolicy only |
 | Caching (Redis) | **In ShopFlow (inventory-service)** — `@Cacheable("products")` DTO by `sku`, `@CacheEvict` on reserve/release, `CACHE_TYPE=simple|redis`, TTL 60s |
 
 ---
@@ -161,18 +161,34 @@ A saga = sequence of local transactions; each step has a **compensating action**
 | Good for | 2–4 simple steps | many steps, complex compensation |
 | Tools | Kafka events | code state machine, Temporal, Camunda, Axon |
 
-**[Partly in ShopFlow]** `OrderService` is a simple **synchronous orchestrator**:
+**[In ShopFlow — both styles]** Step 1 is a **synchronous orchestrator** (`OrderService`), steps 2–3 are **choreography** over Kafka:
 
 ```
+step 1 (orchestration, REST)
 placeOrder:   save PENDING (local tx, orders DB)
               → inventory.reserve(orderRef)       (local tx, inventory DB)
-              → CONFIRMED | REJECTED | FAILED     (local tx, orders DB)
-cancel:       CONFIRMED|FAILED → inventory.release(orderRef)  (compensation, idempotent)
-              → CANCELLED
+              → CONFIRMED | REJECTED | FAILED     (local tx, orders DB) + outbox OrderConfirmed → topic orders.events
+
+step 2 (choreography) payment-service, @KafkaListener(topics="orders.events", groupId="payment-service")
+              OrderConfirmed only (other types ignored) → existsById(eventId)? skip
+              → PriceList × qty → PaymentGateway.charge → payment row (PK = eventId)
+              + outbox PaymentCaptured | PaymentFailed   (ONE local tx, payments DB) → topic payments.events
+
+step 3 (choreography) order-service, @KafkaListener(topics="payments.events", groupId="order-service")
+              processed_event dedupe → PaymentCaptured → onPaymentCaptured → PAID (+ OrderPaid event)
+                                     → PaymentFailed   → onPaymentFailed   → inventory.release(orderRef) + CANCELLED("payment failed: …")
+              both only if the order is still CONFIRMED (status guard = idempotent)
+
+compensation: PaymentFailed → release (above) ; client cancel: CONFIRMED|FAILED → release → CANCELLED
+timeout:      OrderReconciler every 60s: FAILED|PENDING older than 2m → release → CANCELLED
 ```
 
-**Q: Choreography version of ShopFlow?**
-order-service publishes `OrderPlaced` → inventory consumes, reserves, publishes `StockReserved` or `StockRejected` → order-service consumes and sets CONFIRMED/REJECTED. Payment would listen to `StockReserved`, and on `PaymentFailed` inventory releases (compensation).
+Compensation path end to end: card declined → `payment(FAILED)` + `PaymentFailed` committed together → relay → `payments.events` → order-service releases the reservation (idempotent `DELETE /reservations/{orderRef}`, retry + breaker) → CANCELLED + `OrderCancelled` → notification-service tells the customer. If `release` throws, the listener's transaction rolls back and the record is retried with backoff (then `payments.events.DLT`), so the compensation is retried until it succeeds. Tests: `paymentFailedReleasesStockAndCancelsTheOrder`, `paymentCapturedMarksTheOrderPaid`, payment-service `declinesAboveTheCardLimitAndPublishesFailure`, `redeliveredEventChargesOnlyOnce`.
+
+**Q: Why not choreograph the reservation too?**
+The customer needs the stock answer inside the HTTP request; payment can be async because a CONFIRMED order is already a valid intermediate state to show. Moving reserve to events (`OrderPlaced` → inventory → `StockReserved`/`StockRejected`) is the documented next step; the cost is a PENDING state the client must poll.
+
+> **Keeping the architecture honest.** The saga is spread over three services, so the rules that make it work are enforced by **ArchUnit** (`order-service/src/test/.../architecture/ArchitectureTest.java`, 7 rules, fail the build): `*Service` classes must not depend on `org.springframework.web.bind..` / `jakarta.servlet..` — `OrderService.onPaymentCaptured/onPaymentFailed` are called from a `@KafkaListener`, not a controller; controllers never touch `*Repository` or `@Entity` classes (DTOs only); constructor injection only; no `System.out` / `java.util.logging`. A rule costs five lines and replaces a weekly review comment.
 
 **Q: Requirements for saga steps?**
 Each local step and compensation must be **idempotent** (messages/requests can repeat) and compensations must be **retryable** until they succeed. Steps should be designed so compensation is possible (e.g. "reserve" not "ship").
@@ -181,14 +197,14 @@ Each local step and compensation must be **idempotent** (messages/requests can r
 No isolation: other transactions can see intermediate states (e.g. stock reserved for an order that will be cancelled). Countermeasures: semantic locks (status PENDING), commutative updates, re-reading values, pivot transactions.
 
 **Q: What if compensation itself fails?**
-Retry with backoff (it's idempotent); persist "compensation pending" state; alert and manual intervention if it keeps failing. In ShopFlow, if release fails, cancel returns 503 and the order stays CONFIRMED/FAILED, so the user/job can retry.
+Retry with backoff (it's idempotent); persist "compensation pending" state; alert and manual intervention if it keeps failing. In ShopFlow, if release fails on a client cancel, cancel returns 503 and the order stays CONFIRMED/FAILED, so the user/job can retry; on the `PaymentFailed` path the Kafka listener transaction rolls back and the record is redelivered with backoff, then dead-lettered (alert on the DLT = manual intervention).
 
 **Q: Saga vs 2PC?**
 2PC gives atomicity but blocks resources while waiting on the coordinator, reduces availability, and isn't supported across HTTP APIs/most brokers. Sagas trade isolation for availability and loose coupling.
 
 ---
 
-## 5. Transactional outbox [In ShopFlow — `order-service/.../outbox/`, `V2__outbox.sql`]
+## 5. Transactional outbox [In ShopFlow — shared module `shopflow-outbox` (`com.shopflow.outbox`), `order-service` `V2__outbox.sql` + `V4__outbox_topic.sql`, `payment-service` `V1__payment.sql`]
 
 Problem — **dual write**:
 ```java
@@ -206,29 +222,33 @@ create table outbox_event (
     event_type varchar(64) not null, payload text not null, created_at timestamp not null, published_at timestamp
 );
 create index idx_outbox_pending on outbox_event (published_at, created_at);
+-- V4__outbox_topic.sql: the outbox is now shared code serving several topics: each row says where it goes
+alter table outbox_event add column topic varchar(128) not null default 'orders.events';
+alter table outbox_event alter column topic drop default;
 ```
 ```java
-// OrderService.saveWithEvent (actual) — TransactionTemplate, not @Transactional: the method is private and
-// self-invoked from placeOrder/cancel, so an annotation would be bypassed by the proxy
-private Order saveWithEvent(Order order) {
+// OrderService.saveWithEvent (actual) — TransactionTemplate, not @Transactional: the method is package-private and
+// self-invoked from placeOrder/cancel/onPayment*, so an annotation would be bypassed by the proxy
+Order saveWithEvent(Order order) {
     Order saved = transactionTemplate.execute(status -> {
         Order persisted = orderRepository.save(order);
-        OrderEvent event = OrderEvent.from(persisted);                       // OrderConfirmed / OrderRejected / OrderFailed / OrderCancelled
-        outboxRepository.save(new OutboxEvent("Order", persisted.getOrderRef(), event.type(), toJson(event)));
+        OrderEvent event = OrderEvent.from(persisted);                       // OrderConfirmed / OrderPaid / OrderRejected / OrderFailed / OrderCancelled
+        outbox.publish(OrderEvent.TOPIC, "Order", persisted.getOrderRef(), event.type(), event);  // OutboxPublisher (shopflow-outbox)
         return persisted;                                                    // both rows commit atomically
     });
     count(saved);
     return saved;
 }
 ```
+The module is a plain Maven library, not a service: `OutboxPublisher.publish(topic, aggregateType, aggregateId, eventType, event)` is a repository write inside the **caller's** transaction (no transaction of its own — that is the point), `OutboxRelay` sends each row to `event.getTopic()`, and the host app only needs the `outbox_event` table in its own Flyway migrations plus a `JpaConfig` with `@EntityScan`/`@EnableJpaRepositories` over both packages. payment-service uses it the same way inside `OrderConfirmedListener` (`@Transactional` listener method).
 Relay options:
 1. **Polling publisher** (**ShopFlow**: `OutboxRelay`): `@Scheduled(fixedDelayString = "${outbox.relay.delay:1s}")` + `@Transactional` reads up to 100 unpublished rows oldest-first with `@Lock(PESSIMISTIC_WRITE)` + hint `jakarta.persistence.lock.timeout = -2` (= **`FOR UPDATE SKIP LOCKED`** on PostgreSQL, so several pods never publish the same row), sends each to Kafka with key = `aggregateId`, waits for the `acks=all` ack (`.get(5s)`), marks `published_at`; on the first failure it stops the batch to keep ordering. A gauge `outbox.unpublished` feeds the `OutboxBacklogGrowing` alert.
 2. **CDC (Debezium)** reads the Postgres WAL and streams outbox rows to Kafka (Outbox Event Router) — lower latency, no polling, more infrastructure.
 
-Delivery is **at-least-once** (crash after send, before marking) → consumers dedupe by **event id** (not `orderRef`: one order emits several events). The mirror pattern on the consumer side is the **inbox** — ShopFlow's `processed_event` table in notification-service.
+Delivery is **at-least-once** (crash after send, before marking) → consumers dedupe by **event id** (not `orderRef`: one order emits several events). The mirror pattern on the consumer side is the **inbox** — ShopFlow's `processed_event` table in notification-service and order-service (`V5`, for `payments.events`); payment-service instead uses the incoming `eventId` as the `payment` primary key (no separate table). Both inbox tables are pruned daily by `ProcessedEventCleanup` (7d, longer than the topic retention), so they do not grow forever.
 
 **Q: What does the outbox fix in ShopFlow, and what is still open?**
-Fixed: "order saved but notification lost" (and the reverse) — the event is durable the moment the order commits; a Kafka outage only grows the backlog, users still get 201. A timeout leaves a FAILED order with unknown stock — that is now settled by `OrderReconciler` (after a 2-minute grace: idempotent `release` + CANCELLED + `OrderCancelled` event). Still open: a crash between "save PENDING" and "reserve" leaves a stuck PENDING order, because the **reservation** is still a synchronous call. Extending the outbox to an `OrderPlaced` event consumed by inventory (already idempotent by `orderRef`) would close that too.
+Fixed: "order saved but notification lost" (and the reverse) — the event is durable the moment the order commits; a Kafka outage only grows the backlog, users still get 201. A timeout leaves a FAILED order with unknown stock — that is now settled by `OrderReconciler` (after a 2-minute grace: idempotent `release` + CANCELLED + `OrderCancelled` event). A crash between "save PENDING" and "reserve" used to leave a stuck PENDING order; the reconciler now sweeps PENDING older than the grace period too. Still open: an order stays CONFIRMED (stock reserved) for as long as payment-service is down — there is no timeout from CONFIRMED yet. Extending the outbox to an `OrderPlaced` event consumed by inventory (already idempotent by `orderRef`) would close that too.
 
 ---
 
@@ -511,7 +531,7 @@ Possible refactor: move non-secret values into a ConfigMap and use `envFrom: [{c
 - Context is propagated in headers — W3C `traceparent: 00-<traceId>-<spanId>-01` (or B3); for Kafka, in record headers.
 - Spring Boot 3: **Micrometer Tracing** (replaced Spring Cloud Sleuth) with a bridge to **OpenTelemetry** or Brave; export to Zipkin / Jaeger / Tempo via OTLP.
 
-As configured in ShopFlow (all three services via the parent pom):
+As configured in ShopFlow (all four services via the parent pom):
 ```xml
 <dependency><groupId>io.micrometer</groupId><artifactId>micrometer-tracing-bridge-otel</artifactId></dependency>
 <dependency><groupId>io.opentelemetry</groupId><artifactId>opentelemetry-exporter-otlp</artifactId></dependency>
@@ -566,7 +586,7 @@ ACID: atomic, consistent, isolated, durable transactions (inside one DB — Shop
 | 4 Backing services | Postgres / inventory URL are attachable resources via config |
 | 5 Build, release, run | CI builds one immutable image per commit (tag = git SHA, plus `latest` on `main`); config is injected at deploy time via env/Secrets and Kustomize overlays. Gap: the prod overlay still references `latest` (dev uses locally built `:dev` images) — pinning the SHA, as the overlay comment describes, makes it true build-once/promote |
 | 6 Processes | stateless services; state in Postgres |
-| 7 Port binding | embedded Tomcat on 8081/8082 |
+| 7 Port binding | embedded Tomcat on 8081/8082/8083/8084 |
 | 8 Concurrency | scale out by adding pods |
 | 9 Disposability | fast start, `server.shutdown: graceful`, 20s shutdown phase |
 | 10 Dev/prod parity | same Flyway migrations everywhere; gap: H2 in tests (fix with Testcontainers) |
@@ -577,12 +597,12 @@ ACID: atomic, consistent, isolated, durable transactions (inside one DB — Shop
 
 ## 18. Security [App-level: in ShopFlow (order-service) · Infra hardening: in ShopFlow]
 
-order-service is an **OAuth2 resource server** (`SecurityConfig`, `JwtRolesConverter`; issuer `${JWT_ISSUER_URI}` = Keycloak realm `shopflow` locally, Cognito user pool in prod). inventory- and notification-service have no application-level auth and rely on infrastructure hardening: NetworkPolicies (default deny ingress + egress; inventory reachable only from order-service, ingress-nginx and monitoring; Postgres only from the three services; Kafka only from order/notification; Redis only from inventory; Keycloak from ingress + order-service), containers run as UID 10001 with `readOnlyRootFilesystem`, dropped capabilities and `seccompProfile: RuntimeDefault`, `automountServiceAccountToken: false`, Trivy image scanning in CI, and `/api/v1/reservations` is not routed by the Ingress. Full notes in [11](11-security-caching-performance.md). The essentials:
+order-service is an **OAuth2 resource server** (`SecurityConfig`, `JwtRolesConverter`; issuer `${JWT_ISSUER_URI}` = Keycloak realm `shopflow` locally, Cognito user pool in prod). inventory-, notification- and payment-service have no application-level auth and rely on infrastructure hardening: NetworkPolicies (default deny ingress + egress; inventory reachable only from order-service, ingress-nginx and monitoring; Postgres only from the three services; Kafka only from order/notification; Redis only from inventory; Keycloak from ingress + order-service), containers run as UID 10001 with `readOnlyRootFilesystem`, dropped capabilities and `seccompProfile: RuntimeDefault`, `automountServiceAccountToken: false`, Trivy image scanning in CI, and `/api/v1/reservations` is not routed by the Ingress. Full notes in [11](11-security-caching-performance.md). The essentials:
 
 ### OAuth2 / OIDC / JWT
 - **Authorization server** (Keycloak, Auth0, Okta, Cognito) issues tokens. **Resource servers** (our services) validate them.
 - Flows: Authorization Code + PKCE (users/SPAs/mobile), Client Credentials (service-to-service).
-- JWT = header.payload.signature (base64url). Resource server verifies signature with the issuer's public keys (JWKS), checks `exp`, `iss`, `aud`, then reads `sub`, `scope`/roles.
+- JWT = header.payload.signature (base64url). Resource server verifies signature with the issuer's public keys (JWKS), checks `exp`, `iss`, `aud` (ShopFlow: `JwtDecoderConfig.audienceValidator` accepts `aud` / `azp` / `client_id` == `jwt.audience`, skipped when empty for local dev), then reads `sub`, `scope`/roles.
 
 ```xml
 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-oauth2-resource-server</artifactId></dependency>
@@ -671,7 +691,7 @@ Expand/contract: add new nullable column (V3) → deploy code writing both → b
 Readiness should catch DB issues on that pod (`db` in readiness group) and remove it. If it's another issue (bad node, memory), retries *may* land on a healthy pod (not guaranteed — kube-proxy balances per connection and a keep-alive connection can hit the same pod), and the breaker is per client, not per pod: 1 bad pod of 3 ≈ 33% failures stays under the 50% threshold. Outlier detection (service mesh) is the real fix; investigate with per-pod metrics (`instance` label) and logs; liveness restarts only if the JVM is truly stuck.
 
 **S12. How do you debug a request across services without tracing?**
-Correlation id in a header + MDC in logs, centralised logging (ELK/Loki) and search by id. ShopFlow's `orderRef` is logged in all three services (`"reserved {} x {} for order {}"`, `"order {} {}"`, `"EMAIL -> customer: Your order {} ..."`) — it acts as a business correlation id for order flows, and since tracing was added the ECS logs also carry `trace.id`, so the "without tracing" case is now the fallback.
+Correlation id in a header + MDC in logs, centralised logging (ELK/Loki) and search by id. ShopFlow's `orderRef` is logged in all four services (`"reserved {} x {} for order {}"`, `"order {} {}"`, `"EMAIL -> customer: Your order {} ..."`) — it acts as a business correlation id for order flows, and since tracing was added the ECS logs also carry `trace.id`, so the "without tracing" case is now the fallback.
 
 ---
 

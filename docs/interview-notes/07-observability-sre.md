@@ -2,7 +2,7 @@
 
 > Source of truth in this repo:
 > - `shopflow/monitoring/prometheus.yml` — scrape config (job `shopflow`, path `/actuator/prometheus`, 15s, three targets)
-> - `shopflow/monitoring/alert-rules.yml` — `HighErrorRate`, `HighP99Latency`, `InventoryCircuitOpen`, `ServiceDown`, `OutboxBacklogGrowing`, `KafkaConsumerLagHigh`
+> - `shopflow/monitoring/alert-rules.yml` — `HighErrorRate`, `HighP99Latency`, `InventoryCircuitOpen`, `ServiceDown`, `OutboxBacklogGrowing`, `KafkaConsumerLagHigh`, `PaymentFailureRateHigh`
 > - `shopflow/monitoring/grafana/provisioning/datasources/datasources.yml` — Prometheus, Tempo and Loki datasources as code, with traces↔logs links
 > - `shopflow/monitoring/tempo.yml` (OTLP receivers 4318/4317, local storage), `shopflow/monitoring/alloy.river` (tails Docker container logs → Loki)
 > - `shopflow/docker-compose.yml` — runs Prometheus `v3.5.0`, Grafana `12.1.1`, Tempo `2.8.1`, Loki `3.5.3`, Alloy `v1.10.0` locally
@@ -22,8 +22,8 @@
 | Exposed endpoints | `management.endpoints.web.exposure.include: health,info,prometheus` |
 | Common tag | `management.metrics.tags.application: ${spring.application.name}` |
 | Histograms | `management.metrics.distribution.percentiles-histogram.http.server.requests: true` → `_bucket` series for `histogram_quantile` |
-| Scrape | `scrape_interval: 15s`, targets `order-service:8081`, `inventory-service:8082`, `notification-service:8083` |
-| Alert severities | `page` (HighErrorRate, InventoryCircuitOpen, ServiceDown, OutboxBacklogGrowing) / `ticket` (HighP99Latency, KafkaConsumerLagHigh) |
+| Scrape | `scrape_interval: 15s`, targets `order-service:8081`, `inventory-service:8082`, `notification-service:8083`, `payment-service:8084` |
+| Alert severities | `page` (HighErrorRate, InventoryCircuitOpen, ServiceDown, OutboxBacklogGrowing, PaymentFailureRateHigh) / `ticket` (HighP99Latency, KafkaConsumerLagHigh) |
 | Logs | ECS JSON on stdout (`LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs` in K8s **and** compose) → Alloy → Loki; fields `trace.id`/`span.id` link to Tempo |
 | Traces | Micrometer Tracing → OTel → OTLP/HTTP `:4318` → Tempo; sampling `${TRACING_SAMPLE:1.0}`; Kafka hops via `observation-enabled: true` |
 | Health | `/actuator/health/liveness`, `/actuator/health/readiness` (readiness = `readinessState,db`) |
@@ -181,6 +181,13 @@ for: 10m
 ```
 Lag = latest offset − committed offset: notification-service is falling behind the producers. Ticket, not page — nothing is lost (retention), it is a throughput problem (pods ≤ partitions, slow processing, poison-pill retry loop). The series name is the one Micrometer's Kafka client binder really exports (`kafka.consumer.fetch.manager.records.lag.max` → `kafka_consumer_fetch_manager_records_lag_max{client_id=...}`); `spring_kafka_listener_*` are only the listener observation timers. **War story**: an earlier version of this rule used `spring_kafka_listener_records_lag_max`, which does not exist, so the alert could never fire and `promtool check rules` (syntax only) was happy. Fixed by checking the real `/actuator/prometheus` output, and `NotificationServiceApplicationTests` now asserts the gauge is registered. Add an `absent()` rule or `promtool test rules` for belt-and-braces. Saying this in an interview shows you validate alerts, not just write them.
 
+### Rule 7 — `PaymentFailureRateHigh` (page)
+```promql
+sum(rate(payments_total{status="FAILED"}[10m])) / sum(rate(payments_total[10m])) > 0.5
+for: 10m
+```
+`payments_total{status}` is the counter payment-service increments per outcome (`meterRegistry.counter("payments", "status", CAPTURED|FAILED)` in `OrderConfirmedListener`). A *ratio*, not an absolute count: declined cards are normal business, so "5 failures" means nothing, but more than half of all payments failing for 10 minutes means the gateway is down, our pricing is wrong or the `card-limit` config is broken — and every one of those orders is being cancelled and its stock released (`onPaymentFailed`), which is user-visible. `rate(...[10m])` on both sides so the ratio is over the same window; a tiny denominator at night makes the ratio noisy — add `and sum(rate(payments_total[10m])) > 0.01` if that happens. Companion signals: `payments_duplicates_total` (redeliveries), `kafka_consumer_fetch_manager_records_lag_max` for group `payment-service`, `outbox_unpublished` on payment-service.
+
 ### More useful queries (for Grafana)
 ```promql
 # RPS per service
@@ -310,7 +317,7 @@ How ShopFlow does it (option 1) and the alternative (option 2):
 1. **Micrometer Tracing** (Spring-native, **what is in the repo**): parent `pom.xml` adds `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp` to every service; `management.tracing.sampling.probability: ${TRACING_SAMPLE:1.0}` ("100% locally; 0.1 is typical in prod") and `management.otlp.tracing.endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}` — compose sets `OTLP_ENDPOINT=http://tempo:4318/v1/traces`, K8s reads it from the `shopflow-endpoints` ConfigMap (`http://tempo.monitoring:4318/v1/traces`; prod: `otel-collector.monitoring`). Tests disable export (`management.otlp.tracing.export.enabled: false`). The auto-configured `RestClient.Builder` propagates context automatically (`InventoryClient` is built from it); trace/span IDs appear in the ECS log fields for correlation. Exemplars (histogram bucket → trace) are **not** enabled yet.
 2. **OpenTelemetry Java agent** (zero code): `JAVA_TOOL_OPTIONS="-javaagent:/otel/opentelemetry-javaagent.jar ..."`, `OTEL_SERVICE_NAME=order-service`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318` (agent 2.x defaults to OTLP http/protobuf on 4318; 4317 is gRPC). Auto-instruments Spring MVC, JDBC, HTTP clients, Kafka. Note ShopFlow already uses `JAVA_TOOL_OPTIONS` for heap flags — you'd append to it. Trade-off vs Micrometer: no code/deps, but startup cost, less control, and metrics/traces come from different instrumentation.
 
-Pipeline: apps → (optionally an **OTel Collector**: batching, tail sampling, attribute scrubbing) → backend. Locally ShopFlow sends straight to **Tempo** (`monitoring/tempo.yml`: OTLP http `0.0.0.0:4318` + grpc `4317`, `backend: local`, blocks + WAL under `/var/tempo`, volume `tempodata`); prod would go through ADOT/OTel Collector to X-Ray or Tempo. The NetworkPolicy *egress* rules already allow 4318 to the `monitoring` namespace for all three services.
+Pipeline: apps → (optionally an **OTel Collector**: batching, tail sampling, attribute scrubbing) → backend. Locally ShopFlow sends straight to **Tempo** (`monitoring/tempo.yml`: OTLP http `0.0.0.0:4318` + grpc `4317`, `backend: local`, blocks + WAL under `/var/tempo`, volume `tempodata`); prod would go through ADOT/OTel Collector to X-Ray or Tempo. The NetworkPolicy *egress* rules already allow 4318 to the `monitoring` namespace for all four services.
 
 Grafana wiring (`datasources.yml`): Tempo datasource with `tracesToLogsV2` (`datasourceUid: loki`, `filterByTraceID: true`) — click a span, see that trace's log lines; Loki datasource with a `derivedFields` regex `"trace\.id":"(\w+)"` → `datasourceUid: tempo` — click a trace id in a log line, open the trace. That is the "metrics → trace → logs" loop from §1 made concrete.
 
