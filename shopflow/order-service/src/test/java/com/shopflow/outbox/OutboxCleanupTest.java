@@ -1,4 +1,6 @@
-package com.shopflow.order.outbox;
+package com.shopflow.outbox;
+
+import com.shopflow.order.outbox.OrderEvent;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -11,7 +13,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.kafka.test.context.EmbeddedKafka;
 import org.springframework.test.context.ActiveProfiles;
 
-@SpringBootTest
+@SpringBootTest(classes = com.shopflow.order.OrderServiceApplication.class)
 @EmbeddedKafka(partitions = 1, topics = OrderEvent.TOPIC)
 @ActiveProfiles("test")
 class OutboxCleanupTest {
@@ -24,9 +26,9 @@ class OutboxCleanupTest {
 
     @Test
     void deletesOnlyPublishedEventsOlderThanRetention() {
-        var published = new OutboxEvent("Order", "ref-1", "OrderConfirmed", "{}");
+        var published = new OutboxEvent(OrderEvent.TOPIC, "Order", "ref-1", "OrderConfirmed", "{}");
         published.markPublished();
-        var pending = new OutboxEvent("Order", "ref-2", "OrderConfirmed", "{}");
+        var pending = new OutboxEvent(OrderEvent.TOPIC, "Order", "ref-2", "OrderConfirmed", "{}");
         outboxRepository.saveAll(List.of(published, pending));
 
         int deleted = relay.cleanupPublishedBefore(Instant.now().plusSeconds(60));

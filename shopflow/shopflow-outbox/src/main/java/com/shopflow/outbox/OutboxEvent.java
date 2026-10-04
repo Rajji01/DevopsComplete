@@ -1,4 +1,4 @@
-package com.shopflow.order.outbox;
+package com.shopflow.outbox;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -30,6 +30,9 @@ public class OutboxEvent {
     @Column(name = "event_type", nullable = false, length = 64)
     private String eventType;
 
+    @Column(nullable = false, length = 128)
+    private String topic;
+
     @Column(nullable = false, columnDefinition = "text")
     private String payload;
 
@@ -42,13 +45,18 @@ public class OutboxEvent {
     protected OutboxEvent() {
     }
 
-    public OutboxEvent(String aggregateType, String aggregateId, String eventType, String payload) {
+    public OutboxEvent(String topic, String aggregateType, String aggregateId, String eventType, String payload) {
         this.id = UUID.randomUUID();
+        this.topic = topic;
         this.aggregateType = aggregateType;
         this.aggregateId = aggregateId;
         this.eventType = eventType;
         this.payload = payload;
         this.createdAt = Instant.now();
+    }
+
+    public String getTopic() {
+        return topic;
     }
 
     void markPublished() {

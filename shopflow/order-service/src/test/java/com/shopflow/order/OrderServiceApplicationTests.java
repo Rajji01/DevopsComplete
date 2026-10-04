@@ -56,7 +56,7 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@EmbeddedKafka(partitions = 1, topics = OrderEvent.TOPIC)
+@EmbeddedKafka(partitions = 1, topics = {OrderEvent.TOPIC, com.shopflow.order.payment.PaymentEvent.TOPIC, "payments.events.DLT"})
 @ActiveProfiles("test")
 class OrderServiceApplicationTests {
 
@@ -316,6 +316,46 @@ class OrderServiceApplicationTests {
         assertThat(orderService.reconcileFailedOrders(Duration.ZERO)).isGreaterThanOrEqualTo(1);
         mockMvc.perform(get("/api/v1/orders/" + orderId).with(customer()))
                 .andExpect(jsonPath("$.status").value("CANCELLED"));
+    }
+
+    @Autowired
+    private org.springframework.kafka.core.KafkaTemplate<String, String> kafkaTemplate;
+
+    private static String paymentEvent(String type, String orderRef, String reason) {
+        return """
+                {"eventId":"%s","type":"%s","orderRef":"%s","amount":100.00,"failureReason":%s,"occurredAt":"2026-10-04T10:00:00Z"}"""
+                .formatted(UUID.randomUUID(), type, orderRef, reason == null ? "null" : "\"" + reason + "\"");
+    }
+
+    @Test
+    void paymentCapturedMarksTheOrderPaid() throws Exception {
+        stubReserve(201);
+        String body = mockMvc.perform(createOrder("AIRPODS-PRO", 1)).andReturn().getResponse().getContentAsString();
+        Number id = JsonPath.read(body, "$.id");
+        String orderRef = JsonPath.read(body, "$.orderRef");
+
+        kafkaTemplate.send("payments.events", orderRef, paymentEvent("PaymentCaptured", orderRef, null));
+
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                mockMvc.perform(get("/api/v1/orders/" + id).with(customer()))
+                        .andExpect(jsonPath("$.status").value("PAID")));
+    }
+
+    @Test
+    void paymentFailedReleasesStockAndCancelsTheOrder() throws Exception {
+        stubReserve(201);
+        inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*")).willReturn(aResponse().withStatus(204)));
+        String body = mockMvc.perform(createOrder("IPHONE-15", 3)).andReturn().getResponse().getContentAsString();
+        Number id = JsonPath.read(body, "$.id");
+        String orderRef = JsonPath.read(body, "$.orderRef");
+
+        kafkaTemplate.send("payments.events", orderRef, paymentEvent("PaymentFailed", orderRef, "card limit exceeded"));
+
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                mockMvc.perform(get("/api/v1/orders/" + id).with(customer()))
+                        .andExpect(jsonPath("$.status").value("CANCELLED"))
+                        .andExpect(jsonPath("$.failureReason").value("payment failed: card limit exceeded")));
+        inventory.verify(deleteRequestedFor(urlEqualTo("/api/v1/reservations/" + orderRef)));
     }
 
     @Test

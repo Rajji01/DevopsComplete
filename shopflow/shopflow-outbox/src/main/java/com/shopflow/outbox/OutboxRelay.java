@@ -1,4 +1,4 @@
-package com.shopflow.order.outbox;
+package com.shopflow.outbox;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -17,6 +17,9 @@ import org.springframework.transaction.annotation.Transactional;
 import io.micrometer.core.instrument.MeterRegistry;
 
 /**
+ * Shared by every service that publishes events (order-service, payment-service): the host
+ * application only needs the outbox_event table (Flyway) and to scan this package.
+ *
  * Polls the outbox and publishes to Kafka (the "polling publisher" variant; Debezium CDC is the
  * other). Delivery is at-least-once: if the pod dies between send() and markPublished(), the
  * row is sent again, so consumers must be idempotent (they are: see notification-service).
@@ -46,7 +49,7 @@ public class OutboxRelay {
         var batch = outboxRepository.findUnpublished(PageRequest.of(0, BATCH_SIZE));
         for (OutboxEvent event : batch) {
             try {
-                kafkaTemplate.send(OrderEvent.TOPIC, event.getAggregateId(), event.getPayload())
+                kafkaTemplate.send(event.getTopic(), event.getAggregateId(), event.getPayload())
                         .get(5, TimeUnit.SECONDS); // wait for the broker ack, otherwise we'd mark lost messages as published
                 event.markPublished();
             } catch (Exception e) {

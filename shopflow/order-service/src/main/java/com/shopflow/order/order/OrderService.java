@@ -18,11 +18,7 @@ import com.shopflow.order.common.OrderNotFoundException;
 import com.shopflow.order.inventory.InventoryClient;
 import com.shopflow.order.inventory.InventoryRejectedException;
 import com.shopflow.order.outbox.OrderEvent;
-import com.shopflow.order.outbox.OutboxEvent;
-import com.shopflow.order.outbox.OutboxRepository;
-
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.shopflow.outbox.OutboxPublisher;
 
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -41,21 +37,19 @@ public class OrderService {
     }
 
     private final OrderRepository orderRepository;
-    private final OutboxRepository outboxRepository;
+    private final OutboxPublisher outbox;
     private final InventoryClient inventoryClient;
     private final MeterRegistry meterRegistry;
     private final TransactionTemplate transactionTemplate;
-    private final ObjectMapper objectMapper;
 
-    public OrderService(OrderRepository orderRepository, OutboxRepository outboxRepository,
+    public OrderService(OrderRepository orderRepository, OutboxPublisher outbox,
                         InventoryClient inventoryClient, MeterRegistry meterRegistry,
-                        TransactionTemplate transactionTemplate, ObjectMapper objectMapper) {
+                        TransactionTemplate transactionTemplate) {
         this.orderRepository = orderRepository;
-        this.outboxRepository = outboxRepository;
+        this.outbox = outbox;
         this.inventoryClient = inventoryClient;
         this.meterRegistry = meterRegistry;
         this.transactionTemplate = transactionTemplate;
-        this.objectMapper = objectMapper;
     }
 
     public PlacedOrder placeOrder(String sku, int quantity, String idempotencyKey, Caller caller) {
@@ -113,6 +107,25 @@ public class OrderService {
         return saveWithEvent(order);
     }
 
+    /** Saga step 3: payment-service answered. Both branches are idempotent (status-guarded). */
+    public void onPaymentCaptured(String orderRef) {
+        orderRepository.findByOrderRef(orderRef).filter(Order::isConfirmed).ifPresent(order -> {
+            order.markPaid();
+            saveWithEvent(order);
+            log.info("order {} PAID", orderRef);
+        });
+    }
+
+    /** Compensation: the card was declined, so give the stock back and cancel. */
+    public void onPaymentFailed(String orderRef, String reason) {
+        orderRepository.findByOrderRef(orderRef).filter(Order::isConfirmed).ifPresent(order -> {
+            inventoryClient.release(orderRef);
+            order.cancel("payment failed: " + reason);
+            saveWithEvent(order);
+            log.info("order {} CANCELLED after payment failure: {}", orderRef, reason);
+        });
+    }
+
     /**
      * FAILED = we never learned whether inventory reserved the stock (timeout, breaker open).
      * After a grace period, give up: release is idempotent (a no-op if nothing was reserved),
@@ -142,23 +155,15 @@ public class OrderService {
      * TransactionTemplate instead of @Transactional on purpose: calling an annotated method
      * from inside the same class bypasses the proxy, so it would silently run without a transaction.
      */
-    private Order saveWithEvent(Order order) {
+    Order saveWithEvent(Order order) {
         Order saved = transactionTemplate.execute(status -> {
             Order persisted = orderRepository.save(order);
             OrderEvent event = OrderEvent.from(persisted);
-            outboxRepository.save(new OutboxEvent("Order", persisted.getOrderRef(), event.type(), toJson(event)));
+            outbox.publish(OrderEvent.TOPIC, "Order", persisted.getOrderRef(), event.type(), event);
             return persisted;
         });
         count(saved);
         return saved;
-    }
-
-    private String toJson(OrderEvent event) {
-        try {
-            return objectMapper.writeValueAsString(event);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("cannot serialise " + event, e);
-        }
     }
 
     // orders_total{status="CONFIRMED"} etc. in Prometheus

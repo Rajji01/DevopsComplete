@@ -101,6 +101,19 @@ public class Order {
         status = OrderStatus.CANCELLED;
     }
 
+    void cancel(String reason) {
+        status = OrderStatus.CANCELLED;
+        failureReason = reason;
+    }
+
+    void markPaid() {
+        status = OrderStatus.PAID;
+    }
+
+    boolean isConfirmed() {
+        return status == OrderStatus.CONFIRMED;
+    }
+
     boolean isCancellable() {
         return status == OrderStatus.CONFIRMED || status == OrderStatus.FAILED;
     }

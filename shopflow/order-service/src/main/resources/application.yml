@@ -18,6 +18,13 @@ spring:
         enable.idempotence: true  # broker de-duplicates producer retries
     template:
       observation-enabled: true # trace context travels in the Kafka headers
+    consumer:                   # payments.events
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      properties:
+        isolation.level: read_committed
+    listener:
+      observation-enabled: true
   security:
     oauth2:
       resourceserver:

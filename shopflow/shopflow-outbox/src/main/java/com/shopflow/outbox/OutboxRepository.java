@@ -1,4 +1,4 @@
-package com.shopflow.order.outbox;
+package com.shopflow.outbox;
 
 import java.time.Instant;
 import java.util.List;
