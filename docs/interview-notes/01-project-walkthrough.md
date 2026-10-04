@@ -395,7 +395,7 @@ Honest limitation: H2 is "Postgres-like", not Postgres. Locking semantics and SQ
 | **Reconciliation / sweeper job** | fixes stuck PENDING and leaked FAILED reservations | `@Scheduled` (or K8s CronJob) finds PENDING/FAILED older than N minutes → re-call `reserve` (idempotent) to learn the truth, or release. Make PENDING cancellable. |
 | **Authorization hardening** | any `customer` can read/cancel any order; `aud` not validated; inventory/notification have no app-level auth | store the JWT `sub` on the order and check ownership (`@PreAuthorize` — `@EnableMethodSecurity` is already on); add audience validation; client-credentials tokens or a service mesh (mTLS) between services. |
 | **Distributed rate limiting at the edge** | today only an NGINX Ingress does path routing; the Resilience4j limit is **per pod** (50 rps × N pods) and not per user | NGINX Ingress annotations (`limit-rps`) or Spring Cloud Gateway / Kong with a Redis token bucket per user; add `Retry-After`. |
-| **Cache serializer for Redis** | `ProductResponse` is not `Serializable` and the Redis cache manager defaults to JDK serialization → with `CACHE_TYPE=redis` the first put fails (tests run with `simple`) | one `RedisCacheConfiguration` bean with `GenericJackson2JsonRedisSerializer`; add a Testcontainers Redis test. |
+| **Redis cache test against a real Redis** | the JDK-serialization trap is already closed: `inventory-service/config/CacheConfig.java` (`RedisCacheManagerBuilderCustomizer` + `GenericJackson2JsonRedisSerializer`) stores values as JSON and `CacheSerializationTest` pins the round-trip — but no test exercises `@Cacheable` against a real Redis | Testcontainers Redis profile running `productReadIsCachedAndEvictedOnReserve`. |
 | **Schema Registry / contract tests** | the event contract is a copied record with `ignoreUnknown`; a rename would silently break the consumer | Avro/JSON Schema + registry with BACKWARD compatibility in CI, or a shared contract test; `aws-msk-iam-auth` client config for MSK. |
 | **Testcontainers** | real Postgres/Kafka/Redis semantics in tests | `@Testcontainers` + `PostgreSQLContainer` + `@ServiceConnection`. |
 | **Idempotency hardening** | same key + different body; keys never expire | store request hash, 422 on mismatch; TTL cleanup. |
@@ -499,6 +499,6 @@ METRICS   orders_total{status}, inventory_reservations_rejected_total, outbox_un
 ALERTS    HighErrorRate, HighP99Latency, InventoryCircuitOpen, ServiceDown, OutboxBacklogGrowing, KafkaConsumerLagHigh
 DEPLOY    layered non-root image, compose (+Kafka/Redis/Keycloak/Tempo/Loki), Kustomize dev/prod, HPA, PDB, NetPol, Ingress; prod = RDS/MSK/ElastiCache/Cognito
 CI/CD     verify -> kubeconform/promtool/terraform validate -> build x3 -> Trivy -> push GHCR (sha) -> pin prod overlay -> Argo CD
-GAPS      stuck PENDING, FAILED may leak stock, no ownership check / aud, per-pod rate limit, Redis serializer, H2 not real PG, no jitter
+GAPS      stuck PENDING, FAILED may leak stock, no ownership check / aud, per-pod rate limit, H2 not real PG, no jitter
 NEXT      event-driven reservation, sweeper job, @PreAuthorize ownership, edge rate limit, Schema Registry, Testcontainers
 ```

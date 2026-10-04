@@ -14,7 +14,7 @@
 | Kubernetes | EKS **1.33**, managed node group `general`: t3.large, ON_DEMAND, min 2 / desired 3 / max 6 (`eks.tf`) |
 | Add-ons | coredns, kube-proxy, vpc-cni, eks-pod-identity-agent, aws-ebs-csi-driver, metrics-server |
 | Pod → AWS identity | IRSA (OIDC) roles: external-secrets, kafka-clients, aws-load-balancer-controller (`irsa.tf`) |
-| Registry | 3 ECR repos, IMMUTABLE tags, scan on push, keep last 30 (`ecr.tf`). **CI today pushes to GHCR**; ECR + the OIDC role are the migration target |
+| Registry | 3 ECR repos, IMMUTABLE tags, scan on push, keep last 30 (`ecr.tf`). CI pushes to GHCR **and mirrors the same SHA-tagged image to ECR via OIDC** when the repo variable `AWS_ROLE_ARN` is set (`aws-actions/configure-aws-credentials@v6` + `amazon-ecr-login@v2`); the prod overlay still names the GHCR images |
 | Database | RDS PostgreSQL 16, `db.t4g.medium` (Graviton), Multi-AZ, gp3 50→200 GB autoscaling, encrypted, 7-day backups, Performance Insights, Enhanced Monitoring 60s (`rds.tf`) |
 | DB params | `max_connections=300` (pending-reboot), `log_min_duration_statement=500` ms |
 | Cache | ElastiCache Redis 7.1 replication group, 2 nodes (primary + replica), Multi-AZ auto-failover, TLS + at-rest encryption (`elasticache.tf`) |
@@ -24,7 +24,9 @@
 | CI → AWS | GitHub OIDC provider + role `shopflow-github-actions`, trust pinned to `repo:Rajji01/DevopsComplete:ref:refs/heads/main`, ECR push only (`ci-oidc.tf`) |
 | State | S3 backend, `use_lockfile = true` (S3 native locking, TF ≥ 1.11), encrypted, versioned bucket (`versions.tf`) |
 | Providers | `hashicorp/aws ~> 6.0`, `random ~> 3.6`; modules `terraform-aws-modules/vpc ~> 6.0`, `eks ~> 21.0`, `iam ~> 5.0` |
-| Ingress | AWS Load Balancer Controller, `ingressClassName: alb`, internet-facing, `target-type: ip`, HTTPS 443 with ACM cert, health check `/actuator/health/readiness` (prod overlay) |
+| Ingress | AWS Load Balancer Controller, `ingressClassName: alb`, internet-facing, `target-type: ip`, HTTPS 443 with ACM cert, health check `/actuator/health/readiness` (prod overlay); NetworkPolicy ingress from the VPC CIDR `10.0.0.0/16` on 8081/8082 so the ALB ENIs can reach the pods |
+| DNS / TLS | `dns.tf`: `aws_acm_certificate` (DNS validation) + `aws_route53_record` validation records + `aws_acm_certificate_validation`, created only when `hosted_zone_id` is set; output `acm_certificate_arn` goes into the Ingress annotation (overlay placeholder is `REPLACE-ME`) |
+| Pod identity in the overlay | `k8s/overlays/prod/service-accounts.yaml`: ServiceAccounts `order-service` / `notification-service` annotated with `eks.amazonaws.com/role-arn` (kafka-clients role) + `serviceAccountName` patches on the two Deployments; `external-secrets-sa` in `external-secret.yaml` |
 | Cost | ~**$400–600/month** at these defaults (README) |
 
 ---
@@ -73,6 +75,7 @@ Narrative: *"Only the three stateless Spring Boot services run on EKS; everythin
 | `cognito.tf` | user pool, app client, hosted domain, groups | Replaces Keycloak; `JwtRolesConverter` already reads `cognito:groups` |
 | `irsa.tf` | 3 IRSA roles + 2 policies | Pods get scoped IAM roles via ServiceAccount, no keys |
 | `ci-oidc.tf` | GitHub OIDC provider, role, ECR push policy | CI pushes images without a stored secret |
+| `dns.tf` | ACM certificate for `domain_name`, Route 53 DNS-validation records, `aws_acm_certificate_validation` (all `count`-gated on `hosted_zone_id != ""`) | Validation waits until ACM has issued the cert, so the output ARN is usable; the ALB's own DNS name only exists after the Ingress, hence external-dns or a manual alias record |
 | `outputs.tf` | endpoints, ARNs, `configure_kubectl` | Paste into `k8s/overlays/prod/kustomization.yaml` + `external-secret.yaml` |
 
 > Tip: Interviewer "architecture batao" bole toh pehle diagram ke 3 layers (public / private / database) bolo, phir "stateless on EKS, stateful managed" line. Yeh ek line hi 80% impression banati hai.
@@ -124,7 +127,7 @@ What actually goes through NAT in ShopFlow? ECR image pulls, STS (`AssumeRoleWit
 
 SG referencing another SG is the idiom: "anything that is an EKS node may talk to Postgres". With `target-type: ip` and VPC CNI, pods share the node's SG, so this works for pods too. (Finer: Security Groups for Pods via `ENIConfig`/`SecurityGroupPolicy`, out of scope.)
 
-NetworkPolicy still applies **inside** the cluster: the prod overlay adds egress to `10.0.0.0/16` on 5432/9092/9098/6379 and to `0.0.0.0/0:443` (Cognito JWKS). Two layers: NetworkPolicy (pod → where) + SG (what may reach the managed service).
+NetworkPolicy still applies **inside** the cluster: the prod overlay adds egress to `10.0.0.0/16` on 5432/9092/9098/6379 and to `0.0.0.0/0:443` (Cognito JWKS), and ingress from `10.0.0.0/16` on 8081/8082 (ALB ENIs). Two layers: NetworkPolicy (pod → where) + SG (what may reach the managed service).
 
 ---
 
@@ -162,7 +165,7 @@ Why `t3.large` × 3? 2 vCPU / 8 GB each. ShopFlow pods request 250m CPU / 384Mi;
 |---|---|
 | `vpc-cni` | Pod IPs from the VPC; enables SG referencing and `target-type: ip` ALBs. Watch IP exhaustion (prefix delegation fixes it) |
 | `coredns` | Service DNS (`inventory-service:8082`). `default-deny-egress-allow-dns` NetworkPolicy allows 53 to `kube-dns` |
-| `kube-proxy` | ClusterIP → pod IP via iptables (see 12-hard-questions §c) |
+| `kube-proxy` | ClusterIP → pod IP via iptables (see [12 — C2](12-hard-interview-questions.md)) |
 | `eks-pod-identity-agent` | Enables **EKS Pod Identity** (the newer alternative to IRSA) |
 | `aws-ebs-csi-driver` | PersistentVolumes on EBS — only needed for in-cluster stateful things (Prometheus, Loki); the app DBs are RDS |
 | `metrics-server` | HPAs (`averageUtilization: 70` of CPU request) need it |
@@ -183,7 +186,7 @@ works with Fargate, self-managed, outside EKS  EKS EC2 nodes only (no Fargate at
 
 ShopFlow uses **IRSA** (`enable_irsa = true`, `irsa.tf` modules) because External Secrets and the LB controller docs assume it; the `eks-pod-identity-agent` add-on is installed so the Kafka-clients role could be moved to Pod Identity later. How a pod gets creds (full answer in Q&A): the EKS pod-identity webhook sees the annotated SA, injects env vars `AWS_ROLE_ARN` + `AWS_WEB_IDENTITY_TOKEN_FILE` and a projected token volume; the AWS SDK's default credential chain exchanges the token at STS.
 
-**Gap to admit:** the base Deployments set `automountServiceAccountToken: false` and do not set `serviceAccountName`. IRSA's projected token is a separate volume injected by the webhook, so it still works, but the Deployments must reference ServiceAccounts named `order-service` / `notification-service` (annotated with `kafka_clients_role_arn`) for `irsa_kafka_clients` to apply. The prod overlay would add those two SAs; it is listed under "next steps" in the runbook.
+**How the overlay wires it:** the base Deployments set `automountServiceAccountToken: false` and no `serviceAccountName`. The prod overlay adds `service-accounts.yaml` (ServiceAccounts `order-service` and `notification-service`, annotated `eks.amazonaws.com/role-arn: .../shopflow-kafka-clients`) and patches `serviceAccountName` onto the two Deployments; the role's trust policy lists exactly `shopflow:order-service` and `shopflow:notification-service` (`irsa.tf`). IRSA still works with `automountServiceAccountToken: false` because the webhook mounts its own projected-token volume. Remaining code gap: the services do not yet ship the `aws-msk-iam-auth` client config (see §7.2).
 
 ### 3.5 Access: who can `kubectl`?
 
@@ -211,12 +214,12 @@ lifecycle policy: imageCountMoreThan 30 → expire
 ```
 
 - **Immutable tags** make `kustomization.yaml` `newTag: <sha>` a true pointer: the bytes behind the tag cannot change after review. Also kills `:latest` (which the CI only publishes to GHCR as a convenience).
-- **Scan on push** = basic scanning (Clair-based CVE db) free; Enhanced scanning (Inspector) adds continuous re-scan and language packages (Maven jars!) — relevant because Trivy in CI already fails on fixable HIGH/CRITICAL (`.github/workflows/shopflow.yml`), so ECR scanning is the second gate and catches new CVEs in images that are *already* deployed.
+- **Scan on push** = basic scanning (free, OS-package CVEs); Enhanced scanning (Inspector) adds continuous re-scan and language packages (Maven jars!) — relevant because Trivy in CI already fails on fixable HIGH/CRITICAL (`.github/workflows/shopflow.yml`), so ECR scanning is the second gate and catches new CVEs in images that are *already* deployed.
 - **Lifecycle**: 30 images × 3 repos ≈ 90 × ~150 MB = ~14 GB ≈ $1.4/mo. Keeps ~30 deployments of rollback depth.
 - Pull from EKS: node role has `AmazonEC2ContainerRegistryReadOnly` (module default); no `imagePullSecrets` needed, unlike GHCR private images.
 - Cross-region replication for DR; pull-through cache for Docker Hub rate limits.
 
-Migration from GHCR (next step): in the `image` job, add `aws-actions/configure-aws-credentials@v4` with `role-to-assume: ${{ terraform output github_actions_role_arn }}` and `permissions: id-token: write`, then `aws-actions/amazon-ecr-login@v2`; change `IMAGE` to `<acct>.dkr.ecr.ap-south-1.amazonaws.com/shopflow/<service>`.
+ECR in CI today (`.github/workflows/shopflow.yml`, `image` job): after the GHCR push on `main`, if the repository variable `AWS_ROLE_ARN` is set, `aws-actions/configure-aws-credentials@v6` assumes it with the job's OIDC token (`permissions: id-token: write`), `aws-actions/amazon-ecr-login@v2` logs in, and the SHA-tagged image is re-tagged and pushed to `<acct>.dkr.ecr.ap-south-1.amazonaws.com/shopflow/<service>:<sha>`. Remaining step: point the prod overlay `images[].newName` (and the `kustomize edit set image` in `deploy-manifests`) at the ECR URLs so EKS pulls from ECR with the node role instead of GHCR.
 
 ---
 
@@ -259,7 +262,7 @@ Formula you can quote (HikariCP wiki): `pool_size ≈ cores × 2 + effective_spi
 
 | | RDS Proxy | PgBouncer (in cluster) |
 |---|---|---|
-| Managed? | Yes, ~$0.015/vCPU-hour (~$11/mo for t4g.medium) | You run a Deployment |
+| Managed? | Yes, ~$0.015 per vCPU-hour of the DB instance, minimum 2 vCPU (~$22/mo for a `db.t4g.medium`) | You run a Deployment |
 | Pooling mode | Session or transaction-ish (pinning on prepared statements / session state) | transaction mode, tiny footprint |
 | Failover | **Hides Multi-AZ failover**: proxy holds client connections, re-connects to the new primary (3–10 s instead of 60–120 s) | Reconnects too, but you configure it |
 | IAM auth | Yes (pods could use IRSA instead of a password → no secret at all) | No |
@@ -278,7 +281,7 @@ t0..t0+60–120 s  existing TCP connections die → Hikari sees SQLException / c
      └─ order-service: readiness group includes `db` → pods go NotReady → ALB stops routing → 503s for ~1–2 min
 t0+120 s  new connections resolve to the new primary, pools refill, readiness UP
 ```
-Mitigations you can state: JVM DNS cache (`networkaddress.cache.ttl=5`, Temurin default 30 s with security manager absent... set explicitly), Hikari `maxLifetime` < any proxy idle timeout, RDS Proxy, retries on the client side with idempotency keys (`Idempotency-Key` header in `OrderController`), outbox rows are committed in the same transaction so no event is lost.
+Mitigations you can state: JVM DNS cache (`networkaddress.cache.ttl` is 30 s by default without a security manager; set it to ~5 s so pods follow the RDS CNAME flip), Hikari `maxLifetime` < any proxy idle timeout, RDS Proxy, retries on the client side with idempotency keys (`Idempotency-Key` header in `OrderController`), outbox rows are committed in the same transaction so no event is lost.
 
 ---
 
@@ -326,8 +329,8 @@ b-1           b-2           b-3           number_of_broker_nodes = 3 (must be a 
 
 ### 7.2 Auth and encryption
 
-- `client_authentication.sasl.iam = true`: clients connect to port **9098** (`bootstrap_brokers_sasl_iam` output) with `SASL_SSL` + `AWS_MSK_IAM` and sign with their IAM identity (IRSA role `shopflow-kafka-clients`). Policy in `irsa.tf`: `kafka-cluster:Connect` on the cluster, `WriteData/ReadData/*Topic*` on `topic/shopflow/*/orders.events*` (covers `.DLT`), `AlterGroup/DescribeGroup` on `group/shopflow/*/notification-service`. **Least privilege at topic level.**
-- `encryption_in_transit.client_broker = "TLS"`, `in_cluster = true`. No PLAINTEXT listener → the prod overlay ConfigMap placeholder `...:9092` must become the `:9098` bootstrap string from the output (the NetworkPolicy already allows both ports).
+- `client_authentication.sasl.iam = true`: clients connect to port **9098** (attribute `bootstrap_brokers_sasl_iam`, exported as output `kafka_bootstrap_servers_iam`) with `SASL_SSL` + `AWS_MSK_IAM` and sign with their IAM identity (IRSA role `shopflow-kafka-clients`). Policy in `irsa.tf`: `kafka-cluster:Connect` on the cluster, `WriteData/ReadData/*Topic*` on `topic/shopflow/*/orders.events*` (covers `.DLT`), `AlterGroup/DescribeGroup` on `group/shopflow/*/notification-service`. **Least privilege at topic level.**
+- `encryption_in_transit.client_broker = "TLS"`, `in_cluster = true`. No PLAINTEXT listener → the prod overlay ConfigMap placeholder already uses the `:9098` IAM listener (`kafka-bootstrap-servers=b-1...:9098,b-2...:9098`); replace it with the `kafka_bootstrap_servers_iam` output. The egress NetworkPolicy allows both 9092 and 9098 to the VPC CIDR.
 - Code gap (documented in README): add `software.amazon.msk:aws-msk-iam-auth` to the two poms and the four `spring.kafka.properties` (security.protocol, sasl.mechanism, sasl.jaas.config, callback handler) via env/profile. The library picks up the IRSA credentials from the default chain.
 
 ### 7.3 Provisioned vs Serverless
@@ -342,8 +345,8 @@ b-1           b-2           b-3           number_of_broker_nodes = 3 (must be a 
 ### 7.4 Monitoring consumer lag
 
 - `open_monitoring.prometheus.jmx_exporter` + `node_exporter` → in-cluster Prometheus scrapes brokers on 11001/11002 (allow in MSK SG from the monitoring namespace's nodes).
-- Broker-side lag metric: `kafka_consumergroup_lag` via the per-consumer-group CloudWatch metrics (`EstimatedMaxTimeLag`, `SumOffsetLag`, enable `PER_TOPIC_PER_PARTITION` monitoring level).
-- Client-side: `spring_kafka_listener_records_lag_max` — ShopFlow's alert `KafkaConsumerLagHigh > 1000 for 10m` (`monitoring/alert-rules.yml`). Pair with `OutboxBacklogGrowing` to tell "producer stuck" from "consumer slow".
+- Broker-side lag: CloudWatch per-consumer-group metrics `EstimatedMaxTimeLag` / `SumOffsetLag` (enable the `PER_TOPIC_PER_PARTITION` monitoring level), or `kafka_consumergroup_lag` from a kafka_exporter scraping the brokers.
+- Client-side: `kafka_consumer_fetch_manager_records_lag_max` (Micrometer's Kafka consumer binder) — ShopFlow's alert `KafkaConsumerLagHigh > 1000 for 10m` (`monitoring/alert-rules.yml`); the notification test asserts that gauge exists so the rule cannot silently point at a non-existent series. Pair with `OutboxBacklogGrowing` to tell "producer stuck" from "consumer slow".
 - `kafka-consumer-groups.sh --describe --group notification-service --bootstrap-server ... --command-config iam.properties` for the manual check.
 
 ---
@@ -379,7 +382,7 @@ Which token to send? The **access token** (has `cognito:groups`, `scope`, `clien
 
 | | Cognito | Keycloak (compose / minikube) |
 |---|---|---|
-| Ops | none; 50k MAU free (Lite plan), then per-MAU | you run + upgrade + back up its DB |
+| Ops | none; first 10k MAU free on the Lite/Essentials tiers (it was 50k before the Nov 2024 pricing change), then per-MAU | you run + upgrade + back up its DB |
 | Customisation | limited UI, Lambda triggers for logic | full: themes, flows, protocol mappers, realms |
 | Roles | groups claim only (`cognito:groups`), no composite/client roles | realm/client roles, `realm_access.roles` |
 | Federation | SAML/OIDC IdPs, social | same + user federation (LDAP/AD) |
@@ -477,10 +480,10 @@ host: shop.example.com ; Keycloak rule removed
 
 - Controller runs in `kube-system` with SA `aws-load-balancer-controller` (IRSA role `irsa_lb_controller`). It watches Ingress/Service objects and creates ALB + target groups + listeners; pods are registered as IP targets and **deregistered when they become NotReady / terminating** (the `preStop sleep 5` + readiness gates matter here — add `elbv2.k8s.aws/pod-readiness-gate-inject: enabled` on the namespace to avoid 502s during rollouts).
 - **ALB vs NLB**: ALB = L7 (host/path routing, WAF, OIDC auth at the edge, HTTP/2, gRPC, slow-start), per-LCU pricing; NLB = L4 (TCP/UDP/TLS), static IPs / EIPs, millions of RPS, source IP preserved, lower latency, PrivateLink. ShopFlow needs path routing → ALB. One ALB for both services via a single Ingress (or `group.name` annotation to share across Ingresses). An NLB would front something like Kafka or a TCP service.
-- **ACM**: free public cert, DNS validation via Route 53 (`aws_acm_certificate` + `aws_route53_record` — not yet in the .tf files; the overlay has `REPLACE-ME`). Auto-renews. Private certs need ACM Private CA.
+- **ACM**: free public cert, DNS validation via Route 53 — `dns.tf` has `aws_acm_certificate` (`validation_method = "DNS"`, `create_before_destroy`), the `aws_route53_record` validation CNAMEs built from `domain_validation_options`, and `aws_acm_certificate_validation`, all `count`-gated on `hosted_zone_id`; output `acm_certificate_arn` replaces the overlay's `REPLACE-ME`. Auto-renews. Private certs need ACM Private CA.
 - **Route 53**: `A` **alias** record `shop.example.com → ALB DNS name` (alias = free queries, follows ALB IP changes; a CNAME at the zone apex is not allowed). Health checks + failover routing policy for DR; latency-based routing for multi-region.
 - Hardening: WAFv2 web ACL (rate-based rule 2000 req/5 min per IP, AWS managed rule groups) attached via `alb.ingress.kubernetes.io/wafv2-acl-arn`; `ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06`; access logs to S3; `shield-advanced-protection` if money allows.
-- NetworkPolicy note: the base `*-ingress` policies allow from namespace `ingress-nginx`; with ALB `target-type: ip`, traffic arrives from the **ALB's ENI IPs** in the public subnets, so prod needs an `ipBlock: 10.0.100.0/22`-style rule (or the whole VPC CIDR) on 8081/8082 — otherwise the ALB health check is denied. (Another "gap I know about" line.)
+- NetworkPolicy note: the base `*-ingress` policies allow from namespace `ingress-nginx`; with ALB `target-type: ip`, traffic arrives from the **ALB's ENI IPs** in the public subnets, so the prod overlay patches `order-service-ingress` / `inventory-service-ingress` with `ipBlock: 10.0.0.0/16` on 8081/8082 — without it the ALB health check is denied and every target is unhealthy. Tighter: only the public subnet CIDRs (`10.0.100.0/24`–`10.0.102.0/24`).
 
 ---
 
@@ -512,7 +515,7 @@ Rough `ap-south-1` on-demand numbers (verify in the calculator; prices drift):
 | ElastiCache | 2 × cache.t4g.small (~$0.036/h) | ~55 |
 | MSK | 3 × kafka.t3.small (~$0.05/h) + 300 GB storage ($0.10/GB) | ~140 |
 | ALB | 1 ALB ($0.0225/h) + LCU | ~20 |
-| Secrets Manager, ECR, CloudWatch logs, Cognito (<50k MAU) | | ~10 |
+| Secrets Manager, ECR, CloudWatch logs, Cognito (<10k MAU free) | | ~10 |
 | **Total** | | **~$730 at list** → the README's $400–600 assumes `kafka.t3.small`, light data transfer and partially free tiers; treat it as "$500 ± $200" |
 
 ### How to cut it (ordered by effort/impact)
@@ -549,9 +552,9 @@ Rough `ap-south-1` on-demand numbers (verify in the calculator; prices drift):
 | Term | ShopFlow number | How |
 |---|---|---|
 | **RPO** (data loss tolerated) | RDS: ≤ 5 min (PITR logs); MSK: 0 for acked writes within region (RF3); Redis: cache, RPO irrelevant | Automated backups 7 d; cross-region snapshot copy would make RPO ≈ 24 h for region loss |
-| **RTO** (time to recover) | AZ loss: minutes, automatic (Multi-AZ, 3-AZ EKS/MSK, NAT/AZ). Region loss: hours (re-apply Terraform in another region from the same Git + restore snapshot) | `terraform apply -var region=ap-southeast-1` works because nothing is hard-coded except the state key and ACM ARN |
+| **RTO** (time to recover) | AZ loss: minutes, automatic (Multi-AZ, 3-AZ EKS/MSK, NAT/AZ). Region loss: hours (re-apply Terraform in another region from the same Git + restore snapshot) | `terraform apply -var region=ap-southeast-1` works because nothing is hard-coded except the state key, the `region` in the backend block and the overlay's endpoint/ACM values |
 
-DR strategy ladder (AWS terminology): **Backup & restore** (hours, cheapest — ShopFlow today) → **Pilot light** (DB replica in region 2, no compute) → **Warm standby** (scaled-down full stack) → **Multi-site active/active** (Route 53 latency routing, Aurora Global Database / DynamoDB global tables, MSK replicated with MirrorMaker 2 or MSK Replicator). Each step costs more and complicates data consistency (see 12-hard-questions, system design (e)).
+DR strategy ladder (AWS terminology): **Backup & restore** (hours, cheapest — ShopFlow today) → **Pilot light** (DB replica in region 2, no compute) → **Warm standby** (scaled-down full stack) → **Multi-site active/active** (Route 53 latency routing, Aurora Global Database / DynamoDB global tables, MSK replicated with MirrorMaker 2 or MSK Replicator). Each step costs more and complicates data consistency (see [12 — A5](12-hard-interview-questions.md)).
 
 Minimum DR hygiene to actually do: enable **AWS Backup** plan with cross-region copy for RDS, copy ECR images to a second region (replication rules), keep the Terraform state bucket replicated, test a restore quarterly (a backup you never restored is a hope, not a backup).
 
@@ -577,8 +580,9 @@ Minimum DR hygiene to actually do: enable **AWS Backup** plan with cross-region 
     kubectl run psql --rm -it --image=postgres:16-alpine -- psql "host=<rds host> user=shopflow_admin password=$(aws secretsmanager get-secret-value --secret-id shopflow/prod/db --query SecretString --output text | jq -r .master) dbname=postgres"
       → run the CREATE USER/DATABASE statements of k8s/base/postgres/init-db.sh with the orders/inventory/notifications passwords from the same secret
     Kafka topics (once): kafka-topics.sh --create --topic orders.events --partitions 6 --replication-factor 3 (and orders.events.DLT) using the IAM command-config
-[6] Fill the overlay from outputs: rds-endpoint, redis-host, kafka-bootstrap-servers (IAM :9098), jwt-issuer-uri, ACM cert ARN,
-    external-secrets role ARN in external-secret.yaml, image names → ECR URLs. Commit to main (PR + review).
+[6] Fill the overlay from outputs: rds-endpoint, redis-host, kafka-bootstrap-servers (kafka_bootstrap_servers_iam, :9098), jwt-issuer-uri,
+    acm_certificate_arn (needs hosted_zone_id set), external_secrets_role_arn in external-secret.yaml, kafka_clients_role_arn in
+    service-accounts.yaml, images[].newName → ECR URLs (set repo variable AWS_ROLE_ARN so CI mirrors to ECR). Commit to main (PR + review).
 [7] kubectl apply -n argocd -f shopflow/argocd/application-prod.yaml ; argocd app get shopflow-prod   # automated sync, prune, selfHeal, SSA
     watch: kubectl -n shopflow get externalsecret,secret shopflow-db ; kubectl -n shopflow get pods -w
 [8] DNS: Route 53 alias shop.example.com → $(kubectl -n shopflow get ingress shopflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
@@ -613,7 +617,7 @@ ServiceAccount annotated with a role ARN → EKS mutating webhook injects a proj
 Strong read-after-write consistency for all operations since Dec 2020 (PUT new, overwrite PUT, DELETE, LIST). Earlier it was eventual for overwrites/deletes. So the Terraform state's `use_lockfile` works on plain S3 without DynamoDB.
 
 **Q6. EBS vs EFS vs S3?**
-EBS: block, one AZ, one instance (multi-attach for io2 only), `ReadWriteOnce` PVs (EBS CSI add-on). EFS: NFS, multi-AZ, many pods `ReadWriteMany`, pay per GB, slower. S3: object storage via API, 11 nines, lifecycle tiers; not a filesystem (Mountpoint for S3 CSI exists). ShopFlow: state in S3, Prometheus on EBS, no EFS.
+EBS: block, one AZ, one instance (multi-attach only for io1/io2), `ReadWriteOnce` PVs (EBS CSI add-on). EFS: NFS, multi-AZ, many pods `ReadWriteMany`, pay per GB, slower. S3: object storage via API, 11 nines, lifecycle tiers; not a filesystem (Mountpoint for S3 CSI exists). ShopFlow: state in S3, Prometheus on EBS, no EFS.
 
 **Q7. ALB vs NLB vs CLB?**
 ALB L7 (path/host, WAF, OIDC, HTTP/2, gRPC, slow start); NLB L4 (static IP, millions RPS, TLS passthrough, PrivateLink); CLB legacy. ShopFlow: ALB with `target-type: ip` via the LB controller.
@@ -649,7 +653,7 @@ A write is acked only when ≥ 2 replicas have it, so one broker/AZ loss loses n
 IAM: no secrets, policy at topic/group level, works with IRSA; needs the `aws-msk-iam-auth` jar; slightly more CPU per connection. SCRAM: username/password stored in Secrets Manager (KMS CMK required). mTLS: ACM Private CA certs, strongest but cert lifecycle pain. ShopFlow: IAM.
 
 **Q18. How would you monitor consumer lag on MSK?**
-CloudWatch `EstimatedMaxTimeLag` / `SumOffsetLag` per group (needs `PER_TOPIC_PER_PARTITION` level), Prometheus JMX exporter on brokers, client `spring_kafka_listener_records_lag_max` (alert `KafkaConsumerLagHigh`), and `kafka-consumer-groups.sh --describe`. Lag growing + outbox backlog flat = consumer problem.
+CloudWatch `EstimatedMaxTimeLag` / `SumOffsetLag` per group (needs `PER_TOPIC_PER_PARTITION` level), Prometheus JMX exporter on brokers, client `kafka_consumer_fetch_manager_records_lag_max` (alert `KafkaConsumerLagHigh`), and `kafka-consumer-groups.sh --describe`. Lag growing + outbox backlog flat = consumer problem.
 
 **Q19. Cognito: why PKCE for the web client?**
 A SPA can't keep a `client_secret`. PKCE binds the authorization code to a one-time `code_verifier` so an intercepted code is useless. `generate_secret = false` + `allowed_oauth_flows = ["code"]` (never implicit).
@@ -664,7 +668,7 @@ SM: $0.40/secret, built-in rotation (RDS Lambda), replication, recovery window, 
 Shared, durable, encrypted state; versioning = undo a corrupted state; `use_lockfile = true` (TF 1.10+) writes a `.tflock` object with conditional writes, replacing the DynamoDB table. Never commit `terraform.tfstate` (it contains the DB passwords).
 
 **Q23. How does GitHub Actions authenticate to AWS here?**
-OIDC: `id-token: write` → GitHub JWT → `AssumeRoleWithWebIdentity` on `shopflow-github-actions` whose trust requires `aud=sts.amazonaws.com` and `sub=repo:Rajji01/DevopsComplete:ref:refs/heads/main`. Permissions: ECR push to three repos only. No access keys in repo secrets.
+OIDC: `id-token: write` → GitHub JWT → `aws-actions/configure-aws-credentials@v6` calls `AssumeRoleWithWebIdentity` on `shopflow-github-actions` (role ARN from the repo variable `AWS_ROLE_ARN`), whose trust requires `aud=sts.amazonaws.com` and `sub=repo:Rajji01/DevopsComplete:ref:refs/heads/main`; then `amazon-ecr-login@v2` and a `docker push` of the SHA tag to ECR. Permissions: ECR push to three repos only. No access keys in repo secrets.
 
 **Q24. Immutable ECR tags: what breaks?**
 Re-pushing `:latest` or re-tagging a fixed SHA fails. CI must tag with unique values (git SHA — done via `docker/metadata-action type=sha,format=long`). Benefit: the overlay's tag is cryptographically pinned to content.
@@ -705,7 +709,7 @@ Private connectivity to AWS services without NAT/IGW. Gateway endpoints (S3, Dyn
 
 **S7. Leaked AWS access key (e.g. committed to GitHub).** Minute 0–5: deactivate the key (`aws iam update-access-key --status Inactive`), don't delete yet (forensics). 5–30: CloudTrail `lookup-events --lookup-attributes AttributeKey=AccessKeyId` → what did it do? Check for new users/keys/roles, S3 listing, EC2 (crypto mining), SES. Rotate anything it could read (Secrets Manager secret → new DB passwords, ESO refresh, Reloader). Delete created resources. Open an AWS support case if abused (billing). Post-incident: this stack has **no IAM users** — the leak must have been a personal/admin key; enforce OIDC/SSO (IAM Identity Center), `git-secrets`/gitleaks pre-commit + GitHub secret scanning push protection, SCP denying `iam:CreateAccessKey`.
 
-**S8. ALB returns 502s.** 502 = ALB got a bad/no response from the target. Causes in ShopFlow: (1) pod terminated while still registered → add pod readiness gates (`elbv2.k8s.aws/pod-readiness-gate-inject`) and keep `preStop sleep 5` + `terminationGracePeriodSeconds: 45`; (2) target group health check hits `/actuator/health/readiness` but NetworkPolicy only allows `ingress-nginx` namespace → allow the ALB subnet CIDRs; (3) app idle timeout < ALB idle timeout (60 s) → set Tomcat keep-alive timeout > 60 s or ALB `idle_timeout.timeout_seconds` lower; (4) response headers too large / HTTP/1.0; (5) JVM start: `startupProbe` 60 s but target registered early → readiness gate again. Debug: ALB access logs (`elb_status_code` vs `target_status_code`), `TargetConnectionErrorCount`, `kubectl get targetgroupbinding`, pod events.
+**S8. ALB returns 502s.** 502 = ALB got a bad/no response from the target. Causes in ShopFlow: (1) pod terminated while still registered → add pod readiness gates (`elbv2.k8s.aws/pod-readiness-gate-inject`) and keep `preStop sleep 5` + `terminationGracePeriodSeconds: 45`; (2) target group health check hits `/actuator/health/readiness` but the pod's NetworkPolicy only allows `ingress-nginx` → check the prod overlay's `ipBlock 10.0.0.0/16` ingress patch actually rendered (`kubectl describe netpol order-service-ingress`); (3) app idle timeout < ALB idle timeout (60 s) → set Tomcat keep-alive timeout > 60 s or ALB `idle_timeout.timeout_seconds` lower; (4) response headers too large / HTTP/1.0; (5) JVM start: `startupProbe` 60 s but target registered early → readiness gate again. Debug: ALB access logs (`elb_status_code` vs `target_status_code`), `TargetConnectionErrorCount`, `kubectl get targetgroupbinding`, pod events.
 
 ---
 
@@ -718,4 +722,4 @@ Private connectivity to AWS services without NAT/IGW. Gateway endpoints (S3, Dyn
 - "`:latest` in prod with immutable tags" — impossible by design, and bad anyway.
 - "Kafka with RF3 can lose two brokers and still accept writes" — not with `min.insync.replicas=2`.
 - "Terraform state has no secrets" — it has the RDS passwords; protect the bucket.
-- Forgetting that NetworkPolicies written for `ingress-nginx` must change for ALB `target-type: ip`.
+- Forgetting that NetworkPolicies written for `ingress-nginx` must change for ALB `target-type: ip` (the prod overlay adds the VPC-CIDR `ipBlock` for exactly this reason).

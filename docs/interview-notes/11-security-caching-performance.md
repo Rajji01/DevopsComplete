@@ -2,7 +2,7 @@
 
 > Source of truth in this repo:
 > - Security: `shopflow/order-service/src/main/java/com/shopflow/order/security/SecurityConfig.java`, `JwtRolesConverter.java`; `application.yml` (`spring.security.oauth2.resourceserver.jwt.issuer-uri`); Keycloak realm `shopflow/k8s/base/keycloak/shopflow-realm.json`; compose `keycloak` service; `infra/terraform/aws/cognito.tf`; tests using `SecurityMockMvcRequestPostProcessors.jwt()`
-> - Caching: `inventory-service` — `InventoryServiceApplication` (`@EnableCaching`), `ProductController.get` (`@Cacheable`), `ReservationService` (`@CacheEvict`), `application.yml` (`spring.cache.type=${CACHE_TYPE:simple}`, Redis TTL 60s), compose/k8s `redis`, test `productReadIsCachedAndEvictedOnReserve`
+> - Caching: `inventory-service` — `InventoryServiceApplication` (`@EnableCaching`), `ProductController.get` (`@Cacheable`), `ReservationService` (`@CacheEvict`), `config/CacheConfig.java` (`RedisCacheManagerBuilderCustomizer` → JSON values via `GenericJackson2JsonRedisSerializer`), `application.yml` (`spring.cache.type=${CACHE_TYPE:simple}`, Redis TTL 60s), compose/k8s `redis`, tests `productReadIsCachedAndEvictedOnReserve` + `CacheSerializationTest` (11 inventory tests in total)
 > - Performance: `@RateLimiter(name = "orders")` on `OrderController.create`, `resilience4j.ratelimiter` config, `GlobalExceptionHandler.handleRateLimited` (429), test `rateLimitExceededIs429`; `spring.threads.virtual.enabled: true` in all three services; Hikari pool sizes
 > - Tracing: parent `pom.xml` (`micrometer-tracing-bridge-otel`, `opentelemetry-exporter-otlp`), `management.tracing.*` / `management.otlp.tracing.endpoint`, `spring.kafka.*.observation-enabled`, `docker-compose.yml` (Tempo, Loki, Alloy, Grafana), `monitoring/tempo.yml`, `monitoring/alloy.river`, `monitoring/grafana/provisioning/datasources/datasources.yml`
 >
@@ -22,7 +22,7 @@
 | Realm | realm `shopflow`, roles `customer`, `support`; users `alice`/`alice` (customer), `bob`/`bob` (support); public client `shopflow-web` (auth code + direct grant), access token lifetime 900s | `shopflow-realm.json` |
 | Test auth | `jwt().authorities(new SimpleGrantedAuthority("ROLE_customer"))`; `@WebMvcTest` imports `SecurityConfig` + `JwtRolesConverter`, `@MockitoBean JwtDecoder` | both order test classes |
 | Cache | `@Cacheable(cacheNames = "products", key = "#sku")` on a **DTO**; `@CacheEvict(key = "#sku")` in `reserve`, `allEntries = true` in `release` | `ProductController`, `ReservationService` |
-| Cache backend | `CACHE_TYPE=simple` (ConcurrentHashMap) by default/tests; `redis` in compose/K8s; TTL 60s, key prefix `inventory:` | `application.yml` |
+| Cache backend | `CACHE_TYPE=simple` (ConcurrentHashMap) by default/tests; `redis` in compose/K8s; TTL 60s, key prefix `inventory:`, values stored as JSON (`CacheConfig`) | `application.yml`, `CacheConfig` |
 | Redis | `redis:7.4-alpine --maxmemory 64mb --maxmemory-policy allkeys-lru`; prod ElastiCache (TLS) | compose, `k8s/base/redis`, `elasticache.tf` |
 | Rate limit | 50 order creations / 1s / pod, `timeout-duration: 0` → immediate **429** ProblemDetail "Too many requests" | `application.yml`, `GlobalExceptionHandler` |
 | Threads | `spring.threads.virtual.enabled: true` (Tomcat + `@Scheduled` + Kafka listener run on virtual threads) | all `application.yml` |
@@ -66,7 +66,7 @@ OIDC = OAuth2 + identity: adds the **`id_token`** (who the user is) and `/userin
 |---|---|---|
 | Issuer | `http://localhost:8180/realms/shopflow` (compose), `http://keycloak.shopflow.local/realms/shopflow` (K8s `KC_HOSTNAME`) | `https://cognito-idp.ap-south-1.amazonaws.com/<pool-id>` |
 | Roles claim | `realm_access.roles: ["customer"]` | `cognito:groups: ["customer"]` (groups `customer`, `support` created in Terraform) |
-| Client | public `shopflow-web`, redirect `http://localhost:*`, standard flow + direct grant | user pool client `web`, `allowed_oauth_flows = ["code"]`, SRP + refresh |
+| Client | public `shopflow-web`, redirect `http://localhost:*`, standard flow + direct grant | user pool client `shopflow-web` (resource `aws_cognito_user_pool_client.web`), `generate_secret = false`, `allowed_oauth_flows = ["code"]`, SRP + refresh |
 | Config | realm JSON imported at start (`--import-realm`), mounted from a ConfigMap (`keycloak-realm`, `configMapGenerator`) | managed |
 | In K8s | Deployment + `startupProbe` on `/realms/shopflow`, admin password from Secret `keycloak-admin`, reachable only from ingress-nginx and order-service (JWKS) per NetworkPolicy | prod overlay deletes Keycloak and adds egress `0.0.0.0/0:443` for the Cognito JWKS |
 
@@ -81,7 +81,7 @@ Compose gotcha worth telling: tokens carry `iss = http://localhost:8180/...` bec
 TOKEN=$(curl -s -X POST http://localhost:8180/realms/shopflow/protocol/openid-connect/token \
   -d grant_type=password -d client_id=shopflow-web -d username=alice -d password=alice | jq -r .access_token)
 # 2. look inside (never paste production tokens into websites)
-echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null | jq '{iss, sub, exp, azp, realm_access, preferred_username}'
+echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | awk '{ while (length($0) % 4) $0 = $0 "="; print }' | base64 -d | jq '{iss, sub, exp, azp, realm_access, preferred_username}'   # base64url -> base64 + padding
 #   "iss": "http://localhost:8180/realms/shopflow"   <- must equal JWT_ISSUER_URI, byte for byte
 #   "realm_access": {"roles": ["customer", ...]}      <- JwtRolesConverter reads this
 # 3. the discovery document and JWKS Spring fetches
@@ -246,16 +246,16 @@ Why each decision:
 - **`allEntries = true` on release**: `release(orderRef)` only learns the SKU after loading the reservation; a precise `@CacheEvict(key = "#result...")` is not possible for a `void` method. Releases are rare, so flushing the whole `products` cache is acceptable — mention the alternative (evict manually via `CacheManager` inside the method).
 - **Test**: `productReadIsCachedAndEvictedOnReserve` — GET caches (`cacheManager.getCache("products").get("PIXEL-9")` not null), `reserve` evicts (null), next GET shows `quantity - 1`.
 
-Honest implementation gap to know (it will come up if you demo with Redis): Spring Boot's `RedisCacheManager` defaults to **JDK serialization** for values, which requires `Serializable`. `ProductResponse` is a plain record and does not implement it, and there is no `RedisCacheConfiguration` bean with a JSON serializer. So with `CACHE_TYPE=redis` the first cache put would fail with a `SerializationException`; tests pass because they run with `simple`. The fix is one bean: `RedisCacheConfiguration.defaultCacheConfig().serializeValuesWith(SerializationPair.fromSerializer(new GenericJackson2JsonRedisSerializer()))` (or `implements Serializable`). Knowing this is exactly the "Spring Cache pitfall" interviewers probe.
+The serializer pitfall, and how ShopFlow handles it (a classic "works with `simple`, explodes on the first Redis put" bug): Spring Boot's `RedisCacheManager` defaults to **JDK serialization** for values, which requires `Serializable`; `ProductResponse` is a plain record and does not implement it, so with `CACHE_TYPE=redis` the first put would throw `SerializationException`. ShopFlow fixes it in `config/CacheConfig.java` with one bean, a `RedisCacheManagerBuilderCustomizer` that sets `builder.cacheDefaults().serializeValuesWith(SerializationPair.fromSerializer(new GenericJackson2JsonRedisSerializer()))` — values are JSON with a type hint, readable in `redis-cli`, and class changes do not break the cache. `CacheSerializationTest` pins the round-trip of `ProductResponse` through that serializer; the customizer is only applied when the cache type is `redis`, so the `simple` cache in tests is untouched. Remaining gap to admit: no test runs the full `@Cacheable` path against a real Redis (Testcontainers would close it).
 
 ## B2. Spring Cache abstraction pitfalls
 
 1. **Self-invocation**: `@Cacheable` is a proxy; `this.get(sku)` inside the same class bypasses it (same rule as `@Transactional`). ShopFlow's annotation is on the controller method, which Spring MVC calls **through the proxy**, so it works. Placing it on the controller is unusual — the common place is a service method; be ready to say so.
 2. **Key design**: default key = all method parameters; use `key = "#sku"` explicitly. Keys must be stable and bounded (SKU, not a whole request object). Prefix per service (`inventory:`) to share one Redis.
 3. **Null / exceptions**: `null` results are cached by default (`unless = "#result == null"` to avoid); exceptions are **not** cached — `ProductNotFoundException` → 404 is not cached, so a missing SKU hits the DB every time (negative caching would need a sentinel).
-4. **Serialization** (Redis): JDK serialization is brittle across versions; prefer JSON (`GenericJackson2JsonRedisSerializer`) or Protobuf; records need `Serializable` for JDK.
+4. **Serialization** (Redis): JDK serialization is brittle across versions and needs `Serializable`; prefer JSON (`GenericJackson2JsonRedisSerializer`, as `CacheConfig` does) or Protobuf.
 5. **Conditional**: `condition = "#quantity > 0"`, `sync = true` to coalesce concurrent misses for the same key in one JVM (stampede protection).
-6. **Transactions**: `@CacheEvict` runs when the method returns — *before* the surrounding transaction commits. A concurrent reader can re-populate the cache with the **old** value between evict and commit. Mitigation: `@CacheEvict(beforeInvocation = false)` + a `TransactionAwareCacheManagerProxy`, or evict after commit (`@TransactionalEventListener(AFTER_COMMIT)`). ShopFlow's TTL (60s) bounds the damage.
+6. **Transactions**: `@CacheEvict` runs when the method returns — *before* the surrounding `@Transactional` commits (`reserve` is annotated with both). A concurrent reader can re-populate the cache with the **old** value between evict and commit. Mitigation: make the cache manager transaction-aware (`RedisCacheManager.builder(...).transactionAware()` / `TransactionAwareCacheManagerProxy`, which defers evictions to after commit), or evict in an `@TransactionalEventListener(phase = AFTER_COMMIT)`. ShopFlow's TTL (60s) bounds the damage.
 7. **`type: simple` across pods**: each pod has its own map → a reserve on pod A does not evict pod B's copy. That is why compose/K8s set `CACHE_TYPE=redis` (shared).
 
 ## B3. Redis essentials
@@ -338,7 +338,7 @@ Why limit `POST /orders` specifically: every order costs a DB insert, an HTTP ca
 
 - Hikari rule of thumb: `pool = cores × 2 + effective_spindles` → a service rarely needs more than 10–20 per pod; more connections = more Postgres context switching. ShopFlow: default 10, K8s `DB_POOL_SIZE=5` so that 10 pods × 5 × 2 services = 100 < `max_connections=200` (compose/StatefulSet) — in prod RDS, use **RDS Proxy / PgBouncer**. Watch `hikaricp_connections_pending` and `hikaricp_connections_timeout_total`; `connection-timeout` default 30s is too long for an API — set 2–5s so a saturated pool fails fast.
 - Hold connections briefly: no `@Transactional` around HTTP (`OrderService`), `open-in-view: false`, short `TransactionTemplate` blocks.
-- JVM: `-XX:MaxRAMPercentage=75` of the 512Mi limit ≈ 384 MiB heap; `-XX:+ExitOnOutOfMemoryError` → crash and restart; **no CPU limit** (throttling slows GC/JIT/startup); G1 default; for small heaps consider `-XX:+UseSerialGC`/`ParallelGC`; `-Xss` matters less with virtual threads. Startup: CDS/AppCDS, Spring AOT, or CRaC for faster scale-out.
+- JVM: `-XX:MaxRAMPercentage=75` of the 512Mi limit ≈ 384 MiB heap; `-XX:+ExitOnOutOfMemoryError` → crash and restart; **no CPU limit** (throttling slows GC/JIT/startup). GC: the JVM only picks G1 on a "server-class" container (≥ 2 CPUs **and** ≥ 1792 MB); with a 512Mi limit ergonomics selects **SerialGC** — fine for this heap, but set `-XX:+UseG1GC` explicitly if you raise the limit and want predictable pauses; `-Xss` matters less with virtual threads. Startup: CDS/AppCDS, Spring AOT, or CRaC for faster scale-out.
 
 ### JVM & pool flags reference (what is set, what to reach for)
 
@@ -347,7 +347,7 @@ Why limit `POST /orders` specifically: every order costs a DB insert, an HTTP ca
 | `-XX:MaxRAMPercentage=75` | `JAVA_TOOL_OPTIONS` in the Dockerfile | lower (60) if native memory (threads, direct buffers, metaspace) causes OOMKills at 512Mi; never 90+ |
 | `-XX:+ExitOnOutOfMemoryError` | set | keeps "crash and restart" semantics in K8s instead of a half-dead pod |
 | `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp` | not set | add when hunting a leak (needs the writable `/tmp` emptyDir, which exists) |
-| `-XX:+UseG1GC` (default) / `-XX:+UseSerialGC` / `-XX:+UseZGC` | default G1 | Serial for tiny heaps and 1 CPU request; ZGC/Shenandoah for large heaps and low pause targets |
+| `-XX:+UseG1GC` / `-XX:+UseSerialGC` / `-XX:+UseZGC` | not set → ergonomics picks **Serial** at a 512Mi limit (G1 needs ≥ 2 CPUs and ≥ 1792 MB) | Serial is fine for tiny heaps; set G1 explicitly when the limit grows; ZGC/Shenandoah for large heaps and low pause targets |
 | `-Xss` | default (1 MB platform threads) | irrelevant for virtual threads; matters with hundreds of platform threads |
 | `-XX:ActiveProcessorCount` | default = container CPU limit (none here → node CPUs) | set it when there is no CPU limit but you want GC/JIT thread counts bounded (e.g. `=2` to match the 250m request realistically) |
 | `-XX:TieredStopAtLevel=1`, `-Xshare`, AppCDS, Spring AOT | not set | faster startup for scale-out; CDS archive built in the Dockerfile |
@@ -560,7 +560,7 @@ The stock change is a conditional bulk UPDATE; the app never knows the resulting
 Entities are tied to a persistence context (lazy proxies, dirty checking); a cached entity would be shared across requests and could throw `LazyInitializationException` or be re-attached accidentally. A record is immutable and serialisable.
 
 **Q15. What happens to the cache when inventory has 3 pods?**
-With `type: simple` each pod has its own map → stale reads on the other pods. That is why compose/K8s set `CACHE_TYPE=redis`: one shared cache, evictions visible everywhere. (And then the serializer must be configured — see the honest gap in B1.)
+With `type: simple` each pod has its own map → stale reads on the other pods. That is why compose/K8s set `CACHE_TYPE=redis`: one shared cache, evictions visible everywhere, values as JSON thanks to `CacheConfig` (see B1).
 
 **Q16. Cache stampede — what and how to prevent?**
 Many concurrent misses on the same expired hot key hammer the DB. Prevent with `sync = true`, a lock/single-flight, jittered TTLs, stale-while-revalidate, or explicit invalidation instead of expiry.
@@ -614,8 +614,8 @@ Check the rule order: `GET /api/v1/orders/**` → `customer|support` comes **bef
 **S3. Product page shows stock 3 but the reservation says "insufficient stock".**
 Expected and acceptable: the page reads the cache (≤ 60s stale, or a missed eviction), the reservation uses the atomic DB update. Explain the design: never decide from cache. If staleness is too long, check evictions happen (metrics `cache_evictions_total`), that all pods share Redis (`CACHE_TYPE`), and shorten the TTL.
 
-**S4. Switching `CACHE_TYPE=redis` in compose made `GET /products/{sku}` return 500.**
-`SerializationException: DefaultSerializer requires a Serializable payload` — `ProductResponse` is a record without `Serializable` and the cache manager uses JDK serialization by default. Fix with a `RedisCacheConfiguration` bean using `GenericJackson2JsonRedisSerializer` (or implement `Serializable`); add a test profile that runs the cache test against Testcontainers Redis so the gap cannot return.
+**S4. Switching `CACHE_TYPE=redis` made `GET /products/{sku}` return 500 with `SerializationException: DefaultSerializer requires a Serializable payload`.**
+The cache manager fell back to JDK serialization and `ProductResponse` is a record without `Serializable` — which means the `RedisCacheManagerBuilderCustomizer` in `config/CacheConfig.java` was not applied (bean removed, package not scanned, or a second `RedisCacheConfiguration` overriding it). Verify with `redis-cli --scan --pattern 'inventory:*'` + `GET`: ShopFlow values must be readable JSON with a `@class` hint. `CacheSerializationTest` guards the serializer itself; a Testcontainers Redis run of `productReadIsCachedAndEvictedOnReserve` would guard the wiring too.
 
 **S5. Flash sale: hundreds of 429s, customers complain, but the service is healthy.**
 Working as designed per pod, but the limit (50 rps/pod) may be too low or unevenly spread (keep-alive connections pin clients to pods). Options: raise `limit-for-period`, scale pods (limit multiplies), move the limit to the Ingress/gateway for a global, per-user rule, add `Retry-After`, and put a waiting-room/queue in front for the sale. Verify the DB pool and inventory were not the real bottleneck (`hikaricp_connections_pending`).

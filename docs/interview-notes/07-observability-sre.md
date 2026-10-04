@@ -176,10 +176,10 @@ for: 5m
 
 ### Rule 6 — `KafkaConsumerLagHigh` (ticket)
 ```promql
-sum by (application) (spring_kafka_listener_records_lag_max) > 1000
+sum by (application) (kafka_consumer_fetch_manager_records_lag_max) > 1000
 for: 10m
 ```
-Lag = latest offset − committed offset: notification-service is falling behind the producers. Ticket, not page — nothing is lost (retention), it is a throughput problem (pods ≤ partitions, slow processing, poison-pill retry loop). **Verify the series name against the real `/actuator/prometheus` output**: Micrometer's Kafka client binder exposes consumer lag as `kafka_consumer_fetch_manager_records_lag_max{client_id=...}`; `spring_kafka_listener_*` are the listener observation timers. If the rule's metric does not exist the alert never fires — which is exactly why `promtool check rules` (syntax) is not enough; add an `absent()` rule or a unit test with `promtool test rules` using the real metric name. Saying this in an interview shows you validate alerts, not just write them.
+Lag = latest offset − committed offset: notification-service is falling behind the producers. Ticket, not page — nothing is lost (retention), it is a throughput problem (pods ≤ partitions, slow processing, poison-pill retry loop). The series name is the one Micrometer's Kafka client binder really exports (`kafka.consumer.fetch.manager.records.lag.max` → `kafka_consumer_fetch_manager_records_lag_max{client_id=...}`); `spring_kafka_listener_*` are only the listener observation timers. **War story**: an earlier version of this rule used `spring_kafka_listener_records_lag_max`, which does not exist, so the alert could never fire and `promtool check rules` (syntax only) was happy. Fixed by checking the real `/actuator/prometheus` output, and `NotificationServiceApplicationTests` now asserts the gauge is registered. Add an `absent()` rule or `promtool test rules` for belt-and-braces. Saying this in an interview shows you validate alerts, not just write them.
 
 ### More useful queries (for Grafana)
 ```promql

@@ -135,19 +135,22 @@ Older `ci.yml` for contrast: runs on **every** push/PR (no path filter), matrix 
 - Default permissions can be broad (depending on repo settings) → always declare `permissions:` explicitly (ShopFlow does).
 
 ### OIDC to the cloud (no long-lived keys)
-Not used in the repo (GHCR needs no cloud creds). If pushing to **ECR** or deploying to **EKS**:
+Used in the repo: the `image` job mirrors each SHA-tagged image to **ECR** when the repository variable `AWS_ROLE_ARN` is set (role from `terraform output github_actions_role_arn`, trust policy in `infra/terraform/aws/ci-oidc.tf`); GHCR itself needs no cloud creds.
 ```yaml
 permissions:
   id-token: write          # allow requesting an OIDC JWT
-  contents: read
+  packages: write
 steps:
-  - uses: aws-actions/configure-aws-credentials@v4
+  - uses: aws-actions/configure-aws-credentials@v6
+    if: github.ref == 'refs/heads/main' && vars.AWS_ROLE_ARN != ''
     with:
-      role-to-assume: arn:aws:iam::123456789012:role/gha-shopflow-ecr-push
-      aws-region: ap-south-1
+      role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+      aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
   - uses: aws-actions/amazon-ecr-login@v2
+    id: ecr
+  - run: docker tag "$SRC" "${{ steps.ecr.outputs.registry }}/shopflow/${{ matrix.service }}:${{ github.sha }}" && docker push ...
 ```
-AWS IAM role trust policy trusts the OIDC provider `token.actions.githubusercontent.com` with conditions `aud = sts.amazonaws.com` and `sub = repo:<owner>/DevopsComplete:ref:refs/heads/main`. Benefit: no `AWS_ACCESS_KEY_ID` stored in GitHub; credentials expire in ~1h; scoped to repo + branch.
+AWS IAM role trust policy trusts the OIDC provider `token.actions.githubusercontent.com` with conditions `aud = sts.amazonaws.com` and `sub = repo:Rajji01/DevopsComplete:ref:refs/heads/main`. Benefit: no `AWS_ACCESS_KEY_ID` stored in GitHub; credentials expire in ~1h; scoped to repo + branch.
 
 ### Caching
 - `actions/setup-java` with `cache: maven` → caches `~/.m2/repository` keyed on hash of `**/pom.xml`.

@@ -83,7 +83,7 @@ Cluster = N brokers.  Topic "orders.events", 3 partitions, replication factor 3
 
 | Strategy | How | Semantics |
 |---|---|---|
-| Auto-commit (`enable.auto.commit=true`, every 5s) | commits whatever `poll()` returned, in the background | **at-most-once-ish / lossy**: a crash after commit but before processing loses records |
+| Auto-commit (`enable.auto.commit=true`, every 5s) | the client commits the offsets of the **previous** `poll()` on the next `poll()` (if 5s passed), regardless of what your code did with them | roughly at-least-once in a plain synchronous loop, but **lossy as soon as processing is handed to another thread** (records committed before they were processed) and imprecise on crash (up to 5s re-processed). Never for side effects |
 | Manual after processing (`enable.auto.commit=false`) | Spring container commits after the listener returns (`AckMode.BATCH` default, or `RECORD`) | **at-least-once**: crash after processing but before commit → redelivery → consumer must be idempotent |
 | Manual `Acknowledgment.acknowledge()` (`AckMode.MANUAL`) | your code decides when | same at-least-once, more control |
 | Commit before processing | — | at-most-once (acceptable for metrics/logs, never for emails/money) |
@@ -96,7 +96,7 @@ ShopFlow: `enable-auto-commit: false` → Spring Kafka commits after `onOrderEve
 ### Rebalancing
 
 - **Eager (range/round-robin)**: *stop-the-world* — every consumer gives up all partitions, then all are reassigned. Short pause on every scale event.
-- **Cooperative sticky** (`CooperativeStickyAssignor`, default protocol in Kafka 3.x+ clients via `partition.assignment.strategy`): only the partitions that must move are revoked; others keep processing. Fewer duplicates, less pause.
+- **Cooperative sticky** (`CooperativeStickyAssignor`): only the partitions that must move are revoked; others keep processing. Fewer duplicates, less pause. **Not the default**: since 3.0 the client default is `[RangeAssignor, CooperativeStickyAssignor]`, which still *uses* Range (eager) until you remove Range from the list — ShopFlow runs the eager default.
 - **Static membership** (`group.instance.id`): a pod restart within `session.timeout.ms` does **not** trigger a rebalance — useful with Kubernetes rolling updates / StatefulSets.
 - **Rebalance storm**: consumers repeatedly joining/leaving — typically `max.poll.interval.ms` exceeded (slow processing), flapping pods (OOMKilled, failing liveness), or HPA thrash. See Scenario 4.
 
@@ -150,7 +150,7 @@ ShopFlow's choice is proven by a test: `NotificationServiceApplicationTests.even
 | Property / API | ShopFlow | Why / what else to know |
 |---|---|---|
 | `spring.kafka.bootstrap-servers` | `${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}`; tests `${spring.embedded.kafka.brokers}` | one env var per environment; prod: MSK bootstrap string from the `shopflow-endpoints` ConfigMap |
-| `spring.kafka.producer.acks` | `all` | `1` is the client default; `all` is required for "no acknowledged write lost" |
+| `spring.kafka.producer.acks` | `all` | `all` is already the client default since Kafka 3.0 (idempotence on); setting it makes the "no acknowledged write lost" intent explicit and survives someone disabling idempotence |
 | `producer.properties.enable.idempotence` | `true` | de-dupes producer retries; implies `acks=all`, `max.in.flight.requests.per.connection ≤ 5` |
 | `producer.key/value-serializer` | default `StringSerializer` (JSON produced by Jackson in `OrderService.toJson`) | `JsonSerializer` adds type headers; Avro needs `KafkaAvroSerializer` + registry URL |
 | `spring.kafka.template.observation-enabled` | `true` | producer span + `traceparent` header |
@@ -165,7 +165,7 @@ ShopFlow's choice is proven by a test: `NotificationServiceApplicationTests.even
 | `DefaultErrorHandler` bean | `ExponentialBackOff(500, 2.0)` + `setMaxElapsedTime(10_000)` + `DeadLetterPublishingRecoverer(template)` | Spring Boot wires the bean into the listener container factory automatically; `addNotRetryableExceptions(...)` to skip retries for permanent failures |
 | `ErrorHandlingDeserializer` | not needed (String payload parsed in code) | mandatory wrapper when using `JsonDeserializer` so bad bytes do not loop forever |
 | `@RetryableTopic` | not used | non-blocking retries via `-retry-<n>` topics + `-dlt`; breaks per-key ordering |
-| `KafkaAdmin` + `NewTopic` beans | not used (topics auto-created locally; created by Terraform/admin on MSK) | lets the app declare partitions/RF/retention at startup — also useful in tests |
+| `KafkaAdmin` + `NewTopic` beans | not used (topics auto-created locally; on MSK `auto.create.topics.enable=false`, so an admin/Job creates them — Terraform's `aws_msk_*` has no topic resource) | lets the app declare partitions/RF/retention at startup — also useful in tests |
 | Kafka transactions (`transaction-id-prefix`, `KafkaTransactionManager`, `executeInTransaction`) | not used — the outbox makes them unnecessary for the DB→Kafka hop | needed for consume-transform-produce exactly-once between topics |
 | `spring.kafka.security.protocol` / `sasl.*` | PLAINTEXT locally | MSK IAM: `SASL_SSL`, `sasl.mechanism=AWS_MSK_IAM`, `sasl.jaas.config=software.amazon.msk.auth.iam.IAMLoginModule required;`, `sasl.client.callback.handler.class=...IAMClientCallbackHandler` + the `aws-msk-iam-auth` jar |
 
@@ -173,7 +173,7 @@ ShopFlow's choice is proven by a test: `NotificationServiceApplicationTests.even
 
 | Decision | Rule of thumb | ShopFlow |
 |---|---|---|
-| Partitions | `max(target throughput / per-consumer throughput, number of consumers you want busy)`, rounded up with headroom; every partition costs file handles, memory and rebalance time | 3 (local default `KAFKA_NUM_PARTITIONS`), 6 on MSK; notification HPA max 6 matches |
+| Partitions | `max(target throughput / per-consumer throughput, number of consumers you want busy)`, rounded up with headroom; every partition costs file handles, memory and rebalance time | 3 (local default `KAFKA_NUM_PARTITIONS`), 6 on MSK; notification HPA max 6 in the base matches MSK, prod max 10 leaves 4 idle |
 | Replication factor | 3 in prod (survive one broker + one in maintenance); 1 only for dev | 1 local, 3 MSK |
 | `min.insync.replicas` | RF − 1 | 2 on MSK |
 | Retention | long enough to replay after an outage or to backfill a new consumer; cost = bytes × RF | 7 days (`log.retention.hours=168`) on MSK |
@@ -241,7 +241,7 @@ Details worth saying out loud:
 3. **Which events exist?** `OrderEvent.from(order)` derives the type from the status: CONFIRMED → `OrderConfirmed`, REJECTED → `OrderRejected`, FAILED → `OrderFailed` (emitted in the `catch` before the 503 is thrown), CANCELLED → `OrderCancelled`. The PENDING save emits nothing — the business outcome is not known yet.
 4. **`eventId` vs `orderRef`**: `orderRef` is the **key** (ordering/partitioning + business correlation); `eventId` is a fresh UUID per event (**dedupe** key on the consumer). One order produces several events, so deduping on `orderRef` would wrongly drop `OrderCancelled` after `OrderConfirmed`.
 5. **At-least-once by design**: if the pod dies between `send().get()` and the commit that writes `published_at`, the row is still unpublished → the next run sends it again → the consumer sees the same `eventId` → skipped. The relay's Javadoc says this and points to notification-service.
-6. **`SKIP LOCKED`** (`OutboxRepository`): `@Lock(PESSIMISTIC_WRITE)` renders `SELECT ... FOR UPDATE`; the JPA hint `jakarta.persistence.lock.timeout = -2` makes Hibernate render **`SKIP LOCKED`** on PostgreSQL (`-1` would be `NOWAIT`... careful: in Hibernate `-2` = skip locked, `0` = nowait). Effect: with 3 order-service pods, each relay run grabs a **different** set of unpublished rows instead of blocking on, or double-publishing, the rows another pod is sending. Rows already locked by another pod are simply not returned.
+6. **`SKIP LOCKED`** (`OutboxRepository`): `@Lock(PESSIMISTIC_WRITE)` renders `SELECT ... FOR UPDATE`; the JPA hint `jakarta.persistence.lock.timeout = -2` makes Hibernate render **`SKIP LOCKED`** on PostgreSQL (Hibernate's magic values: `-2` = `SKIP LOCKED`, `-1` = wait forever, `0` = `NOWAIT`). Effect: with 3 order-service pods, each relay run grabs a **different** set of unpublished rows instead of blocking on, or double-publishing, the rows another pod is sending. Rows already locked by another pod are simply not returned.
 7. **`.get(5, SECONDS)`** on the send: synchronous wait for the `acks=all` acknowledgement. Without it `markPublished()` could run for a message the broker never got. Trade-off: the relay is sequential (≤100 sends per second per pod at 1s delay with slow acks) — fine for this volume; for high volume you would send a batch asynchronously and mark published in the callbacks.
 8. **Index** `idx_outbox_pending (published_at, created_at)` matches the query's `WHERE published_at IS NULL ORDER BY created_at`. The SQL comment admits a PostgreSQL **partial index** (`WHERE published_at IS NULL`) would be smaller, but H2 (tests) cannot parse it. Published rows are never deleted — an archival/cleanup job is an honest gap.
 9. **Backlog gauge**: `meterRegistry.gauge("outbox.unpublished", outboxRepository, OutboxRepository::countByPublishedAtIsNull)` → `outbox_unpublished` in Prometheus → alert `OutboxBacklogGrowing` (`> 100 for 5m`, page). This is the **one metric that tells you Kafka is down** from the producer's point of view, even though every HTTP request still returns 201.
@@ -276,7 +276,7 @@ var backOff = new ExponentialBackOff(500L, 2.0);   // 0.5s, 1s, 2s, 4s, ...
 backOff.setMaxElapsedTime(10_000L);                // ... until ~10s have passed in total
 return new DefaultErrorHandler(new DeadLetterPublishingRecoverer(template), backOff);
 ```
-- A record that throws is **re-polled and retried in place** (the consumer seeks back to that offset, so the partition is blocked during the retries — that is why the window is short). After the back-off budget is exhausted the recoverer publishes it to **`orders.events.DLT`** (default naming: `<topic>.DLT`, same partition number) with exception headers, the offset is committed, and the partition moves on.
+- A record that throws is **re-polled and retried in place** (the consumer seeks back to that offset, so the partition is blocked during the retries — that is why the window is short). After the back-off budget is exhausted the recoverer publishes it to **`orders.events.DLT`** (default naming: `<topic>.DLT`, same partition number when the DLT has at least as many partitions) with exception headers, the offset is committed, and the partition moves on.
 - Why "bad JSON" lands in the DLT here: the listener receives a `String` (`StringDeserializer`) and calls `objectMapper.readValue` itself, so a parse error is an ordinary listener exception → retried → DLT. If you used `JsonDeserializer` directly, a deserialization failure happens **before** the listener and loops forever unless you wrap it in `ErrorHandlingDeserializer` — a classic interview trap.
 - Transient vs permanent: a DB outage longer than 10s also sends good records to the DLT. Improvements: longer backoff for `TransientDataAccessException`, `addNotRetryableExceptions(JsonProcessingException.class)` to skip straight to the DLT for malformed payloads, or **retry topics** (`@RetryableTopic`: `orders.events-retry-1000`, `-retry-2000`, ..., then `-dlt`) which free the main partition at the cost of per-key ordering.
 - Someone must **watch the DLT**: a consumer-lag or message-count alert on `orders.events.DLT`, a small admin tool to inspect headers and replay (re-produce to the main topic after a fix).
@@ -288,7 +288,7 @@ return new DefaultErrorHandler(new DeadLetterPublishingRecoverer(template), back
 - **Scaling rule**: consumers in a group ≤ partitions; extra pods sit idle. ShopFlow: 3 partitions locally → at most 3 busy notification pods (HPA max 6 is CPU-driven and will not help past 3); MSK uses `num.partitions=6`. More partitions = more parallelism but more open files, more leader elections, slower rebalances, and a **changed key→partition mapping** when you add them to an existing topic.
 - **KEDA** (Kafka scaler on lag) is the right autoscaler for consumers, not CPU-based HPA.
 - **Backpressure**: Kafka consumers *pull*, so a slow consumer never overwhelms itself; lag just grows and retention is your buffer (7 days on MSK). Tune `max.poll.records` down if a batch takes too long (`max.poll.interval.ms`), or `pause()/resume()` the container.
-- ShopFlow alert `KafkaConsumerLagHigh`: `sum by (application) (spring_kafka_listener_records_lag_max) > 1000 for 10m` (ticket). **Honest check to make before an interview**: Micrometer's Kafka consumer binder exposes this as `kafka_consumer_fetch_manager_records_lag_max`; if the series name in the rule does not exist, the alert silently never fires. Verify with `curl :8083/actuator/prometheus | grep lag` and add an `absent()` guard. Saying "I validated metric names against the real `/actuator/prometheus` output" is a strong SRE answer.
+- ShopFlow alert `KafkaConsumerLagHigh`: `sum by (application) (kafka_consumer_fetch_manager_records_lag_max) > 1000 for 10m` (ticket) — the series Micrometer's Kafka consumer binder actually exports. **Story to tell**: an earlier version of the rule used `spring_kafka_listener_records_lag_max`, a metric that does not exist, so the alert could never fire; `promtool check rules` is syntax-only and did not catch it. It was fixed by checking `curl :8083/actuator/prometheus | grep lag`, and `NotificationServiceApplicationTests` now asserts the `kafka.consumer.fetch.manager.records.lag.max` gauge is registered. Add an `absent()` rule for belt-and-braces. "I validate metric names against the real `/actuator/prometheus` output" is a strong SRE answer.
 
 > Tip: "Lag badh raha hai → pods badhao" galat answer hai agar partitions se zyada pods already hain. Pehle partitions, phir pods, phir processing speed.
 
@@ -332,7 +332,7 @@ Why ShopFlow mixes both: the customer must know **now** whether stock was reserv
 
 ### Amazon MSK notes (prod, from `infra/terraform/aws/msk.tf`)
 - 3 brokers across 3 AZs, `default.replication.factor=3`, `min.insync.replicas=2` → with `acks=all` a write needs leader + 1 follower; one AZ down still accepts writes. `auto.create.topics.enable=false` → topics are created deliberately (Terraform / admin), unlike the dev broker where `orders.events` is auto-created with 3 partitions on first send.
-- **IAM authentication** (`client_authentication.sasl.iam = true`): no passwords in the cluster; the pod's **IRSA** role is allowed `kafka-cluster:Connect/WriteData/ReadData` on specific topics. Client side needs the `aws-msk-iam-auth` jar and `security.protocol=SASL_SSL`, `sasl.mechanism=AWS_MSK_IAM` (the Terraform comment says the services would add this library — the current `application.yml` is PLAINTEXT for the dev broker). Port **9098** = IAM listener (the prod overlay's egress NetworkPolicy allows 9092 and 9098 to the VPC CIDR).
+- **IAM authentication** (`client_authentication.sasl.iam = true`): no passwords in the cluster; the pod's **IRSA** role is allowed `kafka-cluster:Connect/WriteData/ReadData` on specific topics. Client side needs the `aws-msk-iam-auth` jar and `security.protocol=SASL_SSL`, `sasl.mechanism=AWS_MSK_IAM` (the Terraform comment says the services would add this library — the current `application.yml` is PLAINTEXT for the dev broker). Port **9098** = IAM listener: the prod overlay's `kafka-bootstrap-servers` placeholder already uses `:9098`, the egress NetworkPolicy allows 9092 and 9098 to the VPC CIDR, and `service-accounts.yaml` gives order- and notification-service the IRSA-annotated ServiceAccounts (`serviceAccountName` patches) the `shopflow-kafka-clients` role trusts.
 - TLS in transit (`client_broker = "TLS"`, `in_cluster = true`), broker logs to CloudWatch, EBS 100 GB per broker.
 - Endpoints come from `terraform output` into the `shopflow-endpoints` ConfigMap (`behavior: replace` in `overlays/prod`); the in-cluster `kafka` StatefulSet and its NetworkPolicy are deleted by `$patch: delete`.
 
@@ -432,7 +432,7 @@ Hypotheses: (a) consumer redelivery after a crash/rebalance — should be caught
 A poison pill (or a record hitting a bug) is being retried on that partition. Logs show the same offset failing; `DefaultErrorHandler` should move it to the DLT after ~10s — if the lag persists, the exception may be thrown in a way the handler cannot recover (e.g. an error in a `@Transactional` commit after the listener returned, or `max.poll.interval.ms` exceeded during retries causing a rebalance loop). Inspect the DLT headers (`kafka_dlt-exception-message`), fix the consumer or the data, replay from the DLT. Add an alert on DLT message count.
 
 **S3. `KafkaConsumerLagHigh` fires for 10 minutes after a marketing push.**
-Not a bug — throughput. Partitions (3 locally / 6 on MSK) cap useful consumers; check pods ≤ partitions. Speed up processing (batch listener, async provider calls, bigger DB pool — notification uses `DB_POOL_SIZE=5`), scale pods with KEDA on lag, and if needed increase partitions **on a new topic** or accept the key remapping. Retention (7 days) means nothing is lost while catching up. Verify the metric name actually exists (see §2).
+Not a bug — throughput. Partitions (3 locally / 6 on MSK) cap useful consumers; check pods ≤ partitions. Speed up processing (batch listener, async provider calls, bigger DB pool — notification uses `DB_POOL_SIZE=5`), scale pods with KEDA on lag, and if needed increase partitions **on a new topic** or accept the key remapping. Retention (7 days) means nothing is lost while catching up. The rule uses `kafka_consumer_fetch_manager_records_lag_max`, the series the consumer really exports (see §2).
 
 **S4. Rebalance storm: the consumer group rebalances every few minutes.**
 Causes: processing a poll batch takes longer than `max.poll.interval.ms` (5 min) → member kicked → rejoin → repeat; pods OOMKilled / failing liveness and restarting; HPA flapping. Check `kubectl get pods` restarts, GC/heap, batch size. Fixes: smaller `max.poll.records`, longer `max.poll.interval.ms`, cooperative sticky assignor, static membership, HPA stabilisation windows (ShopFlow uses 300s scale-down), fix the crash.
@@ -464,7 +464,7 @@ Renames are breaking: the consumer copy of `OrderEvent` has `quantity`, Jackson 
 - Increasing partitions on a live topic and assuming per-key ordering survives.
 - Replication factor 1 / `min.insync.replicas=1` in production (fine only for the dev broker).
 - `auto.offset.reset=latest` on a brand-new consumer and wondering where the history went (or `earliest` and getting flooded).
-- Alert rules referencing metric names that were never checked against `/actuator/prometheus`.
+- Alert rules referencing metric names that were never checked against `/actuator/prometheus` (ShopFlow's `KafkaConsumerLagHigh` had exactly this bug; fixed and now pinned by a test).
 - Fat events with PII (emails, addresses) retained for 7 days on the broker without encryption or a data-retention review.
 
 ## 7. Operations cheat sheet (run against the compose broker)
