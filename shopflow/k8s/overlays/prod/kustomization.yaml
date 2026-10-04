@@ -10,6 +10,7 @@ namespace: shopflow   # also puts generated objects (secret) in the namespace so
 resources:
   - ../../base
   - external-secret.yaml
+  - service-accounts.yaml
 # Image tags below are written by CI (deploy-manifests job in .github/workflows/shopflow.yml):
 # every push to main rebuilds the images, then commits the exact git SHA here. Never edit by hand,
 # and never use ':latest' in prod: it is not traceable and cannot be rolled back reliably.
@@ -28,7 +29,7 @@ configMapGenerator:
   - name: shopflow-endpoints
     behavior: replace
     literals:
-      - kafka-bootstrap-servers=b-1.shopflow.xxxxxx.c2.kafka.ap-south-1.amazonaws.com:9092,b-2.shopflow.xxxxxx.c2.kafka.ap-south-1.amazonaws.com:9092
+      - kafka-bootstrap-servers=b-1.shopflow.xxxxxx.c2.kafka.ap-south-1.amazonaws.com:9098,b-2.shopflow.xxxxxx.c2.kafka.ap-south-1.amazonaws.com:9098   # :9098 = SASL/IAM listener (terraform output kafka_bootstrap_servers_iam)
       - redis-host=shopflow-cache.xxxxxx.0001.aps1.cache.amazonaws.com
       - jwt-issuer-uri=https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_XXXXXXXXX
       - otlp-endpoint=http://otel-collector.monitoring:4318/v1/traces   # ADOT collector -> AWS X-Ray / Grafana Tempo
@@ -209,6 +210,46 @@ patches:
             - port: 5432
             - port: 9092
             - port: 9098
+  # IRSA: pods run as these ServiceAccounts so they get the kafka-clients IAM role (MSK IAM auth)
+  - target:
+      kind: Deployment
+      name: order-service
+    patch: |-
+      - op: add
+        path: /spec/template/spec/serviceAccountName
+        value: order-service
+  - target:
+      kind: Deployment
+      name: notification-service
+    patch: |-
+      - op: add
+        path: /spec/template/spec/serviceAccountName
+        value: notification-service
+  # the ALB (target-type ip) connects to pods from ENIs inside the VPC, not from an ingress-nginx namespace
+  - target:
+      kind: NetworkPolicy
+      name: order-service-ingress
+    patch: |-
+      - op: add
+        path: /spec/ingress/-
+        value:
+          from:
+            - ipBlock:
+                cidr: 10.0.0.0/16        # VPC CIDR: ALB ENIs in the public subnets
+          ports:
+            - port: 8081
+  - target:
+      kind: NetworkPolicy
+      name: inventory-service-ingress
+    patch: |-
+      - op: add
+        path: /spec/ingress/-
+        value:
+          from:
+            - ipBlock:
+                cidr: 10.0.0.0/16
+          ports:
+            - port: 8082
   - target:
       kind: HorizontalPodAutoscaler
     patch: |-

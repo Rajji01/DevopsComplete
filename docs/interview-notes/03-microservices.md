@@ -11,21 +11,23 @@
 | Retry with exponential backoff | **In ShopFlow** — `resilience4j.retry.instances.inventory` (no jitter) |
 | Circuit breaker | **In ShopFlow** — `resilience4j.circuitbreaker.instances.inventory` |
 | Idempotency | **In ShopFlow** — `Idempotency-Key` header + `orderRef` |
-| Saga / compensation | **Partly** — orchestrated by `OrderService`, sync, compensation = cancel → release |
+| Saga / compensation | **Partly** — orchestrated by `OrderService`, sync, compensation = cancel → release; notifications are choreographed via events |
 | Health probes / graceful shutdown | **In ShopFlow** — Actuator probes, `server.shutdown: graceful` |
-| Metrics + alerts | **In ShopFlow** — Prometheus + custom counters; `shopflow/monitoring/alert-rules.yml` (error rate, p99, breaker open, target down) |
-| Externalised config (12-factor) | **In ShopFlow** — `DB_URL`, `DB_PASSWORD`, `INVENTORY_URL`, `DB_POOL_SIZE` env vars, set by K8s Deployments + Secret `shopflow-db` |
+| Metrics + alerts | **In ShopFlow** — Prometheus + custom counters; `shopflow/monitoring/alert-rules.yml` (error rate, p99, breaker open, target down, outbox backlog, consumer lag) |
+| Externalised config (12-factor) | **In ShopFlow** — `DB_URL`, `DB_PASSWORD`, `INVENTORY_URL`, `DB_POOL_SIZE`, `KAFKA_BOOTSTRAP_SERVERS`, `JWT_ISSUER_URI`, `REDIS_HOST`, `OTLP_ENDPOINT` env vars, set by K8s Deployments + ConfigMap `shopflow-endpoints` + Secret `shopflow-db` |
 | Containers + orchestration | **In ShopFlow** — `shopflow/Dockerfile`, `docker-compose.yml`, `k8s/` (Kustomize base + dev/prod overlays, HPA, PDB) |
-| Network segmentation | **In ShopFlow (infra)** — `k8s/base/network-policies.yaml` (default deny + allow-list) |
-| Kafka / async messaging | **Not in project** |
-| Transactional outbox | **Not in project** |
-| Bulkhead, rate limiting | **Not in project** |
-| API gateway | **Partly** — NGINX Ingress `k8s/base/ingress.yaml` does path routing + TLS (prod); no auth / rate limiting at the edge |
+| Network segmentation | **In ShopFlow (infra)** — `k8s/base/network-policies.yaml` (default deny ingress + egress, allow-list incl. Kafka/Redis/Keycloak) |
+| Kafka / async messaging | **In ShopFlow** — topic `orders.events` (key `orderRef`), producer `acks=all` + idempotence, consumer group `notification-service` → see [10](10-kafka-event-driven.md) |
+| Transactional outbox | **In ShopFlow** — `outbox_event` table, `OrderService.saveWithEvent` (`TransactionTemplate`), `OutboxRelay` (`@Scheduled`, `FOR UPDATE SKIP LOCKED`), gauge `outbox_unpublished` |
+| Idempotent consumer / DLT | **In ShopFlow** — `processed_event` table in `OrderEventListener` (`@KafkaListener` + `@Transactional`); `DefaultErrorHandler` + `ExponentialBackOff` → `orders.events.DLT` |
+| Rate limiting | **In ShopFlow** — `@RateLimiter(name = "orders")` on `OrderController.create`, 50/s per pod, `timeout-duration: 0` → 429 ProblemDetail |
+| Bulkhead | **Not in project** |
+| API gateway | **Partly** — NGINX Ingress `k8s/base/ingress.yaml` does path routing + TLS (prod); auth is in the service, rate limiting is per pod, nothing at the edge |
 | Service discovery | **In ShopFlow via K8s DNS** — `INVENTORY_URL=http://inventory-service:8082` in the order Deployment; no Eureka |
-| Config server | **Not in project** (env vars + Secrets instead) |
-| Distributed tracing | **Not in project** (the auto-configured `RestClient.Builder` is observation-ready) |
-| Security (OAuth2/JWT, mTLS) | **Not in project** (only infra hardening: NetworkPolicies, non-root, Trivy scan) |
-| Caching (Redis) | **Not in project** |
+| Config server | **Not in project** (env vars + ConfigMap + Secrets instead) |
+| Distributed tracing | **In ShopFlow** — `micrometer-tracing-bridge-otel` + OTLP exporter → Tempo; `observation-enabled` on KafkaTemplate/listener; Grafana traces↔logs (Loki) → see [11](11-security-caching-performance.md) |
+| Security (OAuth2/JWT, mTLS) | **In ShopFlow (order-service)** — OAuth2 resource server, stateless JWT, roles from Keycloak `realm_access.roles` / Cognito `cognito:groups` (`JwtRolesConverter`); no mTLS; inventory/notification protected by NetworkPolicy only |
+| Caching (Redis) | **In ShopFlow (inventory-service)** — `@Cacheable("products")` DTO by `sku`, `@CacheEvict` on reserve/release, `CACHE_TYPE=simple|redis`, TTL 60s |
 
 ---
 
@@ -84,9 +86,9 @@ Yes — same Postgres instance, different databases/schemas and credentials is f
 | ShopFlow | **order → inventory reserve/release** | not used |
 
 **Q: Why is ShopFlow synchronous?**
-The user wants to know immediately whether stock is reserved, and it keeps the project simple. The cost: if inventory is down, ordering is down (we fail fast with 503 and FAILED status). With Kafka we could accept the order as PENDING and confirm asynchronously.
+The user wants to know immediately whether stock is reserved, and it keeps the project simple. The cost: if inventory is down, ordering is down (we fail fast with 503 and FAILED status). With Kafka we could accept the order as PENDING and confirm asynchronously. Where ShopFlow **does** use Kafka: side effects that must not slow down or fail the order — the notification. Every final order state is written to the outbox and published to `orders.events`; notification-service consumes it.
 
-### Kafka basics [Not in project]
+### Kafka basics [In ShopFlow — one topic, one consumer group; full notes in 10-kafka-event-driven.md]
 
 ```
 Topic "orders" ── partition 0: [o0][o1][o2][o3] ...  offsets 0,1,2,3
@@ -127,17 +129,23 @@ A message that always fails processing. Retry a few times with backoff, then sen
 **Q: Kafka vs RabbitMQ?**
 Kafka: distributed log, replay, very high throughput, ordering per partition, consumers pull and track offsets. RabbitMQ: traditional broker, flexible routing (exchanges), per-message ack, messages removed after ack. Kafka for event streaming/event sourcing; RabbitMQ for task queues and complex routing.
 
-**Q: Spring code?**
+**Q: Spring code?** (the real ShopFlow shape)
 ```java
-// producer
-kafkaTemplate.send("orders", order.getOrderRef(), new OrderPlaced(order.getOrderRef(), sku, qty));
+// producer — OutboxRelay: key = orderRef (aggregateId), value = JSON payload from the outbox row
+kafkaTemplate.send(OrderEvent.TOPIC, event.getAggregateId(), event.getPayload()).get(5, TimeUnit.SECONDS);
+event.markPublished();
 
-// consumer
-@KafkaListener(topics = "orders", groupId = "inventory-service")
-void on(OrderPlaced e) {
-    reservationService.reserve(e.orderRef(), e.sku(), e.quantity());   // already idempotent
+// consumer — OrderEventListener (notification-service)
+@KafkaListener(topics = "orders.events", groupId = "notification-service")
+@Transactional
+public void onOrderEvent(String payload) throws Exception {
+    OrderEvent event = objectMapper.readValue(payload, OrderEvent.class);
+    if (processedEvents.existsById(event.eventId())) return;        // duplicate delivery
+    notify(event);
+    processedEvents.save(new ProcessedEvent(event.eventId(), event.orderRef()));
 }
 ```
+Config: producer `acks: all`, `enable.idempotence: true`; consumer `enable-auto-commit: false`, `auto-offset-reset: earliest`, `isolation.level: read_committed`; `DefaultErrorHandler(DeadLetterPublishingRecoverer, ExponentialBackOff(500ms, ×2, max 10s))` → `orders.events.DLT`.
 
 ---
 
@@ -180,7 +188,7 @@ Retry with backoff (it's idempotent); persist "compensation pending" state; aler
 
 ---
 
-## 5. Transactional outbox [Not in project]
+## 5. Transactional outbox [In ShopFlow — `order-service/.../outbox/`, `V2__outbox.sql`]
 
 Problem — **dual write**:
 ```java
@@ -192,27 +200,35 @@ Reversing the order has the opposite problem (event sent, DB rolled back).
 Solution: write the event into an `outbox` table **in the same local transaction**, then publish asynchronously.
 
 ```sql
-create table outbox (
-  id uuid primary key, aggregate_id varchar(64), type varchar(64),
-  payload jsonb, created_at timestamp, published_at timestamp null
+-- V2__outbox.sql (actual)
+create table outbox_event (
+    id uuid primary key, aggregate_type varchar(32) not null, aggregate_id varchar(64) not null,
+    event_type varchar(64) not null, payload text not null, created_at timestamp not null, published_at timestamp
 );
+create index idx_outbox_pending on outbox_event (published_at, created_at);
 ```
 ```java
-@Transactional
-public Order placeOrder(...) {
-    Order order = orderRepository.save(Order.pending(...));
-    outboxRepository.save(OutboxEvent.of("OrderPlaced", order.getOrderRef(), payload));
-    return order;                         // both rows commit atomically
+// OrderService.saveWithEvent (actual) — TransactionTemplate, not @Transactional: the method is private and
+// self-invoked from placeOrder/cancel, so an annotation would be bypassed by the proxy
+private Order saveWithEvent(Order order) {
+    Order saved = transactionTemplate.execute(status -> {
+        Order persisted = orderRepository.save(order);
+        OrderEvent event = OrderEvent.from(persisted);                       // OrderConfirmed / OrderRejected / OrderFailed / OrderCancelled
+        outboxRepository.save(new OutboxEvent("Order", persisted.getOrderRef(), event.type(), toJson(event)));
+        return persisted;                                                    // both rows commit atomically
+    });
+    count(saved);
+    return saved;
 }
 ```
 Relay options:
-1. **Polling publisher**: `@Scheduled` reads unpublished rows (`FOR UPDATE SKIP LOCKED`), sends to Kafka, marks `published_at`.
-2. **CDC (Debezium)** reads the Postgres WAL and streams outbox rows to Kafka (Outbox Event Router) — lower latency, no polling.
+1. **Polling publisher** (**ShopFlow**: `OutboxRelay`): `@Scheduled(fixedDelayString = "${outbox.relay.delay:1s}")` + `@Transactional` reads up to 100 unpublished rows oldest-first with `@Lock(PESSIMISTIC_WRITE)` + hint `jakarta.persistence.lock.timeout = -2` (= **`FOR UPDATE SKIP LOCKED`** on PostgreSQL, so several pods never publish the same row), sends each to Kafka with key = `aggregateId`, waits for the `acks=all` ack (`.get(5s)`), marks `published_at`; on the first failure it stops the batch to keep ordering. A gauge `outbox.unpublished` feeds the `OutboxBacklogGrowing` alert.
+2. **CDC (Debezium)** reads the Postgres WAL and streams outbox rows to Kafka (Outbox Event Router) — lower latency, no polling, more infrastructure.
 
-Delivery is **at-least-once** (crash after send, before marking) → consumers dedupe by event id / `orderRef`. The mirror pattern on the consumer side is the **inbox** (processed-message-id table).
+Delivery is **at-least-once** (crash after send, before marking) → consumers dedupe by **event id** (not `orderRef`: one order emits several events). The mirror pattern on the consumer side is the **inbox** — ShopFlow's `processed_event` table in notification-service.
 
-**Q: How would outbox fix ShopFlow's weak spots?**
-Today a crash between "save PENDING" and "reserve" leaves a stuck PENDING order, and a timeout leaves a FAILED order with unknown stock. With outbox + Kafka the reservation request is durably recorded with the order and will eventually be delivered; inventory's `orderRef` idempotency makes redelivery safe.
+**Q: What does the outbox fix in ShopFlow, and what is still open?**
+Fixed: "order saved but notification lost" (and the reverse) — the event is durable the moment the order commits; a Kafka outage only grows the backlog, users still get 201. Still open: a crash between "save PENDING" and "reserve" leaves a stuck PENDING order, and a timeout leaves a FAILED order with unknown stock, because the **reservation** is still a synchronous call. Extending the outbox to an `OrderPlaced` event consumed by inventory (already idempotent by `orderRef`) would close that too.
 
 ---
 
@@ -237,7 +253,7 @@ Natural: a business id that's already unique (`orderRef` for reservations). Synt
 At minimum the resulting resource id (ShopFlow stores the key on the order row). Better: request hash (reject same key with different body — 422), response snapshot, and an expiry/TTL. ShopFlow doesn't check the body or expire keys — mention as improvement.
 
 **Q: Idempotent consumer in Kafka?**
-Keep a processed-events table with unique event id, insert it in the same transaction as the business change; duplicate → unique violation → skip. Or make the operation naturally idempotent (upsert, "set status = X").
+Keep a processed-events table with unique event id, insert it in the same transaction as the business change; duplicate → found/unique violation → skip. Or make the operation naturally idempotent (upsert, "set status = X"). **ShopFlow**: `OrderEventListener` checks `processedEvents.existsById(eventId)`, otherwise notifies and saves `ProcessedEvent` inside the same `@Transactional`; test `processesEachEventExactlyOnceEvenWhenDeliveredTwice`.
 
 ---
 
@@ -345,7 +361,7 @@ public void reserve(...) { ... }
 
 ---
 
-## 10. Rate limiting [Not in project]
+## 10. Rate limiting [In ShopFlow — `@RateLimiter(name = "orders")` on `OrderController.create`]
 
 Protect services from overload/abuse; enforce fair usage per client.
 

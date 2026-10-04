@@ -404,7 +404,8 @@ Add `@Validated` and constraints (`@NotNull URI baseUrl`) on the properties reco
 In ShopFlow:
 - `ReservationService.reserve` and `.release` are `@Transactional` — decrement + insert must commit or roll back together.
 - `ProductController` has class-level `@Transactional(readOnly = true)`.
-- `OrderService` has **no** `@Transactional` on purpose: never hold a DB transaction across a remote HTTP call.
+- `OrderService` has **no** `@Transactional` on `placeOrder` on purpose: never hold a DB transaction across a remote HTTP call. Its private `saveWithEvent` uses a **`TransactionTemplate`** to commit the order row and the `outbox_event` row together (transactional outbox) — programmatic, because an annotation on a self-invoked private method would be ignored.
+- `OutboxRelay.publishPending` is `@Transactional` so the `FOR UPDATE SKIP LOCKED` rows stay locked until the batch is marked published; `OrderEventListener.onOrderEvent` (notification-service) is `@KafkaListener` + `@Transactional` so the `processed_event` insert and the side effect commit together.
 
 ### Propagation
 
@@ -439,7 +440,7 @@ class OrderService {
     public void placeOne(Req r) { ... }      // => runs WITHOUT a transaction!
 }
 ```
-Fixes: move `placeOne` to another bean; inject self via `ObjectProvider`; or use `TransactionTemplate` programmatically. Same pitfall applies to `@Retry`, `@CircuitBreaker`, `@Cacheable`, `@Async` — that's why ShopFlow puts `@Retry/@CircuitBreaker` on `InventoryClient` (separate bean) and calls it from `OrderService`.
+Fixes: move `placeOne` to another bean; inject self via `ObjectProvider`; or use `TransactionTemplate` programmatically — **exactly what `OrderService.saveWithEvent` does** (its Javadoc: "calling an annotated method from inside the same class bypasses the proxy, so it would silently run without a transaction"). Same pitfall applies to `@Retry`, `@CircuitBreaker`, `@RateLimiter`, `@Cacheable`, `@CacheEvict`, `@Async` — that's why ShopFlow puts `@Retry/@CircuitBreaker` on `InventoryClient` (separate bean) and calls it from `OrderService`, and why `@Cacheable` on `ProductController.get` works (Spring MVC calls the controller through its proxy).
 
 ### Q&A
 
@@ -674,12 +675,15 @@ Prefer unchecked domain exceptions (`OrderNotFoundException extends RuntimeExcep
 | Tool | Loads | Use for |
 |---|---|---|
 | JUnit 5 + Mockito | nothing | pure logic (e.g. `Order.isCancellable()`), `OrderService` with mocked repo/client |
-| `@WebMvcTest(OrderController.class)` | MVC layer only; `@MockitoBean` the service | status codes, validation, JSON, advice |
+| `@WebMvcTest(OrderController.class)` | MVC layer only; `@MockitoBean` the service | status codes, validation, JSON, advice (**ShopFlow: `OrderControllerWebTest`** — 409 optimistic lock, 429 rate limit; `@Import(SecurityConfig, JwtRolesConverter)` + `@MockitoBean JwtDecoder` so the security chain loads without an issuer) |
 | `@DataJpaTest` | JPA + embedded DB (tx rolled back per test) | queries, constraints, mappings, `decrementStock` |
 | `@SpringBootTest` + `@AutoConfigureMockMvc` | everything, mock servlet env | integration flows (**what ShopFlow uses**) |
 | `@SpringBootTest(webEnvironment = RANDOM_PORT)` + `TestRestTemplate`/`RestClient` | real server | true HTTP tests |
 | WireMock | fake HTTP server | downstream services: errors, delays, scenarios (**ShopFlow**) |
-| Testcontainers | real Postgres/Kafka in Docker | DB-specific behaviour (not in ShopFlow yet) |
+| `@EmbeddedKafka` (`spring-kafka-test`) | in-process Kafka broker; `spring.kafka.bootstrap-servers: ${spring.embedded.kafka.brokers}` | outbox → topic (`publishesOrderEventThroughTheOutbox`), duplicate delivery and poison pill → DLT in notification-service (**ShopFlow**) |
+| `spring-security-test` `jwt()` | `SecurityMockMvcRequestPostProcessors.jwt().authorities(new SimpleGrantedAuthority("ROLE_customer"))` | authenticated requests without a real IdP; 401/403 paths (**ShopFlow**) |
+| Awaitility | `await().atMost(...).untilAsserted(...)` | async assertions: relay published, consumer processed (**ShopFlow**) |
+| Testcontainers | real Postgres/Kafka/Redis in Docker | DB-specific behaviour (not in ShopFlow yet) |
 
 ShopFlow WireMock wiring:
 ```java
@@ -722,11 +726,14 @@ Executor + many threads hitting the real service + assert invariants (ShopFlow: 
 **Q: Test isolation without `@Transactional` rollback?**
 Unique data per test (`UUID.randomUUID()` orderRefs), reset stubs (`inventory.resetAll()`) and state (`circuitBreakerRegistry.circuitBreaker("inventory").reset()`) in `@BeforeEach`.
 
+**Q: How do you test Kafka and security without Docker or an identity provider?**
+`@EmbeddedKafka(partitions = 1, topics = OrderEvent.TOPIC)` starts a broker inside the test JVM; the order test consumes with a raw `KafkaConsumer` from `KafkaTestUtils.consumerProps(...)` and asserts the record key is the `orderRef`; notification tests publish with `KafkaTemplate` and wait with Awaitility on metrics (`notifications.duplicates`) and the `processed_event` table. For security, `jwt()` from `spring-security-test` places a `JwtAuthenticationToken` in the request so the `JwtDecoder` is never called; the test profile's `issuer-uri` is a dummy. In the `@WebMvcTest` slice the decoder is a `@MockitoBean` because the slice would otherwise try to fetch the issuer's JWKS at startup.
+
 ---
 
 ## 13. Actuator & observability
 
-ShopFlow config (both services):
+ShopFlow config (all three services; tracing and Kafka specifics are in [11](11-security-caching-performance.md) and [10](10-kafka-event-driven.md)):
 
 ```yaml
 management:

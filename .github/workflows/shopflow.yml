@@ -91,6 +91,7 @@ jobs:
     permissions:
       contents: read
       packages: write          # push to ghcr.io
+      id-token: write          # OIDC token to assume the AWS role (ci-oidc.tf)
     strategy:
       matrix:
         service: [order-service, inventory-service, notification-service]
@@ -141,6 +142,26 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}
+
+      # --- AWS: mirror the same image into ECR (EKS pulls from there). Runs only when the repository
+      # variable AWS_ROLE_ARN is set to the role from `terraform output github_actions_role_arn`.
+      # No access keys: GitHub's OIDC token is exchanged for 1-hour credentials (ci-oidc.tf).
+      - name: Assume AWS role (OIDC)
+        if: github.ref == 'refs/heads/main' && vars.AWS_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
+      - name: Log in to ECR
+        if: github.ref == 'refs/heads/main' && vars.AWS_ROLE_ARN != ''
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Push to ECR
+        if: github.ref == 'refs/heads/main' && vars.AWS_ROLE_ARN != ''
+        run: |
+          SRC=${{ env.IMAGE }}:${{ github.sha }}
+          DST=${{ steps.ecr.outputs.registry }}/shopflow/${{ matrix.service }}:${{ github.sha }}
+          docker tag "$SRC" "$DST" && docker push "$DST"
 
   deploy-manifests:
     name: Pin prod overlay to this build
