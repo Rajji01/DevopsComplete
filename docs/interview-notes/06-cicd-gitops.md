@@ -1,12 +1,14 @@
 # 06 — CI/CD, GitOps & DevSecOps (Interview Notes)
 
 > Source of truth in this repo:
-> - `.github/workflows/shopflow.yml` — ShopFlow pipeline: test → validate manifests/config → build + Trivy scan → push to GHCR (main only)
+> - `.github/workflows/shopflow.yml` — ShopFlow pipeline: test → validate manifests/config + Terraform fmt/validate → build 3 images + Trivy scan → push to GHCR (main only) → `deploy-manifests` pins the SHA into the prod overlay
 > - `.github/workflows/ci.yml` — older pipeline for `Devops/` and `microservice01/` (matrix build, docker build, kubeconform)
-> - `.github/dependabot.yml` — weekly Maven, Docker and GitHub Actions updates
-> - `shopflow/k8s/overlays/prod/kustomization.yaml` — where a CD step / Argo CD would pin the image tag
+> - `.github/dependabot.yml` — weekly Maven, Docker, GitHub Actions and Terraform updates
+> - `shopflow/Jenkinsfile` — the same stages as a Declarative Jenkins pipeline (matrix over the three services)
+> - `shopflow/argocd/application-dev.yaml`, `application-prod.yaml` — Argo CD Applications (dev: manual sync; prod: automated + prune + selfHeal)
+> - `shopflow/k8s/overlays/prod/kustomization.yaml` — image tags written by CI (`newTag: set-by-ci` until the first push to main)
 >
-> Honest scope: the repo has **CI + image publishing**. There is **no deploy (CD) job and no Argo CD** yet — sections on CD/GitOps describe how I would add it on top of what exists.
+> Honest scope: the repo has CI, image publishing, a **GitOps CD step** (commit of the SHA to the prod overlay) and Argo CD manifests. What is not in the repo: a running Argo CD instance or cluster credentials — the pipeline never touches a cluster, by design.
 
 ---
 
@@ -14,9 +16,11 @@
 
 | Concept | In ShopFlow | Where |
 |---|---|---|
-| Triggers | `push` to `main` + `pull_request`, filtered by `paths: ["shopflow/**", ".github/workflows/shopflow.yml"]` | `shopflow.yml` |
-| Jobs | `test`, `validate-manifests` (parallel) → `image` (`needs: [test, validate-manifests]`) | `shopflow.yml` |
-| Matrix | `service: [order-service, inventory-service]` | `image` job |
+| Triggers | `push` to `main` + `pull_request`, filtered by `paths: ["shopflow/**", "infra/**", ".github/workflows/shopflow.yml"]` | `shopflow.yml` |
+| Jobs | `test`, `validate-manifests`, `terraform` (parallel) → `image` (`needs: [test, validate-manifests]`) → `deploy-manifests` (`needs: [image]`, main only) | `shopflow.yml` |
+| Matrix | `service: [order-service, inventory-service, notification-service]` | `image` job |
+| Terraform | `terraform fmt -check -recursive`, `init -backend=false`, `validate` on `infra/terraform/aws` (no plan/apply — needs the OIDC role) | `terraform` job |
+| GitOps step | `kustomize edit set image` ×3 with `${{ github.sha }}` in `k8s/overlays/prod`, commit + push with `GITHUB_TOKEN` (`contents: write`) | `deploy-manifests` job |
 | Caching | `setup-java cache: maven`; Docker `cache-from/to: type=gha,scope=<service>` | `shopflow.yml` |
 | Permissions | top-level `contents: read`; `image` job adds `packages: write` | `shopflow.yml` |
 | Concurrency | `group: ${{ github.workflow }}-${{ github.ref }}`, `cancel-in-progress: true` | `shopflow.yml` |
@@ -51,32 +55,41 @@ ShopFlow today = **CI + artifact publishing** (immutable image per commit on mai
 ## 2. The ShopFlow pipeline, stage by stage
 
 ```
-                    PR or push to main touching shopflow/**
+                    PR or push to main touching shopflow/** or infra/**
                                    │
-           ┌───────────────────────┴───────────────────────┐
-           ▼                                               ▼
- ┌──────────────────────┐                     ┌──────────────────────────────────┐
- │ test                 │                     │ validate-manifests               │
- │ checkout, JDK 21     │                     │ install kustomize v5.7.1 +       │
- │ (temurin, maven cache)                     │   kubeconform v0.6.7             │
- │ ./mvnw -B verify     │                     │ for each overlay (dev, prod):    │
- │ on failure: upload   │                     │   kustomize build | kubeconform  │
- │  surefire-reports    │                     │   -strict -summary -             │
- └──────────┬───────────┘                     │ promtool check rules alert-rules │
-            │                                 │ docker compose config --quiet    │
-            │                                 └───────────────┬──────────────────┘
-            └──────────────────┬──────────────────────────────┘
+           ┌───────────────────────┼───────────────────────────────┐
+           ▼                       ▼                               ▼
+ ┌──────────────────────┐ ┌──────────────────────────────────┐ ┌──────────────────────────┐
+ │ test                 │ │ validate-manifests               │ │ terraform                │
+ │ checkout, JDK 21     │ │ install kustomize v5.7.1 +       │ │ setup-terraform 1.13.3   │
+ │ (temurin, maven cache) │   kubeconform v0.6.7             │ │ fmt -check -recursive    │
+ │ ./mvnw -B verify     │ │ for each overlay (dev, prod):    │ │ init -backend=false      │
+ │  (26 tests: H2,      │ │   kustomize build | kubeconform  │ │ validate                 │
+ │   EmbeddedKafka,     │ │   -strict -summary -             │ │ (infra/terraform/aws)    │
+ │   WireMock, jwt())   │ │ promtool check rules alert-rules │ └──────────────────────────┘
+ │ on failure: upload   │ │ docker compose config --quiet    │
+ │  surefire-reports    │ └───────────────┬──────────────────┘
+ └──────────┬───────────┘                 │
+            └──────────────────┬──────────┘
                                ▼  needs: [test, validate-manifests]
-             ┌────────────────────────────────────────────────┐
-             │ image  (matrix: order-service, inventory-service)│
-             │ setup-buildx                                   │
-             │ metadata-action → tags: <sha>, latest(main)    │
-             │ build (load: true, GHA cache per service)      │
-             │ Trivy scan  → fail on fixable HIGH/CRITICAL    │
-             │ ── only on refs/heads/main ──                  │
-             │ login ghcr.io (GITHUB_TOKEN)                   │
-             │ build-push (cache hit → fast) → GHCR           │
-             └────────────────────────────────────────────────┘
+             ┌─────────────────────────────────────────────────────────────────┐
+             │ image  (matrix: order-service, inventory-service, notification-service)
+             │ setup-buildx                                                    │
+             │ metadata-action → tags: <sha>, latest(main)                     │
+             │ build (load: true, GHA cache per service)                       │
+             │ Trivy scan  → fail on fixable HIGH/CRITICAL                     │
+             │ ── only on refs/heads/main ──                                   │
+             │ login ghcr.io (GITHUB_TOKEN)                                    │
+             │ build-push (cache hit → fast) → GHCR                            │
+             └───────────────────────────────┬─────────────────────────────────┘
+                                             ▼  needs: [image], main only, permissions: contents: write
+             ┌─────────────────────────────────────────────────────────────────┐
+             │ deploy-manifests                                                │
+             │ kustomize edit set image shopflow/<svc>=ghcr.io/<owner>/shopflow-<svc>:<sha>  (×3)
+             │ kustomize build . > /dev/null   (still renders?)                │
+             │ git commit "deploy(prod): pin images to <sha7>" && git push     │
+             │   → Argo CD (argocd/application-prod.yaml) syncs overlays/prod  │
+             └─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Stage notes (things to say out loud)
@@ -88,7 +101,9 @@ ShopFlow today = **CI + artifact publishing** (immutable image per commit on mai
    - `promtool check rules` validates PromQL syntax of `monitoring/alert-rules.yml` (run inside the `prom/prometheus:v3.5.0` image with `--entrypoint promtool`). Honest gap: despite the step name, `prometheus.yml` itself is not checked — `promtool check config` would do it.
    - `docker compose config --quiet` validates compose YAML (anchors, merge keys).
    Downloaded tools are installed into `${{ runner.temp }}` and added to `$GITHUB_PATH`. Tools are version-pinned for reproducibility.
-4. **`image`** — matrix fans out per service. Builds once with `load: true` so the image exists in the runner's Docker for Trivy → scans **before** pushing (a vulnerable image never reaches the registry). Push step rebuilds with `cache-from` → effectively instant.
+4. **`image`** — matrix fans out per service (three). Builds once with `load: true` so the image exists in the runner's Docker for Trivy → scans **before** pushing (a vulnerable image never reaches the registry). Push step rebuilds with `cache-from` → effectively instant.
+   **`terraform`** — runs in parallel: `fmt -check`, `init -backend=false` (providers only, no state bucket), `validate`. A real deploy job would assume the OIDC role from `ci-oidc.tf`, `plan` on PRs and `apply` on main behind an approval environment (the workflow comment says exactly this).
+   **`deploy-manifests`** — the GitOps hand-off (details in §8).
 5. **`concurrency`** — a new push to the same branch/PR cancels the older run (saves minutes, and avoids an older run pushing after a newer one).
 6. **`permissions`** — least privilege: whole workflow `contents: read`; only `image` gets `packages: write`.
 
@@ -136,7 +151,7 @@ AWS IAM role trust policy trusts the OIDC provider `token.actions.githubusercont
 
 ### Caching
 - `actions/setup-java` with `cache: maven` → caches `~/.m2/repository` keyed on hash of `**/pom.xml`.
-- Docker: `cache-from: type=gha,scope=${{ matrix.service }}` / `cache-to: type=gha,mode=max,...`. `scope` keeps the two services' caches separate (otherwise they overwrite each other). `mode=max` caches all stages (build + extract), not only final layers.
+- Docker: `cache-from: type=gha,scope=${{ matrix.service }}` / `cache-to: type=gha,mode=max,...`. `scope` keeps the three services' caches separate (otherwise they overwrite each other). `mode=max` caches all stages (build + extract), not only final layers.
 
 ---
 
@@ -144,7 +159,7 @@ AWS IAM role trust policy trusts the OIDC provider `token.actions.githubusercont
 
 Architecture: **controller** (UI, scheduling, config) + **agents** (run builds; static VMs, Docker, or Kubernetes pods via the Kubernetes plugin). Pipelines as code in a `Jenkinsfile` (Declarative or Scripted Groovy). Credentials stored in Jenkins credentials store; plugins for everything (Git, Docker, Kubernetes, SonarQube, Slack).
 
-Equivalent of `shopflow.yml` as a Declarative Jenkinsfile (illustrative — not in repo):
+The repo has a real one: `shopflow/Jenkinsfile` — `agent any`, `options { timestamps(); disableConcurrentBuilds(); buildDiscarder(logRotator(numToKeepStr: '30')); timeout(45 min) }`, `tools { jdk 'temurin-21' }`, `IMAGE_TAG = env.GIT_COMMIT`; stages **Test** (`./mvnw -B verify`, `junit` report in `post { always }`), **Validate manifests** (kustomize + kubeconform + promtool in the Prometheus image), **Build & scan images** (`matrix { axis SERVICE: order-service, inventory-service, notification-service }` → `docker build` → `trivy image --exit-code 1`), **Push images** (`when { branch 'main' }`, `withCredentials(usernamePassword 'ghcr')`), **Pin prod overlay** (`sshagent(['github-deploy-key'])`, `kustomize edit set image` ×3, commit + push), `post { failure { echo ... } }` (real life: `slackSend`). Its header comment: *"Same pipeline as `.github/workflows/shopflow.yml`, written for Jenkins; the stages are identical, only the plumbing differs."* Simplified sketch of that file:
 ```groovy
 pipeline {
   agent { label 'docker' }
@@ -276,7 +291,7 @@ strategy:
 
 ---
 
-## 8. GitOps with Argo CD (how ShopFlow would do CD)
+## 8. GitOps with Argo CD (how ShopFlow does CD)
 
 **GitOps principles**: desired state is **declarative**, **versioned in git**, **pulled** automatically by an agent in the cluster, and **continuously reconciled** (drift is corrected).
 
@@ -298,7 +313,7 @@ strategy:
 
 Push-based CD (CI runs `kubectl apply` with cluster creds) vs **pull-based** GitOps (agent in cluster pulls): pull means no cluster credentials in CI, git is the audit log, rollback = `git revert`, drift detection.
 
-Argo CD Application for ShopFlow prod (illustrative):
+Argo CD Applications in the repo: `shopflow/argocd/application-dev.yaml` (path `overlays/dev`, `targetRevision: HEAD`, **no** automated policy — "sync by hand so you can inspect the diff in the Argo CD UI") and `application-prod.yaml` (path `overlays/prod`, `targetRevision: main`, automated `prune` + `selfHeal`, `ignoreDifferences` on replicas). Prod, essentially:
 ```yaml
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -323,7 +338,7 @@ spec:
       jsonPointers: [/spec/replicas]
 ```
 
-Adding the tag-bump job to `shopflow.yml` (illustrative):
+The tag-bump job in `shopflow.yml` (simplified — the real one sets all three images and has no `environment:` gate yet):
 ```yaml
   deploy-prod:
     needs: image
@@ -416,10 +431,10 @@ Each step is safe to roll back app-wise because the old app still finds what it 
 ## 12. Interview Q&A
 
 **Q1. Walk me through your pipeline.**
-On PRs and pushes to main touching `shopflow/`, two jobs run in parallel: tests with `./mvnw -B verify` on JDK 21 with Maven cache, and config validation — every Kustomize overlay rendered and checked with kubeconform strict, Prometheus rules with promtool, and the compose file. If both pass, a matrix job builds each service's image with Buildx and GHA cache, tags it with the full commit SHA, scans with Trivy and fails on fixable HIGH/CRITICAL CVEs. Only on main does it log in to GHCR with the GITHUB_TOKEN and push. Concurrency cancels superseded runs, permissions are read-only except `packages: write` for the image job.
+On PRs and pushes to main touching `shopflow/` or `infra/`, three jobs run in parallel: tests with `./mvnw -B verify` on JDK 21 with Maven cache (26 tests incl. embedded Kafka and fake JWTs), config validation — every Kustomize overlay rendered and checked with kubeconform strict, Prometheus rules with promtool, the compose file — and Terraform `fmt`/`validate`. If tests and validation pass, a matrix job builds each of the three service images with Buildx and GHA cache, tags them with the full commit SHA, scans with Trivy and fails on fixable HIGH/CRITICAL CVEs. Only on main does it log in to GHCR with the GITHUB_TOKEN and push, and then a `deploy-manifests` job pins the SHA into `k8s/overlays/prod` and commits it; Argo CD syncs that overlay. Concurrency cancels superseded runs; permissions are read-only except `packages: write` for the image job and `contents: write` for the pin job.
 
 **Q2. CI vs continuous delivery vs continuous deployment?**
-CI: merge often, build and test automatically. Continuous delivery: every change produces a deployable artifact and deploying to prod is a manual decision. Continuous deployment: no manual gate. My project is at CI + artifact publishing; next step is GitOps CD with an approval gate.
+CI: merge often, build and test automatically. Continuous delivery: every change produces a deployable artifact and deploying to prod is a manual decision. Continuous deployment: no manual gate. My project is at GitOps continuous **deployment** for prod (every main commit is pinned and auto-synced by Argo CD); adding a GitHub `environment: production` with required reviewers on the pin job would turn it into continuous delivery with an approval gate.
 
 **Q3. Why scan before pushing?**
 So a vulnerable image never lands in the registry where something could pull it. I build with `load: true`, scan the local image, and only then push; the second build is a cache hit.
@@ -433,8 +448,8 @@ Groups runs by workflow + ref; a new push cancels the in-progress older run for 
 **Q6. Blue-green vs canary vs rolling?**
 (Table §7.) Rolling is the default and what I use; blue-green for instant switch/rollback at 2× cost; canary for gradual exposure with metric-based analysis — I'd use the same 5xx-ratio PromQL as my HighErrorRate alert as the canary gate.
 
-**Q7. What is GitOps, and how would you add it here?**
-Git is the source of truth; an in-cluster agent like Argo CD pulls and reconciles. CI would `kustomize edit set image` the new SHA into `overlays/prod` (or a config repo), Argo CD syncs it with prune and self-heal. Rollback is `git revert`. No cluster credentials in CI.
+**Q7. What is GitOps, and how is it done here?**
+Git is the source of truth; an in-cluster agent like Argo CD pulls and reconciles. CI's `deploy-manifests` job runs `kustomize edit set image` with the new SHA for all three services in `overlays/prod` and commits it; `argocd/application-prod.yaml` syncs that path with prune and self-heal (dev is synced manually). Rollback is `git revert` of the pin commit. No cluster credentials in CI. Improvement: a separate config repo so app and deploy history stay apart.
 
 **Q8. How do you handle DB schema changes with zero downtime?**
 Flyway versioned migrations, backward compatible, using expand-contract across releases so old and new pods can coexist during a rolling update. Hibernate `validate` catches drift at startup.

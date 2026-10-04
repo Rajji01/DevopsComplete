@@ -48,6 +48,10 @@ class NotificationServiceApplicationTests {
                 assertThat(meterRegistry.counter("notifications.duplicates").count()).isGreaterThanOrEqualTo(1));
         assertThat(processedEvents.existsById(eventId)).isTrue();
         assertThat(meterRegistry.counter("notifications.sent", "type", "OrderConfirmed").count()).isEqualTo(1);
+
+        // the KafkaConsumerLagHigh alert depends on this exact metric (Micrometer's Kafka consumer binder)
+        assertThat(meterRegistry.find("kafka.consumer.fetch.manager.records.lag.max").gauge())
+                .as("consumer lag metric exported for Prometheus").isNotNull();
     }
 
     @Test

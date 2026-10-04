@@ -12,6 +12,10 @@ Every file follows the same pattern: **concept → how ShopFlow uses it (with fi
 | 06 | [CI/CD + GitOps](06-cicd-gitops.md) | "Explain your pipeline" |
 | 07 | [Observability + SRE](07-observability-sre.md) | On-call, production-debugging and SRE rounds |
 | 08 | [Linux, networking, cloud, IaC](08-linux-networking-cloud-iac.md) | DevOps fundamentals, AWS, Terraform |
+| 09 | [AWS production](09-aws-production.md) | "How would this run on AWS?" — EKS, RDS, MSK, ElastiCache, Cognito, IRSA, OIDC (`infra/terraform/aws`) |
+| 10 | [Kafka & event-driven](10-kafka-event-driven.md) | Kafka rounds: outbox, idempotent consumer, DLT, lag, ordering, exactly-once |
+| 11 | [Security, caching, performance, tracing](11-security-caching-performance.md) | OAuth2/JWT, Spring Cache + Redis, rate limiting, virtual threads, k6, tracing with Tempo/Loki |
+| 12 | [Hard interview questions](12-hard-interview-questions.md) | Senior-level follow-ups and curveballs across all topics |
 
 ## How to prepare (not just read)
 
@@ -34,6 +38,10 @@ Every file follows the same pattern: **concept → how ShopFlow uses it (with fi
 | Why no `@Transactional` around the inventory call? | Holding a DB connection while waiting on the network exhausts the pool. Instead each step is saved separately and the order status records progress. |
 | What if inventory is down? | Timeout → retry with backoff (transient errors only) → circuit breaker opens → fast 503. The order is marked `FAILED` and readiness stays UP. |
 | Why doesn't readiness include inventory? | Otherwise one service's outage would pull the healthy order pods out of the load balancer too (a cascading failure). |
+| How does an order reach notification-service? | `saveWithEvent` writes the order and an `outbox_event` row in one `TransactionTemplate`; `OutboxRelay` polls every 1s with `FOR UPDATE SKIP LOCKED`, publishes to `orders.events` keyed by `orderRef` with `acks=all`; the consumer dedupes on `eventId` in `processed_event`. |
+| How is the API secured? | order-service is an OAuth2 resource server: stateless JWT (RS256 via the issuer's JWKS), roles from Keycloak `realm_access.roles` or Cognito `cognito:groups` → `ROLE_*`; GET needs `customer`/`support`, writes need `customer`; 401 vs 403 tested with `jwt()`. |
+| What is cached and when is it evicted? | `GET /products/{sku}` caches the `ProductResponse` DTO (`@Cacheable("products")`); `reserve` evicts that SKU, `release` evicts all; Redis with 60s TTL in compose/K8s. Stock decisions never read the cache. |
+| What happens on a traffic burst? | `@RateLimiter("orders")`: 50 order creations per second per pod, no queueing → 429 ProblemDetail; reads are unlimited. Per pod, not global — a gateway/Redis limiter is the next step. |
 
 ### Java / Spring
 | Q | A |
@@ -44,16 +52,27 @@ Every file follows the same pattern: **concept → how ShopFlow uses it (with fi
 | Optimistic vs pessimistic locking? | Optimistic: a `@Version` check at update time, which fails on conflict (good when conflicts are rare). Pessimistic: `SELECT ... FOR UPDATE`, which blocks others. |
 | Bean scopes? | singleton (default), prototype, request, session, application. |
 | What is auto-configuration? | `@Conditional...` configuration classes that run when a class or property is present. Starters bring those dependencies in. |
-| Virtual threads (Java 21)? | Cheap JVM-managed threads, great for blocking IO. Spring Boot enables them with `spring.threads.virtual.enabled=true`. |
+| Virtual threads (Java 21)? | Cheap JVM-managed threads, great for blocking IO. Spring Boot enables them with `spring.threads.virtual.enabled=true` (on in all three ShopFlow services). Watch for pinning in `synchronized`; the DB pool becomes the real limit. |
+| `@Transactional` vs `TransactionTemplate`? | Same transaction manager; the annotation needs a proxy call (fails silently on self-invocation), the template works anywhere. ShopFlow's private `saveWithEvent` uses the template for exactly that reason. |
+| `@Cacheable` pitfalls? | Proxy-based (self-invocation ignored), caches `null` by default, cache DTOs not entities, Redis needs a serializer (JSON) — a record without `Serializable` breaks JDK serialization. |
 
 ### Microservices
 | Q | A |
 |---|---|
 | Saga? | A sequence of local transactions with compensations instead of a distributed transaction. ShopFlow's cancel → release is the compensation step. |
-| Transactional outbox? | Write the business row and an event row in the same DB transaction, and have a relay publish the event to Kafka. This fixes the dual-write problem. |
+| Transactional outbox? | Write the business row and an event row in the same DB transaction, and have a relay publish the event to Kafka. This fixes the dual-write problem. ShopFlow: `outbox_event` + `OutboxRelay` (polling publisher, at-least-once). |
 | Circuit breaker states? | CLOSED → (failure rate ≥ threshold) OPEN → (after a wait) HALF_OPEN → test calls → CLOSED or back to OPEN. |
 | Retry best practice? | Retry only transient, idempotent operations, with exponential backoff + jitter, a max-attempts cap, and a timeout on every call. |
-| Kafka ordering? | Guaranteed only within a partition, so use a key (e.g. orderId) to keep related events together. |
+| Kafka ordering? | Guaranteed only within a partition, so use a key (e.g. `orderRef`) to keep related events together; changing the partition count breaks the mapping. |
+| Exactly-once in Kafka? | Only Kafka→Kafka with idempotent producer + transactions. With a DB/email in the loop: at-least-once + idempotent consumer (ShopFlow's `processed_event` keyed by `eventId`). |
+| Poison pill? | A record that always fails. `DefaultErrorHandler` retries with `ExponentialBackOff` (0.5s ×2, ≤10s) then `DeadLetterPublishingRecoverer` moves it to `orders.events.DLT`; the partition moves on. |
+| `acks=all` + `min.insync.replicas`? | The write is acknowledged only when every in-sync replica has it; with RF 3 / min ISR 2 one broker can die without losing acknowledged records (MSK config). |
+| Consumer lag growing? | Consumers ≤ partitions (3 local / 6 MSK), then faster processing, then more partitions; alert `KafkaConsumerLagHigh`. Check for a poison-pill retry loop first. |
+| Rate limiter vs bulkhead vs breaker? | Requests per time (ShopFlow: 50/s/pod → 429) / concurrent calls to a dependency / stop calling a failing dependency. |
+| JWT validation steps? | Fetch JWKS from the issuer (`issuer-uri` → discovery), pick the key by `kid`, verify RS256 signature, check `exp` and `iss` (and `aud` — not yet in ShopFlow), map claims to authorities. |
+| Why RS256 not HS256? | Asymmetric: only the IdP holds the private key; services need just public keys, so no shared secret to leak or rotate across services. |
+| Cache-aside? | App reads cache → miss → DB → put; on write, update the DB and **evict**. ShopFlow evicts rather than updates because the stock change is an atomic SQL update whose result the app never loads. |
+| Traces ↔ logs? | Boot puts `trace.id`/`span.id` into ECS JSON logs; Loki's derived field links to Tempo, Tempo's traces-to-logs links back; `traceparent` travels in HTTP and Kafka headers. |
 
 ### Docker
 | Q | A |
@@ -78,7 +97,8 @@ Every file follows the same pattern: **concept → how ShopFlow uses it (with fi
 ### CI/CD + observability
 | Q | A |
 |---|---|
-| Your pipeline? | test → validate manifests → build image → Trivy scan → push (main only) → GitOps deploy. |
+| Your pipeline? | test → validate manifests + Terraform → build 3 images → Trivy scan → push (main only) → pin SHA into the prod overlay → Argo CD syncs. Same stages in `shopflow/Jenkinsfile`. |
+| New alerts for the async path? | `OutboxBacklogGrowing` (`outbox_unpublished > 100` for 5m, page: Kafka down or relay stuck while HTTP still returns 201) and `KafkaConsumerLagHigh` (lag > 1000 for 10m, ticket). |
 | Blue-green vs canary? | Blue-green switches all traffic at once and rolls back instantly. Canary shifts traffic gradually, which limits the blast radius. |
 | Error-rate PromQL? | `sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) / sum(rate(http_server_requests_seconds_count[5m]))` |
 | p99 latency PromQL? | `histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket[5m])))` |

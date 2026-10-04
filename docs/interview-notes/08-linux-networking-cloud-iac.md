@@ -1,7 +1,7 @@
 # 08 — Linux, Networking, AWS, Terraform, Ansible & Git (Interview Notes)
 
 > Repo context: ShopFlow (`shopflow/`) runs on Docker Compose and Kubernetes (`shopflow/k8s/`), images are pushed to GHCR by `.github/workflows/shopflow.yml`.
-> **There is no Terraform, Ansible or AWS code in this repo.** The cloud/IaC sections explain the concepts and show how ShopFlow *would* map onto AWS — say "this is how I would provision it", not "I did".
+> **Terraform for AWS now exists**: `infra/terraform/aws/` (`vpc.tf`, `eks.tf`, `rds.tf`, `msk.tf`, `elasticache.tf`, `cognito.tf`, `ecr.tf`, `irsa.tf`, `ci-oidc.tf`, `outputs.tf`), validated by the `terraform` job in CI, and the K8s prod overlay consumes its outputs through the `shopflow-endpoints` ConfigMap. The detailed AWS production story is in [09-aws-production.md](09-aws-production.md); this file keeps the fundamentals. There is still **no Ansible** in the repo — Part E is conceptual.
 
 ---
 
@@ -315,7 +315,7 @@ Private ranges (RFC1918): `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`. Kuber
 7. → Service inventory-service (ClusterIP) → kube-proxy/iptables picks a Ready pod IP:8082
    (NetworkPolicy inventory-service-ingress allows ingress-nginx namespace)
 8. Tomcat thread → Spring DispatcherServlet → ProductController → JPA → Hikari connection
-   → postgres:5432 (headless svc → postgres-0; NetworkPolicy allows only the two services)
+   → postgres:5432 (headless svc → postgres-0; NetworkPolicy allows only the three services)
 9. JSON response ← back the same path; metrics recorded in http_server_requests_seconds{uri="/api/v1/products"}
 10. Browser renders; connection kept alive for reuse
 ```
@@ -378,7 +378,7 @@ Private ranges (RFC1918): `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`. Kuber
 ```
 - No long-lived access keys on servers or in CI; MFA for humans; SSO (IAM Identity Center).
 
-### C4. How ShopFlow would map onto AWS
+### C4. How ShopFlow maps onto AWS (now codified in `infra/terraform/aws`; details in 09)
 
 ```
                        Route 53: shop.example.com (ALIAS)
@@ -390,20 +390,24 @@ Private ranges (RFC1918): `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`. Kuber
  │  ─────────────────────────────────────────────────────────────────────────────────────────── │
  │  Private app subnets (10.0.32.0/19 ×3)                                                        │
  │     EKS managed node group / Karpenter nodes                                                  │
- │       namespace shopflow: order-service, inventory-service (HPA, PDB, NetworkPolicies)        │
+ │       namespace shopflow: order-, inventory-, notification-service (HPA, PDB, NetworkPolicies)│
+ │       ──▶ MSK (Kafka, IAM auth :9098)  ──▶ ElastiCache Redis   ──▶ Cognito (JWT issuer, public)│
  │       External Secrets Operator ── IRSA ──▶ Secrets Manager (shopflow-db passwords)           │
  │       kube-prometheus-stack / Amazon Managed Prometheus, Fluent Bit → CloudWatch Logs         │
  │  ─────────────────────────────────────────────────────────────────────────────────────────── │
  │  Private DB subnets (10.0.128.0/24 ×3)                                                        │
  │     RDS PostgreSQL Multi-AZ  (databases "orders" + "inventory"; SG allows 5432 from node SG)  │
  └───────────────────────────────────────────────────────────────────────────────────────────────┘
- ECR: shopflow-order-service, shopflow-inventory-service  ◀── GitHub Actions via OIDC role
+ ECR: shopflow-order-service, shopflow-inventory-service, shopflow-notification-service  ◀── GitHub Actions via OIDC role (ci-oidc.tf)
  S3 + DynamoDB: Terraform state      CloudWatch alarms / AMP alert rules = monitoring/alert-rules.yml
 ```
 | ShopFlow piece today | AWS equivalent |
 |---|---|
 | GHCR images | ECR (or keep GHCR with pull secret) |
-| Postgres StatefulSet (`postgres/statefulset.yaml`, "demo DB") | **RDS PostgreSQL Multi-AZ** — change `DB_URL` to the RDS endpoint, drop the StatefulSet from the prod overlay |
+| Postgres StatefulSet (`postgres/statefulset.yaml`, "demo DB") | **RDS PostgreSQL Multi-AZ** — the prod overlay sets `DB_URL` from `rds-endpoint` in the `shopflow-endpoints` ConfigMap (`?sslmode=require`) and `$patch: delete`s the StatefulSet |
+| Kafka StatefulSet (`kafka/statefulset.yaml`, single KRaft node) | **Amazon MSK** (`msk.tf`: 3 brokers / 3 AZs, RF 3, `min.insync.replicas=2`, IAM auth over TLS on 9098, SG open only to EKS node SGs); prod overlay deletes the StatefulSet and sets `kafka-bootstrap-servers` |
+| Redis Deployment (`redis/deployment.yaml`) | **ElastiCache Redis** (`elasticache.tf`: 7.1, in-transit encryption); prod overlay deletes the Deployment and sets `redis-host` |
+| Keycloak Deployment (`keycloak/`) | **Amazon Cognito** (`cognito.tf`: user pool, groups `customer`/`support`, auth-code client); `JWT_ISSUER_URI` → `https://cognito-idp.ap-south-1.amazonaws.com/<pool>`; `JwtRolesConverter` reads `cognito:groups` |
 | ingress-nginx + cert-manager | AWS Load Balancer Controller + ALB + ACM (or keep nginx behind an NLB) |
 | `shopflow-db` Secret via ESO (prod overlay comment) | Secrets Manager + ESO with IRSA |
 | HPA | HPA + Cluster Autoscaler/Karpenter for nodes |

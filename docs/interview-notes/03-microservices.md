@@ -575,9 +575,9 @@ ACID: atomic, consistent, isolated, durable transactions (inside one DB — Shop
 
 ---
 
-## 18. Security [App-level: not in project · Infra hardening: in ShopFlow]
+## 18. Security [App-level: in ShopFlow (order-service) · Infra hardening: in ShopFlow]
 
-ShopFlow has **no authentication** in the applications today. It does have infrastructure hardening: NetworkPolicies (default deny; inventory reachable only from order-service, ingress-nginx and monitoring; Postgres only from the two services), containers run as UID 10001 with `readOnlyRootFilesystem`, dropped capabilities and `seccompProfile: RuntimeDefault`, `automountServiceAccountToken: false`, Trivy image scanning in CI, and `/api/v1/reservations` is not routed by the Ingress. What to say about app-level security:
+order-service is an **OAuth2 resource server** (`SecurityConfig`, `JwtRolesConverter`; issuer `${JWT_ISSUER_URI}` = Keycloak realm `shopflow` locally, Cognito user pool in prod). inventory- and notification-service have no application-level auth and rely on infrastructure hardening: NetworkPolicies (default deny ingress + egress; inventory reachable only from order-service, ingress-nginx and monitoring; Postgres only from the three services; Kafka only from order/notification; Redis only from inventory; Keycloak from ingress + order-service), containers run as UID 10001 with `readOnlyRootFilesystem`, dropped capabilities and `seccompProfile: RuntimeDefault`, `automountServiceAccountToken: false`, Trivy image scanning in CI, and `/api/v1/reservations` is not routed by the Ingress. Full notes in [11](11-security-caching-performance.md). The essentials:
 
 ### OAuth2 / OIDC / JWT
 - **Authorization server** (Keycloak, Auth0, Okta, Cognito) issues tokens. **Resource servers** (our services) validate them.
@@ -591,19 +591,22 @@ ShopFlow has **no authentication** in the applications today. It does have infra
 spring.security.oauth2.resourceserver.jwt.issuer-uri: https://auth.example.com/realms/shopflow
 ```
 ```java
+// SecurityConfig (actual): roles instead of scopes, converter maps Keycloak realm_access.roles / Cognito cognito:groups → ROLE_*
 @Bean
-SecurityFilterChain api(HttpSecurity http) throws Exception {
+SecurityFilterChain filterChain(HttpSecurity http, JwtRolesConverter rolesConverter) throws Exception {
     return http
-        .authorizeHttpRequests(a -> a
-            .requestMatchers("/actuator/health/**").permitAll()
-            .requestMatchers(HttpMethod.POST, "/api/v1/orders").hasAuthority("SCOPE_orders:write")
-            .anyRequest().authenticated())
-        .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()))
-        .csrf(c -> c.disable())                       // stateless token API
+        .csrf(csrf -> csrf.disable())                                  // no cookies/session -> no CSRF surface
         .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+        .authorizeHttpRequests(auth -> auth
+            .requestMatchers("/actuator/**", "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
+            .requestMatchers(HttpMethod.GET, "/api/v1/orders/**").hasAnyRole("customer", "support")
+            .requestMatchers("/api/v1/orders/**").hasRole("customer")
+            .anyRequest().denyAll())
+        .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt.jwtAuthenticationConverter(rolesConverter)))
         .build();
 }
 ```
+Tests: `mockMvc.perform(post(...).with(jwt().authorities(new SimpleGrantedAuthority("ROLE_customer"))))`; no token → 401, `support` posting → 403 (`rejectsRequestsWithoutAValidToken`). Gaps to admit: no per-order ownership check, `aud` not validated.
 
 **Q: JWT pros/cons?**
 Pros: stateless validation, no session store, carries claims. Cons: can't revoke easily before expiry (keep access tokens short, 5–15 min, use refresh tokens), size, sensitive data must not go in the payload (it's only encoded, not encrypted).
@@ -621,13 +624,14 @@ Secrets from K8s Secrets/Vault (`DB_PASSWORD` already externalised), don't expos
 
 ---
 
-## 19. Caching [Not in project]
+## 19. Caching [In ShopFlow — inventory-service]
 
-- Spring Cache abstraction: `@EnableCaching`, `@Cacheable("products")`, `@CacheEvict`, backed by Caffeine (local) or Redis (shared across pods).
-- Patterns: cache-aside (most common), read-through, write-through, write-behind.
-- In ShopFlow: cache `GET /api/v1/products` (catalog) — **never** use cached stock to decide a reservation; the atomic DB update stays the source of truth.
+- Spring Cache abstraction: `@EnableCaching` (`InventoryServiceApplication`), `@Cacheable(cacheNames = "products", key = "#sku")` on `ProductController.get` (caches the `ProductResponse` **DTO**, not the entity), `@CacheEvict(cacheNames = "products", key = "#sku")` on `ReservationService.reserve`, `@CacheEvict(allEntries = true)` on `release`. Backend: `spring.cache.type: ${CACHE_TYPE:simple}` (per-pod map in tests), `redis` in compose/K8s (shared across pods) with `time-to-live: 60s` and `key-prefix: "inventory:"`; Redis runs with `allkeys-lru`.
+- Pattern: **cache-aside with evict-on-write** — the stock change is an atomic bulk `UPDATE`, so the service never knows the new quantity and cannot "put" it; evicting lets the next read fetch the truth. Test: `productReadIsCachedAndEvictedOnReserve`.
+- **Never** use cached stock to decide a reservation; the atomic DB update stays the source of truth — the cache only serves the catalog `GET`.
+- Honest gap: `ProductResponse` is not `Serializable` and no JSON `RedisCacheConfiguration` is defined, so the Redis backend needs a serializer bean before it works end-to-end (tests use `simple`). Details: [11](11-security-caching-performance.md).
 
-**Q: Cache invalidation strategies?** TTL, explicit evict on write, event-driven eviction (publish `ProductUpdated`). Watch for stampede (many misses at once) → request coalescing / jittered TTLs.
+**Q: Cache invalidation strategies?** TTL (ShopFlow: 60s safety net), explicit evict on write (ShopFlow), event-driven eviction (publish `ProductUpdated`). Watch for stampede (many misses at once) → `sync = true` / request coalescing / jittered TTLs.
 
 ---
 
@@ -651,8 +655,8 @@ Cascading failure. Add timeouts with decreasing budgets down the chain, circuit 
 **S6. An event was published twice and inventory reserved twice.**
 At-least-once delivery. Make the consumer idempotent — ShopFlow's `reserve` already returns the existing reservation for a known `orderRef`, enforced by a unique constraint. Generally: dedupe table keyed by event id.
 
-**S7. Orders saved but the `OrderPlaced` event never reached Kafka.**
-Dual-write problem. Use the transactional outbox (same DB transaction) + relay/CDC.
+**S7. Orders saved but the event never reached Kafka.**
+Classic dual-write problem — ShopFlow avoids it with the transactional outbox (event row in the same DB transaction as the order, `OutboxRelay` publishes it). If it *still* happens: the relay is stuck or Kafka is down → `outbox_unpublished` grows and `OutboxBacklogGrowing` pages; check relay logs ("could not publish outbox event ... will retry"), broker health, `KAFKA_BOOTSTRAP_SERVERS`. Nothing is lost: when Kafka returns the relay drains the backlog oldest-first (8 scenarios in [10](10-kafka-event-driven.md)).
 
 **S8. After a deployment, order-service pods are Ready but every order fails.**
 Readiness only checks own DB (by design), so config errors to downstreams show up as request failures: check `INVENTORY_URL` (Deployment env), DNS, NetworkPolicy (`inventory-service-ingress` only allows pods labelled `app.kubernetes.io/name: order-service`), breaker state metric, logs "inventory unavailable for order …". Add a smoke test in the pipeline; consider a startup check for config validity (not for downstream availability).
@@ -667,7 +671,7 @@ Expand/contract: add new nullable column (V3) → deploy code writing both → b
 Readiness should catch DB issues on that pod (`db` in readiness group) and remove it. If it's another issue (bad node, memory), retries *may* land on a healthy pod (not guaranteed — kube-proxy balances per connection and a keep-alive connection can hit the same pod), and the breaker is per client, not per pod: 1 bad pod of 3 ≈ 33% failures stays under the 50% threshold. Outlier detection (service mesh) is the real fix; investigate with per-pod metrics (`instance` label) and logs; liveness restarts only if the JVM is truly stuck.
 
 **S12. How do you debug a request across services without tracing?**
-Correlation id in a header + MDC in logs, centralised logging (ELK/Loki) and search by id. ShopFlow's `orderRef` is logged in both services (`"reserved {} x {} for order {}"`, `"order {} {}"`) — it acts as a business correlation id for order flows.
+Correlation id in a header + MDC in logs, centralised logging (ELK/Loki) and search by id. ShopFlow's `orderRef` is logged in all three services (`"reserved {} x {} for order {}"`, `"order {} {}"`, `"EMAIL -> customer: Your order {} ..."`) — it acts as a business correlation id for order flows, and since tracing was added the ECS logs also carry `trace.id`, so the "without tracing" case is now the fallback.
 
 ---
 

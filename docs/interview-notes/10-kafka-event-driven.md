@@ -145,6 +145,43 @@ ShopFlow's choice is proven by a test: `NotificationServiceApplicationTests.even
 
 > Tip: Interviewer "exactly-once possible hai?" pooche toh seedha "Kafka ke andar haan, DB/email ke saath nahi — isliye idempotent consumer" bolo. Yeh ek line senior-level answer hai.
 
+### Spring Kafka configuration reference (what ShopFlow sets, what you should still know)
+
+| Property / API | ShopFlow | Why / what else to know |
+|---|---|---|
+| `spring.kafka.bootstrap-servers` | `${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}`; tests `${spring.embedded.kafka.brokers}` | one env var per environment; prod: MSK bootstrap string from the `shopflow-endpoints` ConfigMap |
+| `spring.kafka.producer.acks` | `all` | `1` is the client default; `all` is required for "no acknowledged write lost" |
+| `producer.properties.enable.idempotence` | `true` | de-dupes producer retries; implies `acks=all`, `max.in.flight.requests.per.connection ≤ 5` |
+| `producer.key/value-serializer` | default `StringSerializer` (JSON produced by Jackson in `OrderService.toJson`) | `JsonSerializer` adds type headers; Avro needs `KafkaAvroSerializer` + registry URL |
+| `spring.kafka.template.observation-enabled` | `true` | producer span + `traceparent` header |
+| `spring.kafka.consumer.group-id` | set on the annotation: `@KafkaListener(groupId = "notification-service")` | one group per *purpose*; a second service (analytics) uses its own group and gets every record too |
+| `consumer.auto-offset-reset` | `earliest` | only for groups with no committed offset |
+| `consumer.enable-auto-commit` | `false` | the listener container commits (`AckMode.BATCH` default) after the listener returns |
+| `consumer.properties.isolation.level` | `read_committed` | ignore aborted transactional records |
+| `spring.kafka.listener.observation-enabled` | `true` | consumer span joins the producer's trace |
+| `spring.kafka.listener.ack-mode` | default (`BATCH`) | `RECORD` commits after each record (more commits, smaller redelivery window); `MANUAL`/`MANUAL_IMMEDIATE` with an `Acknowledgment` parameter |
+| `spring.kafka.listener.concurrency` | default 1 thread per `@KafkaListener` | up to the number of partitions per pod; with 3 partitions and `concurrency: 3` one pod can drain them all |
+| `consumer.max-poll-records`, `properties.max.poll.interval.ms` | defaults (500, 300000) | lower records / raise interval if a batch takes long, or the consumer is kicked out of the group |
+| `DefaultErrorHandler` bean | `ExponentialBackOff(500, 2.0)` + `setMaxElapsedTime(10_000)` + `DeadLetterPublishingRecoverer(template)` | Spring Boot wires the bean into the listener container factory automatically; `addNotRetryableExceptions(...)` to skip retries for permanent failures |
+| `ErrorHandlingDeserializer` | not needed (String payload parsed in code) | mandatory wrapper when using `JsonDeserializer` so bad bytes do not loop forever |
+| `@RetryableTopic` | not used | non-blocking retries via `-retry-<n>` topics + `-dlt`; breaks per-key ordering |
+| `KafkaAdmin` + `NewTopic` beans | not used (topics auto-created locally; created by Terraform/admin on MSK) | lets the app declare partitions/RF/retention at startup — also useful in tests |
+| Kafka transactions (`transaction-id-prefix`, `KafkaTransactionManager`, `executeInTransaction`) | not used — the outbox makes them unnecessary for the DB→Kafka hop | needed for consume-transform-produce exactly-once between topics |
+| `spring.kafka.security.protocol` / `sasl.*` | PLAINTEXT locally | MSK IAM: `SASL_SSL`, `sasl.mechanism=AWS_MSK_IAM`, `sasl.jaas.config=software.amazon.msk.auth.iam.IAMLoginModule required;`, `sasl.client.callback.handler.class=...IAMClientCallbackHandler` + the `aws-msk-iam-auth` jar |
+
+### Topic sizing & configuration (what to say when asked "how many partitions?")
+
+| Decision | Rule of thumb | ShopFlow |
+|---|---|---|
+| Partitions | `max(target throughput / per-consumer throughput, number of consumers you want busy)`, rounded up with headroom; every partition costs file handles, memory and rebalance time | 3 (local default `KAFKA_NUM_PARTITIONS`), 6 on MSK; notification HPA max 6 matches |
+| Replication factor | 3 in prod (survive one broker + one in maintenance); 1 only for dev | 1 local, 3 MSK |
+| `min.insync.replicas` | RF − 1 | 2 on MSK |
+| Retention | long enough to replay after an outage or to backfill a new consumer; cost = bytes × RF | 7 days (`log.retention.hours=168`) on MSK |
+| `cleanup.policy` | `delete` for event streams, `compact` for state/changelog | `delete` |
+| Key | the aggregate id you need ordering for | `orderRef` |
+| Topic naming | `<domain>.<kind>` or `<team>.<domain>.<event>`, versions in the name only for breaking changes | `orders.events`, DLT `orders.events.DLT` |
+| Message size | keep well under `message.max.bytes` (1 MB default); large payloads → claim-check (S3 pointer) | a few hundred bytes of JSON |
+
 ---
 
 ## 2. The dual-write problem and the transactional outbox (as implemented)
@@ -429,5 +466,58 @@ Renames are breaking: the consumer copy of `OrderEvent` has `quantity`, Jackson 
 - `auto.offset.reset=latest` on a brand-new consumer and wondering where the history went (or `earliest` and getting flooded).
 - Alert rules referencing metric names that were never checked against `/actuator/prometheus`.
 - Fat events with PII (emails, addresses) retained for 7 days on the broker without encryption or a data-retention review.
+
+## 7. Operations cheat sheet (run against the compose broker)
+
+```bash
+K=/opt/kafka/bin; B=localhost:9092
+docker compose exec kafka $K/kafka-topics.sh --bootstrap-server $B --list
+docker compose exec kafka $K/kafka-topics.sh --bootstrap-server $B --describe --topic orders.events      # partitions, leader, ISR
+docker compose exec kafka $K/kafka-consumer-groups.sh --bootstrap-server $B --describe --group notification-service
+#   TOPIC  PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG  CONSUMER-ID  HOST  CLIENT-ID   <- lag per partition, who owns it
+docker compose exec kafka $K/kafka-console-consumer.sh --bootstrap-server $B --topic orders.events \
+  --from-beginning --property print.key=true --property print.headers=true        # see traceparent header + key
+docker compose exec kafka $K/kafka-console-consumer.sh --bootstrap-server $B --topic orders.events.DLT \
+  --from-beginning --property print.headers=true                                   # kafka_dlt-exception-message etc.
+docker compose exec kafka $K/kafka-console-producer.sh --bootstrap-server $B --topic orders.events \
+  --property parse.key=true --property key.separator=:                              # type  bad:this is not json  -> poison pill demo
+# replay a group from the beginning (group must be inactive = scale notification-service to 0 first)
+docker compose exec kafka $K/kafka-consumer-groups.sh --bootstrap-server $B --group notification-service \
+  --topic orders.events --reset-offsets --to-earliest --execute
+# move a group to a timestamp / shift by N
+#   --to-datetime 2026-10-04T10:00:00.000 | --shift-by -100
+docker compose exec kafka $K/kafka-topics.sh --bootstrap-server $B --alter --topic orders.events --partitions 6   # key mapping changes!
+docker compose exec kafka $K/kafka-configs.sh --bootstrap-server $B --alter --entity-type topics \
+  --entity-name orders.events --add-config retention.ms=604800000
+# what the apps see
+curl -s localhost:8081/actuator/prometheus | grep -E 'outbox_unpublished|kafka_producer_record_send_total'
+curl -s localhost:8083/actuator/prometheus | grep -E 'records_lag|notifications_(sent|duplicates)'
+docker compose exec postgres psql -U orders -d orders -c "select event_type, count(*) filter (where published_at is null) pending, count(*) total from outbox_event group by 1"
+docker compose exec postgres psql -U notifications -d notifications -c "select count(*) from processed_event"
+```
+Kubernetes equivalents: `kubectl exec -n shopflow kafka-0 -- /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server kafka:9092 --describe --group notification-service`; scale consumers with `kubectl scale deploy/notification-service --replicas=3` (never above the partition count for throughput). On MSK the same CLI works with the IAM client properties file (`--command-config client.properties`).
+
+---
+
+## 8. Whiteboard: extending ShopFlow to an event-driven reservation (the question you will get)
+
+```
+POST /orders ──▶ order-service: save PENDING + outbox OrderPlaced ──▶ orders.commands (key orderRef)
+                                                                            │
+                                               inventory-service  ◀─────────┘  @KafkaListener group "inventory"
+                                               reserve(orderRef, sku, qty)  (already idempotent by orderRef)
+                                               outbox StockReserved | StockRejected ──▶ inventory.events (key orderRef)
+                                                                            │
+order-service @KafkaListener group "order-status" ◀─────────────────────────┘
+   CONFIRMED / REJECTED  → outbox OrderConfirmed/OrderRejected → orders.events → notification-service (unchanged)
+Client: 202 Accepted + Location, then GET /orders/{id} (or WebSocket/SSE) until status != PENDING
+```
+Points to make:
+- **What improves**: inventory downtime no longer fails orders (they queue as PENDING); no retry/breaker tuning for the hot path; natural backpressure; other consumers can join.
+- **What gets harder**: the client needs polling or push; a stuck PENDING needs a **timeout** (scheduler marks `FAILED` after N minutes and emits `OrderExpired`, inventory must then release — a compensating event); you now operate two more topics and a consumer in order-service; end-to-end latency rises from ~50 ms to seconds.
+- **Idempotency stays the same**: `orderRef` on the reservation, `eventId` on every consumer; the outbox code is already generic (`aggregateType`, `eventType`, `payload`).
+- **Orchestration vs choreography** again: here inventory reacts to `OrderPlaced` (choreography). A saga orchestrator (Temporal, Camunda, or a state machine in order-service) is the alternative when the flow grows to payment + shipping + email and you need a single place to see where each order is.
+- **Testing**: same `@EmbeddedKafka` approach; the inventory test would publish `OrderPlaced` and assert stock moved once even when the message is delivered twice.
+- **Where ShopFlow stops today**: this design is the first row of the improvement table in [01](01-project-walkthrough.md) — say that it is deliberately not done yet because the synchronous answer was a product requirement, and that the outbox/consumer building blocks are already proven in production code and tests.
 
 > Tip: Kafka round me sabse zyada marks "trade-off" batane pe milte hain — ordering vs parallelism, latency vs durability (`acks`), simplicity (polling) vs latency (CDC). Har answer me ek trade-off daalo.

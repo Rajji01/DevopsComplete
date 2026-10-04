@@ -51,7 +51,8 @@ groups:
 
       - alert: KafkaConsumerLagHigh
         # notification-service is falling behind the producers
-        expr: sum by (application) (spring_kafka_listener_records_lag_max) > 1000
+        # metric from Micrometer's Kafka consumer binder (kafka.consumer.fetch.manager.records.lag.max)
+        expr: sum by (application) (kafka_consumer_fetch_manager_records_lag_max) > 1000
         for: 10m
         labels:
           severity: ticket

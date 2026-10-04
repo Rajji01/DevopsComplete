@@ -1,9 +1,9 @@
 # 04 — Docker (Interview Notes)
 
 > Source of truth in this repo:
-> - `shopflow/Dockerfile` — one multi-stage Dockerfile for both services (build arg `SERVICE`)
+> - `shopflow/Dockerfile` — one multi-stage Dockerfile for all three services (build arg `SERVICE`)
 > - `shopflow/.dockerignore`
-> - `shopflow/docker-compose.yml` — postgres + order-service + inventory-service + prometheus + grafana
+> - `shopflow/docker-compose.yml` — postgres + kafka (KRaft) + redis + keycloak + order/inventory/notification services + prometheus + grafana + tempo + loki + alloy
 > - Older learning versions: `Devops/Dockerfile`, `microservice01/Dockerfile`, Docker commands in `notes.txt`
 >
 > Rule: when you talk about "my project", only quote what is in these files. For anything else say
@@ -82,7 +82,7 @@ COPY . .
 RUN --mount=type=cache,target=/root/.m2 \
     mvn -B -q -pl ${SERVICE} -am package -DskipTests
 ```
-- ShopFlow is a **multi-module** Maven project (parent `pom.xml` + `order-service` + `inventory-service`), so "copy only pom" would mean copying three poms in the right structure. Instead it does `COPY . .` and relies on a **cache mount**: `/root/.m2` persists across builds on the builder, but is **not** stored in the image.
+- ShopFlow is a **multi-module** Maven project (parent `pom.xml` + `order-service` + `inventory-service` + `notification-service`), so "copy only pom" would mean copying four poms in the right structure. Instead it does `COPY . .` and relies on a **cache mount**: `/root/.m2` persists across builds on the builder, but is **not** stored in the image.
 - `-pl ${SERVICE} -am` = build only the selected module (`--projects`) plus what it depends on (`--also-make`).
 - Trade-off: `COPY . .` means any source change re-runs `mvn package`, but dependencies come from the cache mount, so it's still fast locally. In CI the GHA cache (`cache-from: type=gha`) exports **layers, not cache mounts** — and since every commit changes the `COPY . .` layer, CI re-downloads Maven deps on each build. Honest answer if asked (fix: copy-poms-first layer, or a cache-mount export action).
 
@@ -358,19 +358,25 @@ Gotcha: `init-db.sh` runs **only on first start with an empty data dir**. If you
 
 ```
                       host ports
-   8081         8082          9090         3000
-    │            │              │            │
-┌───▼───────┐ ┌──▼──────────┐ ┌─▼────────┐ ┌─▼──────┐
-│ order-    │─▶ inventory-  │ │prometheus│─▶grafana │
-│ service   │ │ service     │ │ scrapes  │ │        │
-└────┬──────┘ └────┬────────┘ │ /actuator│ └────────┘
-     │ depends_on  │          │/prometheus
-     │ healthy     │          └──────────┘
-     ▼             ▼
-   ┌─────────────────┐   volume: pgdata
-   │ postgres:16-    │   init: init-db.sh → DBs "orders" + "inventory"
-   │ alpine          │         (database-per-service)
-   └─────────────────┘
+   8081          8082          8083         8180        9090        3000
+    │             │              │            │           │           │
+┌───▼────────┐ ┌──▼──────────┐ ┌─▼─────────┐ ┌▼────────┐ ┌▼─────────┐ ┌▼───────┐
+│ order-     │─▶ inventory-  │ │notification│ │keycloak │ │prometheus│─▶grafana│◀─ tempo (traces)
+│ service    │ │ service     │ │ -service  │ │ realm   │ │ scrapes  │ │        │◀─ loki  (logs)  ◀─ alloy (docker.sock)
+│ JWT, outbox│ │ @Cacheable  │ │ consumer  │ │ shopflow│ │ 3 targets│ └────────┘
+└──┬─────┬───┘ └──┬─────┬────┘ └─┬─────┬───┘ └─────────┘ └──────────┘
+   │     │        │     │        │     │     all services: OTLP_ENDPOINT=http://tempo:4318/v1/traces,
+   │     ▼        │     ▼        │     │     LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs, KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+   │  ┌───────────┴──┐ ┌───────┐ │     │
+   │  │ kafka:9092   │ │ redis │ │     │     volumes: pgdata, kafkadata, tempodata
+   │  │ apache/kafka │ │ 7.4   │ │     │
+   │  │ 4.1.0 KRaft  │ │ lru   │ │     │
+   │  └──────────────┘ └───────┘ │     │
+   ▼                             ▼     │
+   ┌──────────────────────────────┐    │
+   │ postgres:16-alpine           │◀───┘   init: init-db.sh → DBs "orders" + "inventory" + "notifications"
+   │ max_connections=200          │              (database-per-service)
+   └──────────────────────────────┘
           network: shopflow_default (DNS by service name)
 ```
 
@@ -383,15 +389,25 @@ Key features to talk about:
      depends_on:
        postgres:
          condition: service_healthy
+       kafka:
+         condition: service_healthy
      deploy:
        resources:
          limits:
            memory: 512m          # same as K8s limit → MaxRAMPercentage behaves the same locally
+   x-service-env: &service-env
+     KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+     OTLP_ENDPOINT: http://tempo:4318/v1/traces
+     LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
    ...
    inventory-service:
      <<: *service-defaults
+     environment:
+       <<: *service-env
+       CACHE_TYPE: redis
    ```
-2. **Healthchecks + `depends_on: condition: service_healthy`**: plain `depends_on` only waits for the container to *start*, not for Postgres to *accept connections*. With the condition, the Java services start only after `pg_isready -U postgres` succeeds.
+2. **Healthchecks + `depends_on: condition: service_healthy`**: plain `depends_on` only waits for the container to *start*, not for Postgres to *accept connections*. With the condition, the Java services start only after `pg_isready -U postgres` succeeds — and after Kafka answers `kafka-broker-api-versions.sh` (its healthcheck), and for inventory after `redis-cli ping`.
+   Infra images worth naming: `apache/kafka:4.1.0` in **KRaft** mode (`KAFKA_PROCESS_ROLES: broker,controller`, no ZooKeeper, RF 1, 3 default partitions — "Production: Amazon MSK"), `redis:7.4-alpine --maxmemory 64mb --maxmemory-policy allkeys-lru` ("Production: ElastiCache"), `quay.io/keycloak/keycloak:26.3 start-dev --import-realm --http-port=8180` with the realm JSON bind-mounted read-only ("Production: Cognito"). order-service has `extra_hosts: ["localhost:host-gateway"]` so the JWT issuer `http://localhost:8180/realms/shopflow` (what the browser/curl sees) is also reachable from inside the container for the JWKS fetch.
 3. **App healthchecks hit Actuator readiness**:
    ```yaml
    healthcheck:
@@ -412,7 +428,10 @@ docker compose logs -f order-service
 docker compose exec postgres psql -U postgres -c '\l'
 docker compose config --quiet             # validate (CI runs this)
 docker compose down                       # keep data
-docker compose down -v                    # also delete pgdata volume
+docker compose down -v                    # also delete pgdata / kafkadata / tempodata volumes
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic orders.events --from-beginning --property print.key=true     # watch outbox events arrive
+docker compose exec redis redis-cli --scan --pattern 'inventory:*'     # cached products
 ```
 
 Compose vs Kubernetes: Compose = single host, dev / small deployments, no self-healing across nodes, no rolling updates, no autoscaling. That's why ShopFlow also has `k8s/`.
@@ -514,7 +533,7 @@ Modern JVMs read cgroup limits, but the default heap is only 25% of it. `MaxRAMP
 Compose puts all services on one user-defined bridge network with built-in DNS, so order-service uses `http://inventory-service:8082` and `jdbc:postgresql://postgres:5432/orders`. Container ports, not host ports. `localhost` would point to the container itself.
 
 **Q9. `depends_on` doesn't wait for the DB to be ready — how did you handle it?**
-Postgres has a healthcheck with `pg_isready`, and both services use `depends_on: postgres: condition: service_healthy`. Apps also have healthchecks on `/actuator/health/readiness` with a 40s `start_period`. In Kubernetes there's no depends_on — readiness probes and retries handle it.
+Postgres has a healthcheck with `pg_isready`, Kafka with `kafka-broker-api-versions.sh`, Redis with `redis-cli ping`, and all three services use `depends_on: ... condition: service_healthy` (via the `x-service-defaults` anchor; inventory adds redis). Apps also have healthchecks on `/actuator/health/readiness` with a 40s `start_period`. In Kubernetes there's no depends_on — readiness probes and retries handle it (the outbox relay simply retries until Kafka is up; the Kafka consumer reconnects).
 
 **Q10. Volume vs bind mount?**
 Named volumes are Docker-managed and right for data like `pgdata`. Bind mounts map a host path and are right for config — I mount `prometheus.yml`, alert rules and `init-db.sh` read-only with `:ro`.

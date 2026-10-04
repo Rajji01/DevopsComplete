@@ -408,7 +408,7 @@ Honest limitation: H2 is "Postgres-like", not Postgres. Locking semantics and SQ
 
 ## 7. Likely follow-up questions (crisp answers)
 
-**Q1. Why two services and not a monolith?**
+**Q1. Why three services and not a monolith?**
 To practise real distributed-system problems: network failures, partial failure, idempotency, and data ownership. Inventory and orders also have different scaling and change patterns. For a real 3-person startup I'd honestly start with a modular monolith and split when needed.
 
 **Q2. How do you guarantee no overselling?**

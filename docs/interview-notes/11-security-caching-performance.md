@@ -74,6 +74,50 @@ Same image, different `JWT_ISSUER_URI` — that is the whole point of `JwtRolesC
 
 Compose gotcha worth telling: tokens carry `iss = http://localhost:8180/...` because the browser/curl talks to Keycloak via `localhost`; order-service runs in a container where `localhost` is itself. The compose file sets `KC_HOSTNAME: http://localhost:8180` and gives order-service `extra_hosts: ["localhost:host-gateway"]` so the container's `localhost` resolves to the Docker host and the JWKS fetch at the issuer URL works. In K8s both sides use the same hostname (`keycloak.shopflow.local`), so no trick is needed.
 
+### Hands-on: get a token and watch the resource server work (compose)
+
+```bash
+# 1. token for alice (role customer) — direct grant, dev only (README does the same)
+TOKEN=$(curl -s -X POST http://localhost:8180/realms/shopflow/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=shopflow-web -d username=alice -d password=alice | jq -r .access_token)
+# 2. look inside (never paste production tokens into websites)
+echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null | jq '{iss, sub, exp, azp, realm_access, preferred_username}'
+#   "iss": "http://localhost:8180/realms/shopflow"   <- must equal JWT_ISSUER_URI, byte for byte
+#   "realm_access": {"roles": ["customer", ...]}      <- JwtRolesConverter reads this
+# 3. the discovery document and JWKS Spring fetches
+curl -s http://localhost:8180/realms/shopflow/.well-known/openid-configuration | jq '{issuer, jwks_uri, token_endpoint}'
+curl -s http://localhost:8180/realms/shopflow/protocol/openid-connect/certs | jq '.keys[] | {kid, alg, use}'
+# 4. calls
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8081/api/v1/orders                                  # 401 (no token)
+curl -s -H "Authorization: Bearer $TOKEN" localhost:8081/api/v1/orders | jq '.page'                      # 200
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"sku":"PS5-SLIM","quantity":1}' localhost:8081/api/v1/orders | jq '{status, orderRef}'            # 201
+BOB=$(curl -s -X POST http://localhost:8180/realms/shopflow/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=shopflow-web -d username=bob -d password=bob | jq -r .access_token)
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $BOB" -H 'Content-Type: application/json' \
+  -d '{"sku":"PS5-SLIM","quantity":1}' localhost:8081/api/v1/orders                                      # 403 (support may only read)
+# 5. burst -> 429s (50 permits per second per pod)
+for i in $(seq 1 80); do curl -s -o /dev/null -w '%{http_code} ' -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"sku":"AIRPODS-PRO","quantity":1}' localhost:8081/api/v1/orders & done; wait; echo
+```
+
+### Spring Security filter chain — what runs in which order (resource server)
+
+| Order | Filter | What it does in ShopFlow |
+|---|---|---|
+| 1 | `DisableEncodeUrlFilter`, `WebAsyncManagerIntegrationFilter`, `SecurityContextHolderFilter` | plumbing; with `STATELESS` nothing is loaded from a session |
+| 2 | `HeaderWriterFilter` | adds `X-Content-Type-Options`, `X-Frame-Options`, `Cache-Control`, HSTS (on HTTPS) |
+| 3 | (`CsrfFilter`) | **removed** by `csrf.disable()` |
+| 4 | `LogoutFilter` | irrelevant for an API |
+| 5 | **`BearerTokenAuthenticationFilter`** | extracts `Authorization: Bearer …`, calls `JwtDecoder` (Nimbus, JWKS) → `JwtRolesConverter` → `Authentication` in the context; invalid token → `BearerTokenAuthenticationEntryPoint` → **401** with `WWW-Authenticate: Bearer error="invalid_token"` |
+| 6 | `RequestCacheAwareFilter`, `SecurityContextHolderAwareRequestFilter`, `AnonymousAuthenticationFilter` | no token → anonymous principal (so `permitAll` paths still work) |
+| 7 | `SessionManagementFilter` | `STATELESS`: never creates a session |
+| 8 | `ExceptionTranslationFilter` | turns `AccessDeniedException` into **403** (authenticated) or **401** (anonymous) |
+| 9 | **`AuthorizationFilter`** | evaluates `authorizeHttpRequests` rules in declaration order: actuator/swagger `permitAll` → `GET /api/v1/orders/**` roles → `/api/v1/orders/**` customer → `denyAll` |
+| → | `DispatcherServlet` → `@RateLimiter` proxy → controller | 429 from `RequestNotPermitted` is produced **after** security, so an unauthenticated flood never consumes rate-limit permits |
+
+Debug with `logging.level.org.springframework.security=TRACE` (dev only) — it prints every filter and the matched rule.
+
 ## A2. JWT — structure and validation
 
 ```
@@ -231,6 +275,21 @@ Honest implementation gap to know (it will come up if you demo with Redis): Spri
 - **Single-threaded command execution** → avoid `KEYS *`, big `SMEMBERS`, huge values; use `SCAN`, pipelining.
 - Prod: ElastiCache Redis 7.1, `transit_encryption_enabled = true`, in private subnets; Cluster mode for sharding; replicas for read scale/HA.
 
+### Redis / cache debugging cheat sheet
+
+```bash
+docker compose exec redis redis-cli INFO memory | grep -E 'used_memory_human|maxmemory_human|maxmemory_policy'
+docker compose exec redis redis-cli INFO stats | grep -E 'keyspace_hits|keyspace_misses|evicted_keys|expired_keys'
+docker compose exec redis redis-cli --scan --pattern 'inventory:*'         # keys written by Spring Cache (prefix from application.yml)
+docker compose exec redis redis-cli TTL 'inventory:products::PIXEL-9'      # seconds left of the 60s TTL (-1 = no TTL, -2 = gone)
+docker compose exec redis redis-cli MONITOR                                # live commands: GET on read, DEL on reserve (dev only, slows Redis)
+docker compose exec redis redis-cli --latency                              # round-trip latency
+docker compose exec redis redis-cli SLOWLOG GET 10                         # slow commands (KEYS *, big values)
+docker compose exec redis redis-cli DEL 'inventory:products::PIXEL-9'      # manual eviction while debugging staleness
+curl -s localhost:8082/actuator/prometheus | grep -E '^cache_(gets|puts|evictions)'   # Micrometer cache metrics (Redis/Caffeine backends)
+```
+Reading the key: Spring's default `CacheKeyPrefix` is `<cacheName>::`, so with `key-prefix: "inventory:"` the final key is `inventory:products::PIXEL-9`. Hit ratio = `hits / (hits + misses)`; for a catalog cache expect > 90%, otherwise the TTL is too short or evictions are too broad (`allEntries = true` on every release would show up here).
+
 ## B4. Stampede, consistency, hot keys, local vs distributed
 
 - **Cache stampede / thundering herd**: a hot key expires → hundreds of requests miss at once → DB spike. Fixes: `sync = true` (per-JVM coalescing), **single-flight / lock** (`SET lock NX PX`), **jittered TTL** (60s ± 10%), **stale-while-revalidate** / probabilistic early refresh, request collapsing at the gateway, or never expire + explicit evict.
@@ -280,6 +339,25 @@ Why limit `POST /orders` specifically: every order costs a DB insert, an HTTP ca
 - Hikari rule of thumb: `pool = cores × 2 + effective_spindles` → a service rarely needs more than 10–20 per pod; more connections = more Postgres context switching. ShopFlow: default 10, K8s `DB_POOL_SIZE=5` so that 10 pods × 5 × 2 services = 100 < `max_connections=200` (compose/StatefulSet) — in prod RDS, use **RDS Proxy / PgBouncer**. Watch `hikaricp_connections_pending` and `hikaricp_connections_timeout_total`; `connection-timeout` default 30s is too long for an API — set 2–5s so a saturated pool fails fast.
 - Hold connections briefly: no `@Transactional` around HTTP (`OrderService`), `open-in-view: false`, short `TransactionTemplate` blocks.
 - JVM: `-XX:MaxRAMPercentage=75` of the 512Mi limit ≈ 384 MiB heap; `-XX:+ExitOnOutOfMemoryError` → crash and restart; **no CPU limit** (throttling slows GC/JIT/startup); G1 default; for small heaps consider `-XX:+UseSerialGC`/`ParallelGC`; `-Xss` matters less with virtual threads. Startup: CDS/AppCDS, Spring AOT, or CRaC for faster scale-out.
+
+### JVM & pool flags reference (what is set, what to reach for)
+
+| Flag / property | ShopFlow | When to change |
+|---|---|---|
+| `-XX:MaxRAMPercentage=75` | `JAVA_TOOL_OPTIONS` in the Dockerfile | lower (60) if native memory (threads, direct buffers, metaspace) causes OOMKills at 512Mi; never 90+ |
+| `-XX:+ExitOnOutOfMemoryError` | set | keeps "crash and restart" semantics in K8s instead of a half-dead pod |
+| `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp` | not set | add when hunting a leak (needs the writable `/tmp` emptyDir, which exists) |
+| `-XX:+UseG1GC` (default) / `-XX:+UseSerialGC` / `-XX:+UseZGC` | default G1 | Serial for tiny heaps and 1 CPU request; ZGC/Shenandoah for large heaps and low pause targets |
+| `-Xss` | default (1 MB platform threads) | irrelevant for virtual threads; matters with hundreds of platform threads |
+| `-XX:ActiveProcessorCount` | default = container CPU limit (none here → node CPUs) | set it when there is no CPU limit but you want GC/JIT thread counts bounded (e.g. `=2` to match the 250m request realistically) |
+| `-XX:TieredStopAtLevel=1`, `-Xshare`, AppCDS, Spring AOT | not set | faster startup for scale-out; CDS archive built in the Dockerfile |
+| `spring.threads.virtual.enabled` | `true` | disable only if a library pins badly (JDK 21) |
+| `spring.datasource.hikari.maximum-pool-size` | `${DB_POOL_SIZE:10}`; K8s `5` | total across pods < DB `max_connections`; add PgBouncer/RDS Proxy at scale |
+| `hikari.connection-timeout` | default 30s | 2–5s for an API: fail fast, let the breaker/429 handle it |
+| `hikari.max-lifetime` / `idle-timeout` | defaults (30 min / 10 min) | keep below any DB/proxy idle timeout to avoid "connection reset" |
+| `server.tomcat.threads.max` | default 200 (unused with virtual threads) | the knob you tune *without* virtual threads |
+| `inventory.connect-timeout` / `read-timeout` | 1s / 2s | the real latency budget lever |
+| `resilience4j.ratelimiter.instances.orders.*` | 50 / 1s / 0 | raise with pod count; move to gateway for per-user limits |
 
 ## C4. Load testing with k6 — flash-sale script
 
@@ -406,6 +484,24 @@ Prometheus ◀──scrape /actuator/prometheus── Services                  
 - **Trace → logs**: Tempo's `tracesToLogsV2` with `filterByTraceID: true` runs a Loki query `{...} |= "<traceId>"` for the span's time range.
 - **Metrics → trace**: exemplars — histogram buckets carry a sample traceId; Prometheus needs `--enable-feature=exemplar-storage` and Micrometer `management.prometheus.metrics.export` exemplars (not configured yet — honest gap). Also Tempo's **metrics generator** can derive RED metrics from spans (service graphs).
 - The debugging loop to describe: alert `HighP99Latency` → Grafana panel → exemplar/trace → Tempo waterfall shows `UPDATE product` span is 220ms → click to Loki → `"reserved 1 x PS5-SLIM for order ..."` lines → row-lock contention on a hot SKU.
+
+### TraceQL / LogQL cheat sheet (Grafana → Explore)
+
+```traceql
+{ resource.service.name = "order-service" && span.http.route = "/api/v1/orders" && duration > 500ms }   # slow order creations
+{ span.http.response.status_code = 503 }                                                            # inventory-unavailable traces
+{ resource.service.name = "notification-service" && span.messaging.destination.name = "orders.events" } # consumer spans
+{ name =~ "orders.events.*" } | count() > 2                                                           # traces touching Kafka more than twice (redelivery)
+{ resource.service.name = "inventory-service" && span.db.statement =~ "update product.*" && duration > 100ms }  # row-lock waits
+```
+```logql
+{service="order-service"} | json | log_level="WARN" |= "could not publish outbox event"        # relay failing (Kafka down)
+{service="notification-service"} | json | message=~"duplicate event.*skipped"                   # idempotency doing its job
+{service=~".*-service"} | json | trace_id="<traceId from Tempo>"                                # all lines of one trace
+sum by (service) (rate({service=~".*-service"} | json | log_level="ERROR" [5m]))                # error log rate per service
+{service="order-service"} | json | message=~"order .* FAILED"                                   # business failures
+```
+Field names depend on the ECS layout (`log.level` → `log_level`, `trace.id` → `trace_id` after `| json`); check one raw line first. Tempo's span attributes follow OTel semantic conventions (`http.route`, `db.statement`, `messaging.destination.name`), which Micrometer's Kafka/HTTP observations emit.
 
 ## D5. Backends
 

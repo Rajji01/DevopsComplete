@@ -1,15 +1,16 @@
 # 07 — Observability & SRE (Interview Notes)
 
 > Source of truth in this repo:
-> - `shopflow/monitoring/prometheus.yml` — scrape config (job `shopflow`, path `/actuator/prometheus`, 15s)
-> - `shopflow/monitoring/alert-rules.yml` — `HighErrorRate`, `HighP99Latency`, `InventoryCircuitOpen`, `ServiceDown`
-> - `shopflow/monitoring/grafana/provisioning/datasources/prometheus.yml` — Grafana datasource as code
-> - `shopflow/docker-compose.yml` — runs Prometheus `v3.5.0` + Grafana `12.1.1` locally
-> - `shopflow/*-service/src/main/resources/application.yml` — Actuator + Micrometer config
-> - `shopflow/k8s/base/*-service/deployment.yaml` — `prometheus.io/*` annotations, `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`
-> - Custom metrics in code: `orders` counter with tag `status` (`OrderService`), `inventory.reservations.rejected` counter (`ReservationService`)
+> - `shopflow/monitoring/prometheus.yml` — scrape config (job `shopflow`, path `/actuator/prometheus`, 15s, three targets)
+> - `shopflow/monitoring/alert-rules.yml` — `HighErrorRate`, `HighP99Latency`, `InventoryCircuitOpen`, `ServiceDown`, `OutboxBacklogGrowing`, `KafkaConsumerLagHigh`
+> - `shopflow/monitoring/grafana/provisioning/datasources/datasources.yml` — Prometheus, Tempo and Loki datasources as code, with traces↔logs links
+> - `shopflow/monitoring/tempo.yml` (OTLP receivers 4318/4317, local storage), `shopflow/monitoring/alloy.river` (tails Docker container logs → Loki)
+> - `shopflow/docker-compose.yml` — runs Prometheus `v3.5.0`, Grafana `12.1.1`, Tempo `2.8.1`, Loki `3.5.3`, Alloy `v1.10.0` locally
+> - `shopflow/pom.xml` — `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp` for every service; `*/application.yml` — Actuator, Micrometer, `management.tracing.*`, `management.otlp.tracing.endpoint`
+> - `shopflow/k8s/base/*-service/deployment.yaml` — `prometheus.io/*` annotations, `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`, `OTLP_ENDPOINT` from the `shopflow-endpoints` ConfigMap
+> - Custom metrics in code: `orders` counter with tag `status` (`OrderService`), `inventory.reservations.rejected` counter (`ReservationService`), `outbox.unpublished` gauge (`OutboxRelay`), `notifications.sent` / `notifications.duplicates` counters (`OrderEventListener`)
 >
-> Not in the repo (say so honestly): Alertmanager, distributed tracing, Loki/ELK, dashboards JSON, SLO definitions.
+> Not in the repo (say so honestly): Alertmanager, dashboards JSON, SLO definitions, exemplars. Tracing and the Loki stack are covered in depth in [11-security-caching-performance.md](11-security-caching-performance.md) Part D.
 
 ---
 
@@ -21,9 +22,10 @@
 | Exposed endpoints | `management.endpoints.web.exposure.include: health,info,prometheus` |
 | Common tag | `management.metrics.tags.application: ${spring.application.name}` |
 | Histograms | `management.metrics.distribution.percentiles-histogram.http.server.requests: true` → `_bucket` series for `histogram_quantile` |
-| Scrape | `scrape_interval: 15s`, targets `order-service:8081`, `inventory-service:8082` |
-| Alert severities | `page` (HighErrorRate, InventoryCircuitOpen, ServiceDown) / `ticket` (HighP99Latency) |
-| Logs | ECS JSON on stdout in K8s (`LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs`) — "for Loki / ELK" |
+| Scrape | `scrape_interval: 15s`, targets `order-service:8081`, `inventory-service:8082`, `notification-service:8083` |
+| Alert severities | `page` (HighErrorRate, InventoryCircuitOpen, ServiceDown, OutboxBacklogGrowing) / `ticket` (HighP99Latency, KafkaConsumerLagHigh) |
+| Logs | ECS JSON on stdout (`LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs` in K8s **and** compose) → Alloy → Loki; fields `trace.id`/`span.id` link to Tempo |
+| Traces | Micrometer Tracing → OTel → OTLP/HTTP `:4318` → Tempo; sampling `${TRACING_SAMPLE:1.0}`; Kafka hops via `observation-enabled: true` |
 | Health | `/actuator/health/liveness`, `/actuator/health/readiness` (readiness = `readinessState,db`) |
 | Version info | `/actuator/info` (Maven `build-info` goal) |
 
@@ -52,7 +54,7 @@ ShopFlow deployments set:
 - name: LOGGING_STRUCTURED_FORMAT_CONSOLE
   value: ecs                 # JSON logs for Loki / ELK
 ```
-That's Spring Boot's built-in structured logging (Boot 3.4+), bound from env var to `logging.structured.format.console=ecs`. ECS = Elastic Common Schema. Locally (compose) it's not set → human-readable logs; in K8s → one JSON object per line on stdout (illustrative — exact field layout, dotted vs nested, depends on the Boot version):
+That's Spring Boot's built-in structured logging (Boot 3.4+), bound from env var to `logging.structured.format.console=ecs`. ECS = Elastic Common Schema. It is set in K8s and, since the Loki stack was added, also in compose (`x-service-env`), so Alloy ships one JSON object per line and Loki can filter on `trace.id` (illustrative — exact field layout, dotted vs nested, depends on the Boot version). Running a service bare with `./mvnw spring-boot:run` still gives human-readable logs:
 ```json
 {"@timestamp":"2026-10-01T09:12:44.120Z","log.level":"WARN","process.thread.name":"http-nio-8081-exec-3",
  "service.name":"order-service","log.logger":"com.shopflow.order.order.OrderService",
@@ -165,6 +167,20 @@ for: 2m
 ```
 `up` is synthesized by Prometheus per target: 1 = last scrape succeeded, 0 = failed. Catches crashed service, wrong port, network/NetworkPolicy blocking monitoring. Note: in K8s with service discovery, the `job` label depends on your scrape config — keep it `shopflow` or the rule silently never fires. Also add `absent(up{job="shopflow"})` to catch "no targets at all".
 
+### Rule 5 — `OutboxBacklogGrowing` (page)
+```promql
+max by (application) (outbox_unpublished) > 100
+for: 5m
+```
+`outbox_unpublished` is a Micrometer **gauge** registered in `OutboxRelay` (`meterRegistry.gauge("outbox.unpublished", repo, OutboxRepository::countByPublishedAtIsNull)`) — events written to the DB but not yet acknowledged by Kafka. `max by (application)` because every order-service pod reports the same table count (they share the DB); summing would multiply it by the pod count. Growing backlog = Kafka unreachable or the relay stuck, while users still get 201 — this is the one alert that sees a broker outage from the producer side. Runbook: relay logs ("could not publish outbox event … will retry"), broker health, `KAFKA_BOOTSTRAP_SERVERS`.
+
+### Rule 6 — `KafkaConsumerLagHigh` (ticket)
+```promql
+sum by (application) (spring_kafka_listener_records_lag_max) > 1000
+for: 10m
+```
+Lag = latest offset − committed offset: notification-service is falling behind the producers. Ticket, not page — nothing is lost (retention), it is a throughput problem (pods ≤ partitions, slow processing, poison-pill retry loop). **Verify the series name against the real `/actuator/prometheus` output**: Micrometer's Kafka client binder exposes consumer lag as `kafka_consumer_fetch_manager_records_lag_max{client_id=...}`; `spring_kafka_listener_*` are the listener observation timers. If the rule's metric does not exist the alert never fires — which is exactly why `promtool check rules` (syntax) is not enough; add an `absent()` rule or a unit test with `promtool test rules` using the real metric name. Saying this in an interview shows you validate alerts, not just write them.
+
 ### More useful queries (for Grafana)
 ```promql
 # RPS per service
@@ -208,12 +224,13 @@ CI: `promtool check rules /m/alert-rules.yml` (in `validate-manifests` job). Loc
 | Principle | Meaning | ShopFlow |
 |---|---|---|
 | **Alert on symptoms, not causes** | Page on what users feel (errors, latency, unavailability); causes (CPU, memory) go on dashboards | `HighErrorRate`, `HighP99Latency`, `ServiceDown` |
-| Exception: high-confidence early causes | A cause that always means user impact soon | `InventoryCircuitOpen` |
+| Exception: high-confidence early causes | A cause that always means user impact soon | `InventoryCircuitOpen`, `OutboxBacklogGrowing` (notifications silently delayed; HTTP looks healthy) |
+| Async pipelines need their own symptom | HTTP metrics cannot see a consumer falling behind | `KafkaConsumerLagHigh` (ticket) |
 | **Page vs ticket** | Page = wake a human now, urgent + actionable; ticket = fix in working hours | `severity: page` vs `severity: ticket` labels |
 | Every page actionable | If the response is "ignore it", delete/demote the alert | — |
 | `for:` duration | Avoid flapping on blips | 1m–10m |
 | Runbooks | Each alert links to "what to check / how to mitigate" | Add `runbook_url` annotation (next step) |
-| Avoid alert fatigue | Too many pages → people ignore real ones | Only 4 rules |
+| Avoid alert fatigue | Too many pages → people ignore real ones | Only 6 rules, 4 of them pages |
 
 Routing by severity happens in **Alertmanager** (not in the repo):
 ```yaml
@@ -273,7 +290,7 @@ SLI in PromQL (availability, 30d):
 
 ---
 
-## 9. Distributed tracing with OpenTelemetry (not implemented — how to add)
+## 9. Distributed tracing with OpenTelemetry (implemented: Micrometer Tracing → OTLP → Tempo)
 
 Concepts:
 ```
@@ -286,14 +303,16 @@ Trace 4bf92f... (one POST /api/v1/orders)
 │  └─ span: INSERT orders                                6ms
 ```
 - **Trace** = tree of **spans**; each span has trace ID, span ID, parent ID, timing, attributes, status.
-- **Context propagation**: W3C `traceparent` header passed on every outgoing call (RestClient) so inventory's spans join the same trace.
+- **Context propagation**: W3C `traceparent` header passed on every outgoing call (RestClient) so inventory's spans join the same trace; for Kafka the same header rides in the record headers (`spring.kafka.template.observation-enabled` / `listener.observation-enabled: true`), so the outbox relay's producer span and notification-service's consumer span share the trace that began with the HTTP request.
 - **Sampling**: head-based (decide at start, e.g. 10%) or tail-based in the Collector (keep all errors/slow traces).
 
-How to add to ShopFlow (two options):
-1. **Micrometer Tracing** (Spring-native): add `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp`; set `management.tracing.sampling.probability: 0.1` and `management.otlp.tracing.endpoint: http://otel-collector:4318/v1/traces`. The auto-configured `RestClient.Builder` propagates context automatically (if the client is built from the injected builder); trace/span IDs appear in logs (ECS fields) for correlation; exemplars can link histogram buckets to traces in Grafana.
-2. **OpenTelemetry Java agent** (zero code): `JAVA_TOOL_OPTIONS="-javaagent:/otel/opentelemetry-javaagent.jar ..."`, `OTEL_SERVICE_NAME=order-service`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318` (agent 2.x defaults to OTLP http/protobuf on 4318; 4317 is gRPC). Auto-instruments Spring MVC, JDBC, HTTP clients. Note ShopFlow already uses `JAVA_TOOL_OPTIONS` for heap flags — you'd append to it.
+How ShopFlow does it (option 1) and the alternative (option 2):
+1. **Micrometer Tracing** (Spring-native, **what is in the repo**): parent `pom.xml` adds `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp` to every service; `management.tracing.sampling.probability: ${TRACING_SAMPLE:1.0}` ("100% locally; 0.1 is typical in prod") and `management.otlp.tracing.endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}` — compose sets `OTLP_ENDPOINT=http://tempo:4318/v1/traces`, K8s reads it from the `shopflow-endpoints` ConfigMap (`http://tempo.monitoring:4318/v1/traces`; prod: `otel-collector.monitoring`). Tests disable export (`management.otlp.tracing.export.enabled: false`). The auto-configured `RestClient.Builder` propagates context automatically (`InventoryClient` is built from it); trace/span IDs appear in the ECS log fields for correlation. Exemplars (histogram bucket → trace) are **not** enabled yet.
+2. **OpenTelemetry Java agent** (zero code): `JAVA_TOOL_OPTIONS="-javaagent:/otel/opentelemetry-javaagent.jar ..."`, `OTEL_SERVICE_NAME=order-service`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318` (agent 2.x defaults to OTLP http/protobuf on 4318; 4317 is gRPC). Auto-instruments Spring MVC, JDBC, HTTP clients, Kafka. Note ShopFlow already uses `JAVA_TOOL_OPTIONS` for heap flags — you'd append to it. Trade-off vs Micrometer: no code/deps, but startup cost, less control, and metrics/traces come from different instrumentation.
 
-Pipeline: apps → **OTel Collector** (DaemonSet/Deployment: batching, sampling, attribute scrubbing) → backend (Jaeger, Grafana Tempo, AWS X-Ray, Datadog). Add the Collector's namespace to NetworkPolicy *egress* rules if egress gets locked down.
+Pipeline: apps → (optionally an **OTel Collector**: batching, tail sampling, attribute scrubbing) → backend. Locally ShopFlow sends straight to **Tempo** (`monitoring/tempo.yml`: OTLP http `0.0.0.0:4318` + grpc `4317`, `backend: local`, blocks + WAL under `/var/tempo`, volume `tempodata`); prod would go through ADOT/OTel Collector to X-Ray or Tempo. The NetworkPolicy *egress* rules already allow 4318 to the `monitoring` namespace for all three services.
+
+Grafana wiring (`datasources.yml`): Tempo datasource with `tracesToLogsV2` (`datasourceUid: loki`, `filterByTraceID: true`) — click a span, see that trace's log lines; Loki datasource with a `derivedFields` regex `"trace\.id":"(\w+)"` → `datasourceUid: tempo` — click a trace id in a log line, open the trace. That is the "metrics → trace → logs" loop from §1 made concrete.
 
 ---
 
@@ -307,10 +326,12 @@ Pipeline: apps → **OTel Collector** (DaemonSet/Deployment: batching, sampling,
 | UI | Grafana (same place as metrics) | Kibana |
 | Best for | K8s logs, correlation with Prometheus | Search-heavy, analytics, security (SIEM) |
 
-Kubernetes collection pattern: **DaemonSet** agent on each node tails `/var/log/containers/*.log`, adds K8s metadata (namespace, pod, labels), ships to backend. Because ShopFlow emits ECS JSON, the agent can parse fields directly (`| json` in LogQL):
+Kubernetes collection pattern: **DaemonSet** agent on each node tails `/var/log/containers/*.log`, adds K8s metadata (namespace, pod, labels), ships to backend. ShopFlow's compose equivalent is **Grafana Alloy** (`monitoring/alloy.river`): `discovery.docker` over `/var/run/docker.sock` → `discovery.relabel` copies the compose service label into a `service` label → `loki.source.docker` → `loki.write` to `http://loki:3100/loki/api/v1/push`. In K8s the same Alloy config would use `discovery.kubernetes` as a DaemonSet. Because ShopFlow emits ECS JSON, the agent can parse fields directly (`| json` in LogQL):
 ```logql
 {namespace="shopflow", app="order-service"} | json | log_level="ERROR"
 sum by (app) (count_over_time({namespace="shopflow"} | json | log_level="ERROR" [5m]))
+{service="notification-service"} | json | message=~"EMAIL.*"                 # compose: label from Alloy relabel
+{service=~".*-service"} | json | trace_id="4bf92f3577b34da6a3ce929d0e0e4736"   # every service's lines for one trace
 ```
 AWS option: Fluent Bit → CloudWatch Logs (Container Insights) or OpenSearch.
 
@@ -415,8 +436,8 @@ Averages hide tail latency; with many backend calls per user action, the slow ta
 **Q9. What is high cardinality and why is it dangerous?**
 Too many unique label combinations (e.g. userId label) → millions of series → Prometheus memory blows up, queries slow. Use bounded labels; put IDs in logs/traces.
 
-**Q10. How would you add distributed tracing?**
-Micrometer Tracing with the OTel bridge and OTLP exporter (or the OTel Java agent), W3C trace context propagated through RestClient, export to an OTel Collector and Tempo/Jaeger, sampling 10% + all errors, trace IDs in JSON logs.
+**Q10. How did you add distributed tracing?**
+Micrometer Tracing with the OTel bridge and OTLP exporter in the parent pom, so every service exports spans to Tempo over OTLP/HTTP on 4318 (`OTLP_ENDPOINT`), sampling via `TRACING_SAMPLE` (1.0 locally, 0.1 in prod). W3C trace context is propagated through `RestClient` and through Kafka record headers (`observation-enabled`), so one trace covers HTTP → inventory and the outbox → notification hop. Trace ids land in the ECS JSON logs; Grafana's Tempo and Loki datasources link both ways. The alternative would have been the OTel Java agent with zero code changes.
 
 **Q11. Pull vs push monitoring?**
 Prometheus pulls: it controls scrape rate and detects down targets via `up`. Push (Pushgateway, StatsD, OTLP push) suits short-lived jobs and firewalled sources.

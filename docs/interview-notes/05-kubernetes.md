@@ -11,14 +11,21 @@ shopflow/k8s/
 ├── base/
 │   ├── kustomization.yaml          # namespace: shopflow, label part-of=shopflow, lists all below
 │   ├── namespace.yaml
+│   ├── endpoints-configmap.yaml    # shopflow-endpoints: kafka-bootstrap-servers, redis-host, jwt-issuer-uri, otlp-endpoint
 │   ├── ingress.yaml                # nginx, host shopflow.local, /api/v1/orders, /api/v1/products
-│   ├── network-policies.yaml       # default-deny-ingress + 3 allow rules
+│   ├── network-policies.yaml       # default-deny ingress + egress(+DNS), per-service allow rules (apps, postgres, kafka, redis, keycloak)
 │   ├── order-service/      {deployment, service, hpa, pdb, kustomization}.yaml
 │   ├── inventory-service/  {deployment, service, hpa, pdb, kustomization}.yaml
-│   └── postgres/           {statefulset, service (headless), kustomization (configMapGenerator), init-db.sh}
+│   ├── notification-service/ {deployment, service, hpa, pdb, kustomization}.yaml   # Kafka consumer, port 8083
+│   ├── postgres/           {statefulset, service (headless), kustomization (configMapGenerator), init-db.sh}  # 3 logical DBs
+│   ├── kafka/              {statefulset (KRaft, 1 node, 2Gi PVC), service (headless 9092/9093)}
+│   ├── redis/              {deployment (no volume, allkeys-lru), service}
+│   └── keycloak/           {deployment (realm from ConfigMap, startupProbe /realms/shopflow), service, shopflow-realm.json}
 └── overlays/
-    ├── dev/kustomization.yaml      # tag :dev, secretGenerator (throwaway pwds), 1 replica, HPA 1-2
-    └── prod/kustomization.yaml     # GHCR images, 3 replicas, HPA 3-10, TLS host shop.example.com, secret from ESO
+    ├── dev/kustomization.yaml      # tag :dev, secretGenerator (shopflow-db incl. notifications pwd, keycloak-admin), 1 replica, HPA 1-2
+    └── prod/kustomization.yaml     # GHCR images pinned by CI, HPA 3-10, TLS host shop.example.com, ExternalSecret;
+                                    # $patch: delete postgres/kafka/redis/keycloak (+ their NetworkPolicies) -> RDS/MSK/ElastiCache/Cognito;
+                                    # shopflow-endpoints replaced with managed endpoints; egress to VPC CIDR + 443 for Cognito JWKS
 ```
 
 ---
@@ -36,9 +43,11 @@ shopflow/k8s/
 | Spread | `topologySpreadConstraints` on `kubernetes.io/hostname`, `maxSkew: 1`, `ScheduleAnyway` | `deployment.yaml` |
 | HPA | `autoscaling/v2`, CPU 70% of request, min 2 / max 6 (prod 3/10), scaleDown window 300s | `hpa.yaml` |
 | PDB | `minAvailable: 1` | `pdb.yaml` |
-| Services | ClusterIP 8081 / 8082; Postgres headless (`clusterIP: None`) | `service.yaml` |
-| DB | StatefulSet, `volumeClaimTemplates` 1Gi RWO, `fsGroup: 70` | `postgres/statefulset.yaml` |
-| Secrets | dev: `secretGenerator`; prod: External Secrets Operator / Sealed Secrets (not in git) | overlays |
+| Services | ClusterIP 8081 / 8082 / 8083; Postgres and Kafka headless (`clusterIP: None`; `kafka-0.kafka` for the controller quorum) | `service.yaml` |
+| DB / broker | Postgres StatefulSet, `volumeClaimTemplates` 1Gi RWO, `fsGroup: 70`; Kafka StatefulSet (KRaft combined node) 2Gi PVC, `tcpSocket` readiness on 9092 | `postgres/statefulset.yaml`, `kafka/statefulset.yaml` |
+| Cache / IdP | Redis Deployment (no PVC — "losing it only costs cache misses"), Keycloak Deployment with realm ConfigMap + `startupProbe` on `/realms/shopflow` | `redis/`, `keycloak/` |
+| Endpoints | ConfigMap `shopflow-endpoints` consumed via `configMapKeyRef` (`KAFKA_BOOTSTRAP_SERVERS`, `REDIS_HOST`, `JWT_ISSUER_URI`, `OTLP_ENDPOINT`); prod overlay `configMapGenerator` with `behavior: replace` | `endpoints-configmap.yaml`, overlays |
+| Secrets | dev: `secretGenerator` (`shopflow-db` with 3 DB passwords, `keycloak-admin`); prod: External Secrets Operator / Sealed Secrets (not in git) | overlays |
 | TLS | prod Ingress `tls` with `secretName: shopflow-tls` issued by cert-manager | `overlays/prod` |
 
 ---
@@ -256,8 +265,11 @@ ShopFlow:
 - **prod overlay**: comment — `Secret "shopflow-db" is NOT in git: it is synced from AWS Secrets Manager / Vault by External Secrets Operator (or created once with Sealed Secrets).`
 - Deployments read `DB_PASSWORD` via `secretKeyRef` (`orders-db-password`, `inventory-db-password`).
 
+### The `shopflow-endpoints` ConfigMap (one place for "where are my dependencies")
+`k8s/base/endpoints-configmap.yaml` holds `kafka-bootstrap-servers: kafka:9092`, `redis-host: redis`, `jwt-issuer-uri: http://keycloak.shopflow.local/realms/shopflow`, `otlp-endpoint: http://tempo.monitoring:4318/v1/traces`; Deployments read them with `valueFrom.configMapKeyRef`. The prod overlay replaces it (`configMapGenerator` with `behavior: replace`) with the MSK bootstrap string, the ElastiCache host, the Cognito issuer, an OTel collector and `rds-endpoint`, copied from `terraform output`. Same image, same Deployment — only this ConfigMap and the ExternalSecret differ between dev and prod.
+
 ### Generators and the hash suffix
-`configMapGenerator` (postgres `init-db.sh` → `postgres-init`) and `secretGenerator` add a **content hash** to the name, and Kustomize rewrites all references. Change the content → new name → Pod template changes → **automatic rolling restart**. Plain ConfigMaps don't trigger restarts when edited (env vars never update; mounted files update eventually but the app may not reload).
+`configMapGenerator` (postgres `init-db.sh` → `postgres-init`, Keycloak `shopflow-realm.json` → `keycloak-realm`) and `secretGenerator` add a **content hash** to the name, and Kustomize rewrites all references. Change the content → new name → Pod template changes → **automatic rolling restart**. Plain ConfigMaps don't trigger restarts when edited (env vars never update; mounted files update eventually but the app may not reload).
 
 Gotcha in the repo: `Devops/backend-cm.yaml` and `Devops/testing-config-map.yaml` both define ConfigMap `app-properties` — last applied wins (README mentions this).
 
@@ -526,21 +538,27 @@ By default **all pods can talk to all pods** in all namespaces. NetworkPolicies 
 
 `shopflow/k8s/base/network-policies.yaml`:
 ```
-default-deny-ingress      podSelector: {}  → no ingress to any pod in shopflow
-order-service-ingress     from ns ingress-nginx, ns monitoring          → port 8081
-inventory-service-ingress from pods order-service, ns ingress-nginx, ns monitoring → 8082
-postgres-ingress          from pods order-service | inventory-service   → 5432
+default-deny-ingress         podSelector: {}  → no ingress to any pod in shopflow
+order-service-ingress        from ns ingress-nginx, ns monitoring                         → 8081
+inventory-service-ingress    from pods order-service, ns ingress-nginx, ns monitoring     → 8082
+notification-service-ingress from ns monitoring only (no public API, Prometheus scrapes it) → 8083
+postgres-ingress             from pods order-service | inventory-service | notification-service → 5432
+kafka-ingress                from pods order-service | notification-service → 9092 ; from kafka pods → 9093 (controller quorum)
+redis-ingress                from pods inventory-service                    → 6379
+keycloak-ingress             from ns ingress-nginx (login/token), pods order-service (JWKS) → 8180
 ```
 ```
-ingress-nginx ──▶ order-service ──▶ inventory-service
-     │                 │                  │
-     └──────────────▶──┼──────────────────┘ (ingress also routes /api/v1/products)
-monitoring (Prometheus) scrapes both
-                       └──────▶ postgres ◀──────┘   (nothing else can reach 5432)
+ingress-nginx ──▶ order-service ──▶ inventory-service ──▶ redis
+     │              │   │   └──▶ keycloak (JWKS)   │
+     │              │   └──▶ kafka ◀── notification-service
+     └──────────────┼──▶ keycloak (token)          │
+monitoring (Prometheus) scrapes all three; apps send traces to monitoring:4318
+                    └──────▶ postgres ◀────────────┘   (only the three services can reach 5432)
 ```
 - Multiple items in one `from` list = **OR**. A `namespaceSelector` and `podSelector` in the **same** item = **AND** (common bug).
 - Selecting namespaces uses the automatic label `kubernetes.io/metadata.name`.
-- Egress is locked down too: `default-deny-egress-allow-dns` selects every pod, denies all egress, and allows only UDP/TCP 53 to `k8s-app: kube-dns` in `kube-system`; then `order-service-egress` (→ inventory-service 8082, postgres 5432) and `inventory-service-egress` (→ postgres 5432). **Forgetting DNS** is the classic egress-policy mistake: every Service lookup fails and it looks like the app is broken.
+- Egress is locked down too: `default-deny-egress-allow-dns` selects every pod, denies all egress, and allows only UDP/TCP 53 to `k8s-app: kube-dns` in `kube-system`; then `order-service-egress` (→ inventory 8082, postgres 5432, kafka 9092, keycloak 8180, monitoring ns 4318 for traces), `notification-service-egress` (→ postgres, kafka, monitoring 4318) and `inventory-service-egress` (→ postgres, redis 6379, monitoring 4318). **Forgetting DNS** is the classic egress-policy mistake: every Service lookup fails and it looks like the app is broken.
+- Prod overlay: the in-cluster postgres/kafka/redis/keycloak NetworkPolicies are deleted with the workloads, and the egress policies get extra `ipBlock` rules — `10.0.0.0/16` (VPC CIDR) on 5432/9092/**9098** (MSK IAM listener) and 6379, plus `0.0.0.0/0:443` for order-service to fetch Cognito's JWKS. Managed services live **outside** the cluster, so pod selectors cannot describe them.
 
 ---
 
@@ -779,13 +797,13 @@ Every 15s (default sync period) it reads metrics from metrics-server and compute
 Voluntary disruptions — drains, upgrades, autoscaler scale-down — via the eviction API. Not node crashes. `minAvailable: 1` means a drain can't evict the last pod. Watch out: with 1 replica, it blocks drains forever.
 
 **Q11. What is a NetworkPolicy and how did you use it?**
-Pod-level firewall enforced by the CNI. Default-deny all ingress in the namespace, then allow ingress-nginx and monitoring to the apps, order-service to inventory, and only the two services to Postgres on 5432.
+Pod-level firewall enforced by the CNI. Default-deny all ingress (and egress except DNS) in the namespace, then allow ingress-nginx and monitoring to the apps, order-service to inventory, order/notification to Kafka, inventory to Redis, order-service to Keycloak for the JWKS, and only the three services to Postgres on 5432.
 
 **Q12. Pod is in CrashLoopBackOff — what do you do?**
 `kubectl describe` for exit code/reason and events, `kubectl logs --previous`. 137+OOMKilled → memory; probe failures → probe timing / startup probe; exit 1 → app logs (bad env, DB, Flyway). Fix and redeploy; `kubectl debug` if the image has no shell.
 
 **Q13. Kustomize or Helm — why Kustomize here?**
-For my own two services with small env differences, plain YAML + overlays is readable, needs no templating and is built into kubectl. I'd use Helm to install third-party things like ingress-nginx, kube-prometheus-stack, cert-manager.
+For my own three services with small env differences, plain YAML + overlays is readable, needs no templating and is built into kubectl — and `$patch: delete` in the prod overlay cleanly swaps in-cluster Postgres/Kafka/Redis/Keycloak for managed AWS services. I'd use Helm to install third-party things like ingress-nginx, kube-prometheus-stack, cert-manager.
 
 **Q14. How do taints/tolerations differ from node affinity?**
 Taints are on nodes and repel pods that don't tolerate them; affinity is on pods and attracts them to nodes. A toleration only *allows* scheduling on a tainted node — to *force* it there you also need affinity.

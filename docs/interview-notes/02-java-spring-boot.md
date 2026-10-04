@@ -599,7 +599,7 @@ public PagedModel<OrderResponse> list(@RequestParam(defaultValue = "0") @Min(0) 
 - `@Valid` on a body → `MethodArgumentNotValidException`.
 - Constraints directly on method parameters (`@Min` on `@RequestParam`) → Spring 6.1+ built-in **method validation** → `HandlerMethodValidationException`. Both become 400 via `ResponseEntityExceptionHandler`.
 - Gotcha: once **any** parameter has a direct constraint, method validation also covers the `@Valid @RequestBody`, so body errors raise `HandlerMethodValidationException` instead of `MethodArgumentNotValidException`. That is what happens on ShopFlow's `POST /api/v1/orders` (the `Idempotency-Key` header has `@Size`), which is why both handlers are overridden. Inventory's `POST /api/v1/reservations` has no parameter constraints, so it uses `MethodArgumentNotValidException`.
-- ShopFlow's `GlobalExceptionHandler` (both services) **overrides** `handleMethodArgumentNotValid` and `handleHandlerMethodValidationException` to add a sorted `errors` list so clients see *which* field failed:
+- ShopFlow's `GlobalExceptionHandler` (order- and inventory-service; notification-service has no HTTP API) **overrides** `handleMethodArgumentNotValid` and `handleHandlerMethodValidationException` to add a sorted `errors` list so clients see *which* field failed:
 
 ```java
 @Override
