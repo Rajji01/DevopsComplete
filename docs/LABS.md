@@ -6,7 +6,7 @@ Setup used by the labs (run everything from `shopflow/`):
 
 | Labs | Environment |
 |---|---|
-| 1–4, 12–13, 16–22 | Docker Compose: `docker compose up --build -d` |
+| 1–4, 12–13, 16–22, 24–25 | Docker Compose: `docker compose up --build -d` |
 | 5–11, 15 | minikube: see "Kubernetes" in [`../shopflow/README.md`](../shopflow/README.md) |
 | 14 | GitHub: a branch + pull request |
 | 23 | kubectl + Terraform (plan needs an AWS account) |
@@ -461,3 +461,39 @@ cd ../infra/terraform/aws && terraform init -backend=false && terraform validate
 **Why:** databases, brokers and identity are *undifferentiated heavy lifting*; a managed service gives you backups, failover and patching for money, which is cheaper than an on-call engineer learning Kafka operations at 3 AM.
 
 **Challenge:** read `infra/terraform/aws/README.md`'s cost section and produce a "learning budget" variant (`terraform.tfvars`) that costs under $150/month. Which pillar of the Well-Architected Framework did you trade away, and is that acceptable for a dev environment?
+
+## Lab 24: IDOR — read someone else's order (and fail)
+
+**Do**
+```sh
+TOKEN=$(token alice); ID=$(auth -XPOST localhost:8081/api/v1/orders -H 'Content-Type: application/json' -d '{"sku":"PIXEL-9","quantity":1}' | jq -r .id)
+auth -o /dev/null -w 'alice GET: %{http_code}\n' localhost:8081/api/v1/orders/$ID
+# carol is also a customer (create her in Keycloak admin UI, role customer), then:
+TOKEN=$(token carol); auth -o /dev/null -w 'carol GET: %{http_code}\n' localhost:8081/api/v1/orders/$ID
+auth -o /dev/null -w 'carol DELETE: %{http_code}\n' -XDELETE localhost:8081/api/v1/orders/$ID
+TOKEN=$(token bob); auth -o /dev/null -w 'support GET: %{http_code}\n' localhost:8081/api/v1/orders/$ID
+```
+
+**Observe:** owner 200, other customer **404** (not 403) on GET and DELETE, support 200.
+
+**Why:** "has role customer" is authentication-ish; "owns this order" is authorization. Without the second check any logged-in user can walk through ids `1, 2, 3...`: OWASP API Top-10 #1. 404 instead of 403 so an attacker can't even learn which ids exist.
+
+**Challenge:** check out the commit before this fix (`git log --grep IDOR`), run the same curl, and watch carol cancel alice's order. Then explain why the fix lives in the service layer and not only in the controller.
+
+## Lab 25: Limbo — what happens to FAILED orders
+
+**Do**
+```sh
+docker compose stop inventory-service
+TOKEN=$(token alice); auth -XPOST localhost:8081/api/v1/orders -H 'Content-Type: application/json' -d '{"sku":"PIXEL-9","quantity":1}' | jq '{status, orderId}'
+docker compose start inventory-service
+# reconciler runs every 60s with a 2-minute grace period; watch it settle the order
+docker compose logs -f order-service | grep -E "reconciled|stays FAILED"
+auth 'localhost:8081/api/v1/orders?size=3' | jq '.content[] | {id, status}'
+```
+
+**Observe:** the order is `FAILED` (503 with `orderId`), and ~2–3 minutes later `reconciled FAILED order ... -> CANCELLED` appears; an `OrderCancelled` event reaches notification-service.
+
+**Why:** `FAILED` means *outcome unknown*: maybe inventory reserved the stock and the response was lost. Leaving it is a leak of stock and a confused customer. Because release is idempotent, the reconciler can always call it safely and give the order a definite end state.
+
+**Challenge:** make the reconciler smarter: call `GET /api/v1/reservations/{orderRef}` (you'll need to add it) and *confirm* the order if the reservation exists instead of cancelling. Which is better for the business, and what new failure mode does it add?

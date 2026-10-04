@@ -255,6 +255,46 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 
 ---
 
+### 11b. Authorization: role kaafi nahi, ownership chahiye (IDOR)
+
+**Problem:** `GET /orders/42`. Token valid tha, role `customer` tha, lekin order 42 kisi aur ka tha. Server ne de diya. Attacker ne `1, 2, 3...` ginti ki aur sabke orders padh/cancel kar diye. Ye **IDOR** hai: OWASP API Top-10 ka #1 bug, aur sabse common.
+
+**Kyu:** Authentication = "tum kaun ho". Authorization = "tum *is cheez* ke saath kya kar sakte ho". JWT pehla sawaal solve karta hai, doosra nahi.
+
+**Kaise (steps):**
+1. Har order ke saath owner save karo (JWT ka `sub` → `customer_id`).
+2. Har read/cancel pe check: `order.customerId == caller.sub`, ya caller `support` hai.
+3. Doosre ka order → **404**, 403 nahi (403 se pata chal jaata hai ki id exist karti hai).
+4. List hamesha caller pe filter (`findByCustomerId`), kabhi `findAll` + hope nahi.
+5. Check **service layer** mein, controller mein nahi, taaki har entry point (REST, future gRPC, scheduler) se guzre.
+6. Idempotency-Key bhi owner ke saath bandho; doosre ki key → 422.
+
+**ShopFlow mein:** `Caller`, `OrderService.get/list/cancel`, `V3__order_owner.sql`, test `customersOnlySeeTheirOwnOrders`, Lab 24.
+
+**Ek line mein:** *Role batata hai kya kar sakte ho; ownership batata hai kis pe. Dono check karo.*
+
+---
+
+### 11c. Reconciliation: "outcome unknown" ko kabhi mat chhodo
+
+**Problem:** Inventory call timeout hua. Order `FAILED` mark hua. Lekin shayad inventory ne stock reserve kar liya tha aur sirf response kho gaya. Ab stock atka hai, customer confused, aur koi system us order ko dobara dekhta hi nahi.
+
+**Kyu:** Distributed systems mein teen outcomes hote hain: success, failure, aur **pata nahi**. Teesra sabse khatarnak hai kyunki use koi handle nahi karta.
+
+**Kaise (steps):**
+1. "Pata nahi" ko explicit status do (`FAILED`), chhupao mat.
+2. Ek background job (reconciler) har minute poochhe: kaun se orders X minute se `FAILED` hain?
+3. Unke liye **idempotent** operation chalao jo dono cases mein safe ho: `release(orderRef)` (reserve tha to wapas, nahi tha to no-op).
+4. Order ko definite state do (`CANCELLED`) + event emit karo (customer ko pata chale).
+5. Dependency abhi bhi down? Ruk jao, agle run mein try karo. Hammer mat karo.
+6. Table scan sasta rakho: `(status, updated_at)` pe index.
+
+**ShopFlow mein:** `OrderService.reconcileFailedOrders`, `OrderReconciler`, test `reconcilerCancelsStaleFailedOrders...`, Lab 25. Same soch outbox cleanup mein: published rows 7 din baad delete, warna table hamesha badhti.
+
+**Ek line mein:** *Har "pata nahi" state ka ek owner job ho jo use definite banaye.*
+
+---
+
 ### 12. Cache-aside (reads sasta karo, galat data mat do)
 
 **Problem:** `GET /products/{sku}` flash sale mein 10,000 req/s. Har request Postgres query. DB CPU 100%, writes bhi slow.
@@ -265,8 +305,9 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 1. **Cache-aside**: read → cache mein hai? return. Nahi → DB se lo, cache mein daalo (TTL 60s), return.
 2. **Har write pe evict** (reserve/release → us sku ki key delete). Update nahi, evict: do writers galat order mein cache update kar sakte hain, delete safe hai.
 3. **DTO cache karo, entity nahi** (entity mein lazy proxies, session attached, serialization problems).
-4. Redis (shared across pods) prod mein; local `simple` cache tests/dev mein. Same code, config alag.
+4. Redis (shared across pods) prod mein; local `simple` cache tests/dev mein. Same code, config alag. Values **JSON** mein (JDK serialization nahi: class badli to purani entries phat-ti hain).
 5. TTL safety net hai: eviction kabhi miss ho to 60s mein theek.
+6. **Fail open**: Redis down ho to error log karo aur DB se padho (`LoggingCacheErrorHandler`). Cache kabhi read path ki hard dependency nahi honi chahiye.
 
 **ShopFlow mein:** `@Cacheable` `ProductController.get`, `@CacheEvict` `ReservationService`, Lab 20.
 
@@ -472,3 +513,6 @@ Har dependency ke liye poochho: **slow ho to? down ho to? galat jawab de to?**
 | Autoscale hua par DB mar gaya | burst > scaling speed | rate limit + cache |
 | Rollback nahi ho pa raha | `:latest` | SHA tags + GitOps |
 | Secret leak | git mein literal | Secrets Manager + ESO + IRSA |
+| Koi bhi user kisi ka bhi order dekh/cancel kar raha | role check hai, ownership check nahi (IDOR) | owner column + service-layer check, 404 |
+| Orders hamesha ke liye FAILED | "outcome unknown" ka koi owner nahi | reconciler job + idempotent release |
+| Redis down → reads fail | cache hard dependency | CacheErrorHandler fail-open |

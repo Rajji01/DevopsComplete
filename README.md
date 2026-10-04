@@ -9,7 +9,7 @@ Goal: **mastery in DevOps + Java backend**, by building, shipping, running and d
 | [`docs/SELF-WALK.md`](docs/SELF-WALK.md) | Review log: every bug found in this repo, why it mattered, how it was fixed, what is still open |
 | [`docs/EASY-NOTES.md`](docs/EASY-NOTES.md) | **Start here if concepts feel heavy**: har pattern ka problem → kyu → kaise (steps) → ShopFlow mein kahan → prod kaise behtar hua, simple Hinglish mein |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | 18-week mastery roadmap built around this repo |
-| [`docs/LABS.md`](docs/LABS.md) | 23 hands-on break/fix labs (OOMKilled, CrashLoopBackOff, circuit breaker, zero-downtime deploy, kill Kafka, duplicate events, poison pill, JWT, cache, tracing, ...) |
+| [`docs/LABS.md`](docs/LABS.md) | 25 hands-on break/fix labs (OOMKilled, CrashLoopBackOff, circuit breaker, zero-downtime deploy, kill Kafka, duplicate events, poison pill, JWT, cache, tracing, ...) |
 | [`docs/interview-notes/`](docs/interview-notes/) | Interview notes: project walkthrough, Java/Spring, microservices, Docker, Kubernetes, CI/CD, observability, Linux/networking, AWS production, Kafka, security/caching/performance, and a hard-questions file |
 
 ## Basics (first learning project)

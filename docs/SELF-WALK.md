@@ -85,17 +85,30 @@ Walk 3 findings from the notes review (fixed in the same session):
 - `KafkaConsumerLagHigh` alerted on a metric name that does not exist (`spring_kafka_listener_records_lag_max`); the real one is Micrometer's `kafka_consumer_fetch_manager_records_lag_max`, now asserted in a notification-service test so the alert's dependency is pinned.
 - Still open: `aud` claim is not validated, the rate limiter is per pod (shared limit needs Redis/gateway), `@EnableMethodSecurity` is on but no `@PreAuthorize` is used yet.
 
+## Walk 4: security and "limbo" review (Oct 4, 2026)
+
+Scope: re-read the order API as an attacker and as an on-call engineer. Question asked at every endpoint: *who* may call this, and *what state can an order get stuck in?*
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **IDOR**: any `customer` could `GET`/`DELETE` *any* order by id. Authentication was there, authorization was only "has the role" | OWASP API #1 (Broken Object Level Authorization). A customer could cancel other people's orders by counting ids | Orders carry the JWT `sub` (`customer_id`); reads/cancels are filtered by owner (**404**, not 403, so ids don't leak); list is scoped; `support` reads everything. Test `customersOnlySeeTheirOwnOrders` |
+| Idempotency-Key was global: another user sending the same key got *your* order replayed to them | Information leak + a way to hijack someone's order flow | Key is checked against the owner → **422 "Idempotency-Key conflict"** |
+| `FAILED` orders stayed `FAILED` forever; stock might stay reserved if the request *had* reached inventory | Limbo states need an owner. Every "outcome unknown" needs a reconciliation path | `OrderReconciler`: after a grace period, release (idempotent) + `CANCELLED` + event. Test proves it waits while inventory is down and settles when it's back |
+| `outbox_event` grew forever | Tables that only grow eventually become the incident | Nightly cleanup of published rows older than 7 days (`cleanupPublishedBefore`, tested) |
+| Redis down ⇒ `GET /products/{sku}` failed | A cache must never be a hard dependency of a read path | `LoggingCacheErrorHandler`: cache errors are logged, request falls through to the DB |
+| MSK IAM auth documented but not configured | Prod would have failed to connect to Kafka on day one | `aws-msk-iam-auth` + `application-aws.yml` (SASL_SSL / AWS_MSK_IAM); prod overlay sets `SPRING_PROFILES_ACTIVE=aws` |
+
+Lesson of this walk: **authentication ≠ authorization**, and **every async failure needs a reconciler**. Both are invisible in happy-path tests; you only find them by asking "what if the caller is hostile?" and "what if step 3 of 5 never answers?".
+
 ### Honest status (what is NOT verified)
 
 - Docker images, the compose stack and the minikube deploy have **not been run** in this environment (no Docker daemon). CI builds the images; the compose/minikube labs are the user's job.
 - Terraform was `fmt`-checked only. `terraform init/validate` runs in CI (the registry was unreachable here) and **nothing has been applied** to a real AWS account; module argument names follow terraform-aws-modules v6 (vpc) / v21 (eks) / v5 (iam) and may need small adjustments on first `plan`.
-- MSK IAM authentication needs the `aws-msk-iam-auth` client library and SASL properties that the services do not include yet (documented in `infra/terraform/aws/README.md`).
+- MSK IAM authentication is configured (`application-aws.yml`) but has never been exercised against a real MSK cluster.
 - Keycloak image tag `26.3` could not be checked against quay.io from here.
 
 ### Known gaps to walk next
 
-- `FAILED` orders (inventory unreachable) may leave stock reserved if the request did reach inventory. A reconciliation job that releases/cancels `FAILED` orders older than N minutes is the fix (release is idempotent).
-- The outbox table grows forever: add a cleaner for published rows older than 7 days.
 - Schema evolution for events is "ignore unknown fields" only; a Schema Registry (Avro/Protobuf) is the production answer.
 - No Testcontainers: tests run on H2 and an embedded Kafka, so PostgreSQL-only SQL (partial indexes, `SKIP LOCKED` semantics) is not exercised.
 - Secrets in the dev overlay are literals in git (fine for minikube, never for anything shared).

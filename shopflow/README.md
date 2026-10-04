@@ -30,7 +30,7 @@ Problem it solves: **many customers buy the same limited-stock product at the sa
 |---|---|---|---|
 | Port | 8081 | 8082 | 8083 |
 | Owns | `orders` DB, `outbox_event` | `inventory` DB (products, reservations), Redis cache | `notifications` DB (`processed_event`) |
-| API | `POST /api/v1/orders` (JWT role `customer`, optional `Idempotency-Key`)<br>`GET /api/v1/orders?page=&size=` (`customer`/`support`)<br>`GET /api/v1/orders/{id}`<br>`DELETE /api/v1/orders/{id}` (cancel) | `GET /api/v1/products`<br>`GET /api/v1/products/{sku}` (cached)<br>`POST /api/v1/reservations`<br>`DELETE /api/v1/reservations/{orderRef}` | none (consumes `orders.events`) |
+| API | `POST /api/v1/orders` (JWT role `customer`, optional `Idempotency-Key`)<br>`GET /api/v1/orders?page=&size=` (own orders; `support` sees all)<br>`GET /api/v1/orders/{id}` (owner or `support`, else 404)<br>`DELETE /api/v1/orders/{id}` (cancel own order) | `GET /api/v1/products`<br>`GET /api/v1/products/{sku}` (cached)<br>`POST /api/v1/reservations`<br>`DELETE /api/v1/reservations/{orderRef}` | none (consumes `orders.events`) |
 | Docs | http://localhost:8081/swagger-ui.html | http://localhost:8082/swagger-ui.html | — |
 
 ### Placing an order, end to end
@@ -43,6 +43,7 @@ Problem it solves: **many customers buy the same limited-stock product at the sa
 6. Every second the outbox relay publishes unpublished rows to Kafka (`acks=all`, idempotent producer, key = `orderRef` so one order's events stay in order) and marks them published. At-least-once: a crash between send and mark re-sends.
 7. notification-service consumes the event, checks `processed_event` (duplicate → skipped, counted), "sends the email" (a log line standing in for SES/FCM), and records the event id, all in one transaction. A message that keeps failing is retried with backoff, then moved to `orders.events.DLT`.
 8. `DELETE /api/v1/orders/{id}` is the saga's compensation: release the reservation (idempotent), mark `CANCELLED`, emit `OrderCancelled`.
+9. Every read and cancel is checked against the order's owner (the JWT `sub`); someone else's order is a 404. A `FAILED` order (outcome unknown) is settled by a background reconciler after 2 minutes: release (idempotent) + `CANCELLED`, so nothing stays in limbo.
 
 ## Production practices used (and where)
 
@@ -50,13 +51,15 @@ Problem it solves: **many customers buy the same limited-stock product at the sa
 |---|---|
 | DB per service, Flyway migrations, `ddl-auto=validate`, expand/contract-safe | `*/src/main/resources/db/migration` |
 | Race-free stock update + idempotent reservations (incl. concurrent retries) | `ProductRepository.decrementStock`, `ReservationService`, `ReservationController` |
-| Idempotency-Key for client retries | `OrderController`, `OrderService.placeOrder` |
+| Idempotency-Key for client retries (bound to the caller) | `OrderController`, `OrderService.placeOrder` |
+| Object-level authorization (owner or support; 404 for others) | `Caller`, `OrderService` |
+| Reconciliation of `FAILED` orders, outbox retention cleanup | `OrderReconciler`, `OutboxRelay.cleanup` |
 | Timeouts, retry (transient only), circuit breaker, rate limiter | `InventoryClient`, `resilience4j` in `order-service/.../application.yml` |
 | No DB transaction across a remote call; outbox in a `TransactionTemplate` | `OrderService` |
 | Transactional outbox, polling relay with `SKIP LOCKED`, Kafka idempotent producer | `order-service/.../outbox` |
 | Idempotent consumer, dead-letter topic, manual offset commit | `notification-service` |
 | OAuth2 resource server, stateless, role-based access, Keycloak ↔ Cognito | `order-service/.../security` |
-| Cache-aside with eviction on write, Redis in prod, TTL safety net | `ProductController`, `ReservationService` |
+| Cache-aside with eviction on write, JSON values, fail-open when Redis is down | `ProductController`, `ReservationService`, `CacheConfig` |
 | Optimistic locking (`@Version`) → 409 | `Order`, `GlobalExceptionHandler` |
 | RFC 7807 errors with field-level validation messages | `GlobalExceptionHandler` |
 | Liveness/readiness probes; readiness excludes downstream services | `management.endpoint.health` |
@@ -65,7 +68,7 @@ Problem it solves: **many customers buy the same limited-stock product at the sa
 | Distributed tracing (OTLP → Tempo), traces ↔ logs ↔ metrics in Grafana | parent `pom.xml`, `monitoring/` |
 | Structured JSON logs (ECS) shipped by Alloy to Loki | `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`, `monitoring/alloy.river` |
 | Java 21 virtual threads | `spring.threads.virtual.enabled` |
-| Tests: full context + WireMock + EmbeddedKafka + fake JWTs; `@WebMvcTest` slice; concurrency tests | `src/test` (26 tests) |
+| Tests: full context + WireMock + EmbeddedKafka + fake JWTs; `@WebMvcTest` slice; concurrency tests | `src/test` (31 tests) |
 | Multi-stage, layered, non-root image, one Dockerfile for all services | `Dockerfile` |
 | Kustomize base + dev/prod overlays, HPA (no `spec.replicas`), PDB, ingress+egress NetworkPolicies, securityContext | `k8s/` |
 | Prod on AWS managed services: RDS, MSK, ElastiCache, Cognito, Secrets Manager via External Secrets, ALB | `k8s/overlays/prod/`, `infra/terraform/aws/` |
@@ -77,7 +80,7 @@ Problem it solves: **many customers buy the same limited-stock product at the sa
 
 ### 1. Tests only (needs JDK 21)
 ```sh
-./mvnw verify            # 26 tests: H2 in PostgreSQL mode, embedded Kafka, WireMock, fake JWTs
+./mvnw verify            # 31 tests: H2 in PostgreSQL mode, embedded Kafka, WireMock, fake JWTs
 ```
 
 ### 2. Whole stack with Docker Compose
