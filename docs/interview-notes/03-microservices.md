@@ -375,6 +375,7 @@ Protect services from overload/abuse; enforce fair usage per client.
 - Where: API gateway / Ingress (per IP, per API key, per user), or in-app (Resilience4j `@RateLimiter`, Bucket4j).
 - Distributed limit across pods → shared store (Redis) — e.g. Spring Cloud Gateway `RequestRateLimiter` with Redis.
 - Response: **429 Too Many Requests** + `Retry-After` header.
+- **ShopFlow**: `resilience4j.ratelimiter.instances.orders: limit-for-period: 50, limit-refresh-period: 1s, timeout-duration: 0` — 50 order creations per second **per pod**, no queueing; `RequestNotPermitted` → `GlobalExceptionHandler.handleRateLimited` → 429 ProblemDetail "Too many requests" (test `rateLimitExceededIs429`, a `@WebMvcTest` slice). Only the expensive write path is limited. Honest limits: per pod (N pods = N × 50), not per user, no `Retry-After` yet — a gateway/Redis limiter is the next step.
 
 **Q: Rate limiter vs circuit breaker vs bulkhead?**
 Rate limiter: limits **incoming rate** (protect myself / downstream from too many requests per time). Bulkhead: limits **concurrency** to a dependency. Circuit breaker: stops calls to a **failing** dependency.
@@ -504,23 +505,24 @@ Possible refactor: move non-secret values into a ConfigMap and use `envFrom: [{c
 
 ---
 
-## 15. Distributed tracing [Not in project]
+## 15. Distributed tracing [In ShopFlow — parent `pom.xml`, `management.tracing.*`, Tempo/Loki/Alloy in compose]
 
-- **Trace** = one end-to-end request; **span** = one operation (HTTP server handling, HTTP client call, DB query). Each span has `traceId` (shared), `spanId`, `parentSpanId`.
-- Context is propagated in headers — W3C `traceparent: 00-<traceId>-<spanId>-01` (or B3).
+- **Trace** = one end-to-end request; **span** = one operation (HTTP server handling, HTTP client call, DB query, Kafka send/receive). Each span has `traceId` (shared), `spanId`, `parentSpanId`.
+- Context is propagated in headers — W3C `traceparent: 00-<traceId>-<spanId>-01` (or B3); for Kafka, in record headers.
 - Spring Boot 3: **Micrometer Tracing** (replaced Spring Cloud Sleuth) with a bridge to **OpenTelemetry** or Brave; export to Zipkin / Jaeger / Tempo via OTLP.
 
-How to add to ShopFlow:
+As configured in ShopFlow (all three services via the parent pom):
 ```xml
 <dependency><groupId>io.micrometer</groupId><artifactId>micrometer-tracing-bridge-otel</artifactId></dependency>
 <dependency><groupId>io.opentelemetry</groupId><artifactId>opentelemetry-exporter-otlp</artifactId></dependency>
 ```
 ```yaml
-management.tracing.sampling.probability: 0.1       # 10% in prod, 1.0 in dev
-management.otlp.tracing.endpoint: http://otel-collector:4318/v1/traces
-logging.pattern.level: "%5p [${spring.application.name},%X{traceId:-},%X{spanId:-}]"   # Boot 3.2+ adds traceId/spanId to logs by default
+management.tracing.sampling.probability: ${TRACING_SAMPLE:1.0}        # 100% locally; 0.1 is typical in prod
+management.otlp.tracing.endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}   # compose: tempo:4318, K8s: from shopflow-endpoints ConfigMap
+spring.kafka.template.observation-enabled: true    # order-service: trace context travels in the Kafka headers
+spring.kafka.listener.observation-enabled: true    # notification-service: continue the trace that started in order-service
 ```
-`InventoryClient` already builds its `RestClient` from the **auto-configured `RestClient.Builder`** (comment in the class), which is instrumented with observations — so once a tracer is on the classpath, `traceparent` is propagated to inventory automatically. A `new RestClient` without the builder would lose that.
+Tests set `management.otlp.tracing.export.enabled: false`. `InventoryClient` builds its `RestClient` from the **auto-configured `RestClient.Builder`** (comment in the class), which is instrumented with observations — so `traceparent` is propagated to inventory automatically; a `new RestClient` without the builder would lose that. Logs: Boot's ECS structured logging (`LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`) includes `trace.id`/`span.id`; Grafana's Loki datasource turns them into links to Tempo (`derivedFields`), and Tempo's `tracesToLogsV2` goes the other way. Details and the agent-vs-Micrometer comparison: [11](11-security-caching-performance.md).
 
 **Q: Logs vs metrics vs traces?**
 Metrics: aggregated numbers, cheap, for alerting ("p99 is up"). Traces: one request's path across services ("which hop is slow"). Logs: detailed events ("what exactly happened"); correlate them via `traceId`.
