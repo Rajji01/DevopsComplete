@@ -1,6 +1,9 @@
 package com.shopflow.inventory.config;
 
 import org.springframework.boot.autoconfigure.cache.RedisCacheManagerBuilderCustomizer;
+import org.springframework.cache.annotation.CachingConfigurer;
+import org.springframework.cache.interceptor.CacheErrorHandler;
+import org.springframework.cache.interceptor.LoggingCacheErrorHandler;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.cache.RedisCacheConfiguration;
@@ -13,7 +16,16 @@ import org.springframework.data.redis.serializer.RedisSerializationContext;
  * Only applied when spring.cache.type=redis; the 'simple' cache used locally/in tests ignores it.
  */
 @Configuration
-public class CacheConfig {
+public class CacheConfig implements CachingConfigurer {
+
+    /**
+     * Fail open: if Redis is down, a cache miss is logged and the request goes to the database
+     * instead of failing. A cache must never be a hard dependency of a read path.
+     */
+    @Override
+    public CacheErrorHandler errorHandler() {
+        return new LoggingCacheErrorHandler();
+    }
 
     @Bean
     RedisCacheManagerBuilderCustomizer jsonCacheValues() {

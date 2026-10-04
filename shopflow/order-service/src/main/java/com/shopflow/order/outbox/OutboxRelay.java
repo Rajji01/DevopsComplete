@@ -1,6 +1,10 @@
 package com.shopflow.order.outbox;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.concurrent.TimeUnit;
+
+import org.springframework.beans.factory.annotation.Value;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,11 +29,13 @@ public class OutboxRelay {
 
     private final OutboxRepository outboxRepository;
     private final KafkaTemplate<String, String> kafkaTemplate;
+    private final Duration retention;
 
     public OutboxRelay(OutboxRepository outboxRepository, KafkaTemplate<String, String> kafkaTemplate,
-                       MeterRegistry meterRegistry) {
+                       MeterRegistry meterRegistry, @Value("${outbox.cleanup.retention:7d}") Duration retention) {
         this.outboxRepository = outboxRepository;
         this.kafkaTemplate = kafkaTemplate;
+        this.retention = retention;
         // backlog gauge: alert if it keeps growing (Kafka down, relay stuck)
         meterRegistry.gauge("outbox.unpublished", outboxRepository, OutboxRepository::countByPublishedAtIsNull);
     }
@@ -51,5 +57,21 @@ public class OutboxRelay {
         if (!batch.isEmpty()) {
             log.info("published {} outbox event(s)", batch.size());
         }
+    }
+
+    /** Published rows are only kept for debugging; without this the table grows forever. */
+    @Scheduled(cron = "${outbox.cleanup.cron:0 30 3 * * *}")
+    @Transactional
+    public void cleanup() {
+        cleanupPublishedBefore(Instant.now().minus(retention));
+    }
+
+    @Transactional
+    public int cleanupPublishedBefore(Instant before) {
+        int deleted = outboxRepository.deletePublishedBefore(before);
+        if (deleted > 0) {
+            log.info("deleted {} published outbox event(s) older than {}", deleted, before);
+        }
+        return deleted;
     }
 }

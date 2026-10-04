@@ -1,5 +1,8 @@
 package com.shopflow.order.order;
 
+import java.time.Duration;
+import java.time.Instant;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -8,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.RestClientException;
 
+import com.shopflow.order.common.IdempotencyKeyConflictException;
 import com.shopflow.order.common.InventoryUnavailableException;
 import com.shopflow.order.common.OrderNotCancellableException;
 import com.shopflow.order.common.OrderNotFoundException;
@@ -54,16 +58,20 @@ public class OrderService {
         this.objectMapper = objectMapper;
     }
 
-    public PlacedOrder placeOrder(String sku, int quantity, String idempotencyKey) {
+    public PlacedOrder placeOrder(String sku, int quantity, String idempotencyKey, Caller caller) {
         if (idempotencyKey != null) {
             var existing = orderRepository.findByIdempotencyKey(idempotencyKey);
             if (existing.isPresent()) {
+                if (!existing.get().isOwnedBy(caller.customerId())) {
+                    // same key from a different user: never replay someone else's order to them
+                    throw new IdempotencyKeyConflictException(idempotencyKey);
+                }
                 log.info("idempotent replay for key {}, returning order {}", idempotencyKey, existing.get().getId());
                 return new PlacedOrder(existing.get(), false);
             }
         }
 
-        Order order = orderRepository.save(Order.pending(sku, quantity, idempotencyKey));
+        Order order = orderRepository.save(Order.pending(sku, quantity, idempotencyKey, caller.customerId()));
         try {
             inventoryClient.reserve(order.getOrderRef(), sku, quantity);
             order.confirm();
@@ -81,23 +89,52 @@ public class OrderService {
         return new PlacedOrder(order, true);
     }
 
-    public Order get(long id) {
-        return orderRepository.findById(id).orElseThrow(() -> new OrderNotFoundException(id));
+    /** 404 (not 403) for someone else's order: don't reveal that the id exists. */
+    public Order get(long id, Caller caller) {
+        return orderRepository.findById(id)
+                .filter(caller::mayAccess)
+                .orElseThrow(() -> new OrderNotFoundException(id));
     }
 
-    public Page<Order> list(Pageable pageable) {
-        return orderRepository.findAll(pageable);
+    public Page<Order> list(Pageable pageable, Caller caller) {
+        return caller.support()
+                ? orderRepository.findAll(pageable)
+                : orderRepository.findByCustomerId(caller.customerId(), pageable);
     }
 
     /** Compensation step of the saga: give the reserved stock back. */
-    public Order cancel(long id) {
-        Order order = get(id);
+    public Order cancel(long id, Caller caller) {
+        Order order = get(id, caller);
         if (!order.isCancellable()) {
             throw new OrderNotCancellableException(id, order.getStatus());
         }
         inventoryClient.release(order.getOrderRef());
         order.cancel();
         return saveWithEvent(order);
+    }
+
+    /**
+     * FAILED = we never learned whether inventory reserved the stock (timeout, breaker open).
+     * After a grace period, give up: release is idempotent (a no-op if nothing was reserved),
+     * so calling it is always safe, and the customer gets a definite CANCELLED instead of limbo.
+     * Runs on a schedule (OrderReconciler); returns how many orders it settled.
+     */
+    public int reconcileFailedOrders(Duration grace) {
+        var stale = orderRepository.findTop100ByStatusAndUpdatedAtBefore(OrderStatus.FAILED, Instant.now().minus(grace));
+        int settled = 0;
+        for (Order order : stale) {
+            try {
+                inventoryClient.release(order.getOrderRef());
+                order.cancel();
+                saveWithEvent(order);
+                settled++;
+                log.info("reconciled FAILED order {} -> CANCELLED", order.getOrderRef());
+            } catch (RestClientException | CallNotPermittedException e) {
+                log.warn("inventory still unavailable, order {} stays FAILED: {}", order.getOrderRef(), e.getMessage());
+                break; // inventory is down; no point hammering it for the rest of the batch
+            }
+        }
+        return settled;
     }
 
     /**

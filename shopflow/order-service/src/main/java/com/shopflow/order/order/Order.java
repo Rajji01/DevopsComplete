@@ -31,6 +31,10 @@ public class Order {
     @Column(name = "idempotency_key", unique = true, length = 100)
     private String idempotencyKey;
 
+    // JWT "sub" of the customer who placed the order; every read/cancel checks it (no IDOR)
+    @Column(name = "customer_id", nullable = false, length = 100)
+    private String customerId;
+
     @Column(nullable = false, length = 64)
     private String sku;
 
@@ -57,10 +61,11 @@ public class Order {
     protected Order() {
     }
 
-    static Order pending(String sku, int quantity, String idempotencyKey) {
+    static Order pending(String sku, int quantity, String idempotencyKey, String customerId) {
         Order order = new Order();
         order.orderRef = UUID.randomUUID().toString();
         order.idempotencyKey = idempotencyKey;
+        order.customerId = customerId;
         order.sku = sku;
         order.quantity = quantity;
         order.status = OrderStatus.PENDING;
@@ -98,6 +103,18 @@ public class Order {
 
     boolean isCancellable() {
         return status == OrderStatus.CONFIRMED || status == OrderStatus.FAILED;
+    }
+
+    boolean isOwnedBy(String customerId) {
+        return this.customerId.equals(customerId);
+    }
+
+    public String getCustomerId() {
+        return customerId;
+    }
+
+    public Instant getUpdatedAt() {
+        return updatedAt;
     }
 
     public Long getId() {

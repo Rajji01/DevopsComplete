@@ -84,6 +84,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 .toList();
     }
 
+    @ExceptionHandler(IdempotencyKeyConflictException.class)
+    ProblemDetail handleIdempotencyKeyConflict(IdempotencyKeyConflictException ex) {
+        return problem(HttpStatus.UNPROCESSABLE_ENTITY, "Idempotency-Key conflict", ex.getMessage());
+    }
+
     @ExceptionHandler(RequestNotPermitted.class)
     ProblemDetail handleRateLimited(RequestNotPermitted ex) {
         return problem(HttpStatus.TOO_MANY_REQUESTS, "Too many requests", "Rate limit exceeded, slow down");

@@ -1,0 +1,10 @@
+# Activated in the prod overlay with SPRING_PROFILES_ACTIVE=aws.
+# Kafka over TLS with IAM authentication: the pod's IRSA role (ServiceAccount annotation) is picked up
+# by the AWS default credentials chain, so there is no username/password anywhere.
+spring:
+  kafka:
+    properties:
+      security.protocol: SASL_SSL
+      sasl.mechanism: AWS_MSK_IAM
+      sasl.jaas.config: software.amazon.msk.auth.iam.IAMLoginModule required;
+      sasl.client.callback.handler.class: software.amazon.msk.auth.iam.IAMClientCallbackHandler

@@ -18,6 +18,11 @@ outbox:
   relay:
     delay: 100ms
 
+orders:
+  reconcile:
+    delay: 1h                   # tests call reconcileFailedOrders() directly
+    grace: 0s
+
 resilience4j:
   retry:
     instances:

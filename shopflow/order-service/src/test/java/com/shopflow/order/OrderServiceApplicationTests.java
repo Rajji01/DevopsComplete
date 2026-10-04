@@ -85,6 +85,9 @@ class OrderServiceApplicationTests {
     @Autowired
     private CircuitBreakerRegistry circuitBreakerRegistry;
 
+    @Autowired
+    private com.shopflow.order.order.OrderService orderService;
+
     @BeforeEach
     void reset() {
         inventory.resetAll();
@@ -100,7 +103,15 @@ class OrderServiceApplicationTests {
     }
 
     private static org.springframework.test.web.servlet.request.RequestPostProcessor customer() {
-        return jwt().authorities(new SimpleGrantedAuthority("ROLE_customer"));
+        return customer("alice");
+    }
+
+    private static org.springframework.test.web.servlet.request.RequestPostProcessor customer(String subject) {
+        return jwt().jwt(j -> j.subject(subject)).authorities(new SimpleGrantedAuthority("ROLE_customer"));
+    }
+
+    private static org.springframework.test.web.servlet.request.RequestPostProcessor support() {
+        return jwt().jwt(j -> j.subject("bob")).authorities(new SimpleGrantedAuthority("ROLE_support"));
     }
 
     private static void stubReserve(int status) {
@@ -251,9 +262,60 @@ class OrderServiceApplicationTests {
                                 {"sku":"IPHONE-15","quantity":1}"""))
                 .andExpect(status().isUnauthorized());
         // support staff may read but not place orders
-        mockMvc.perform(createOrder("IPHONE-15", 1).with(jwt().authorities(new SimpleGrantedAuthority("ROLE_support"))))
+        mockMvc.perform(createOrder("IPHONE-15", 1).with(support()))
                 .andExpect(status().isForbidden());
         mockMvc.perform(get("/actuator/health/liveness")).andExpect(status().isOk());
+    }
+
+    @Test
+    void customersOnlySeeTheirOwnOrders() throws Exception {
+        stubReserve(201);
+        inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*")).willReturn(aResponse().withStatus(204)));
+        String body = mockMvc.perform(createOrder("IPHONE-15", 1)).andReturn().getResponse().getContentAsString();
+        Number id = JsonPath.read(body, "$.id");
+
+        // another customer: 404, not 403, so the id's existence is not revealed (no IDOR)
+        mockMvc.perform(get("/api/v1/orders/" + id).with(customer("mallory"))).andExpect(status().isNotFound());
+        mockMvc.perform(MockMvcRequestBuilders.delete("/api/v1/orders/" + id).with(customer("mallory"))).andExpect(status().isNotFound());
+        inventory.verify(0, deleteRequestedFor(urlPathMatching("/api/v1/reservations/.*")));
+
+        // the owner and support can read it; the list is scoped to the caller
+        mockMvc.perform(get("/api/v1/orders/" + id).with(customer())).andExpect(status().isOk());
+        mockMvc.perform(get("/api/v1/orders/" + id).with(support())).andExpect(status().isOk());
+        mockMvc.perform(get("/api/v1/orders?size=100").with(customer("mallory")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[?(@.id == " + id + ")]").isEmpty());
+        mockMvc.perform(get("/api/v1/orders?size=100").with(support()))
+                .andExpect(jsonPath("$.content[?(@.id == " + id + ")]").isNotEmpty());
+    }
+
+    @Test
+    void idempotencyKeyOfAnotherCustomerIsRejected() throws Exception {
+        stubReserve(201);
+        mockMvc.perform(createOrder("IPHONE-15", 1).header("Idempotency-Key", "shared-key")).andExpect(status().isCreated());
+        mockMvc.perform(createOrder("IPHONE-15", 1).header("Idempotency-Key", "shared-key").with(customer("mallory")))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.title").value("Idempotency-Key conflict"));
+    }
+
+    @Test
+    void reconcilerCancelsStaleFailedOrdersOnceInventoryIsBack() throws Exception {
+        stubReserve(500);
+        String body = mockMvc.perform(createOrder("PIXEL-9", 1)).andExpect(status().isServiceUnavailable())
+                .andReturn().getResponse().getContentAsString();
+        Number orderId = JsonPath.read(body, "$.orderId");
+        circuitBreakerRegistry.circuitBreaker("inventory").reset();
+
+        // inventory still down: nothing settles, order stays FAILED
+        inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*")).willReturn(aResponse().withStatus(503)));
+        assertThat(orderService.reconcileFailedOrders(Duration.ZERO)).isZero();
+        circuitBreakerRegistry.circuitBreaker("inventory").reset();
+
+        // inventory back: release (idempotent) + CANCELLED
+        inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*")).willReturn(aResponse().withStatus(204)));
+        assertThat(orderService.reconcileFailedOrders(Duration.ZERO)).isGreaterThanOrEqualTo(1);
+        mockMvc.perform(get("/api/v1/orders/" + orderId).with(customer()))
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
     }
 
     @Test

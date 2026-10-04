@@ -45,6 +45,14 @@ inventory:
 outbox:
   relay:
     delay: 1s
+  cleanup:
+    retention: 7d
+    cron: "0 30 3 * * *"        # 03:30 UTC daily (09:00 IST)
+
+orders:
+  reconcile:
+    delay: 60s
+    grace: 2m                   # FAILED for longer than this -> release + CANCELLED
 
 resilience4j:
   ratelimiter:

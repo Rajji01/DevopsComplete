@@ -13,6 +13,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PagedModel;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -56,8 +57,9 @@ public class OrderController {
     @RateLimiter(name = "orders") // protects the DB and inventory from a traffic burst; excess -> 429
     public ResponseEntity<OrderResponse> create(
             @Valid @RequestBody CreateOrderRequest request,
-            @RequestHeader(name = "Idempotency-Key", required = false) @Size(max = 100) String idempotencyKey) {
-        var placed = orderService.placeOrder(request.sku(), request.quantity(), idempotencyKey);
+            @RequestHeader(name = "Idempotency-Key", required = false) @Size(max = 100) String idempotencyKey,
+            Authentication authentication) {
+        var placed = orderService.placeOrder(request.sku(), request.quantity(), idempotencyKey, Caller.from(authentication));
         var body = OrderResponse.from(placed.order());
         if (!placed.created()) {
             return ResponseEntity.ok(body);
@@ -66,19 +68,20 @@ public class OrderController {
     }
 
     @GetMapping("/{id}")
-    public OrderResponse get(@PathVariable long id) {
-        return OrderResponse.from(orderService.get(id));
+    public OrderResponse get(@PathVariable long id, Authentication authentication) {
+        return OrderResponse.from(orderService.get(id, Caller.from(authentication)));
     }
 
     @GetMapping
     public PagedModel<OrderResponse> list(@RequestParam(defaultValue = "0") @Min(0) int page,
-                                          @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
+                                          @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size,
+                                          Authentication authentication) {
         var pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return new PagedModel<>(orderService.list(pageable).map(OrderResponse::from));
+        return new PagedModel<>(orderService.list(pageable, Caller.from(authentication)).map(OrderResponse::from));
     }
 
     @DeleteMapping("/{id}")
-    public OrderResponse cancel(@PathVariable long id) {
-        return OrderResponse.from(orderService.cancel(id));
+    public OrderResponse cancel(@PathVariable long id, Authentication authentication) {
+        return OrderResponse.from(orderService.cancel(id, Caller.from(authentication)));
     }
 }

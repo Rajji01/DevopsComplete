@@ -28,6 +28,7 @@
         <resilience4j.version>2.4.0</resilience4j.version>
         <springdoc.version>2.8.17</springdoc.version>
         <wiremock.version>3.13.2</wiremock.version>
+        <aws-msk-iam-auth.version>2.3.9</aws-msk-iam-auth.version>
     </properties>
 
     <!-- Dependencies shared by every service -->

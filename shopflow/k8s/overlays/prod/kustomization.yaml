@@ -218,6 +218,11 @@ patches:
       - op: add
         path: /spec/template/spec/serviceAccountName
         value: order-service
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: SPRING_PROFILES_ACTIVE
+          value: aws               # application-aws.yml: SASL/IAM for MSK
   - target:
       kind: Deployment
       name: notification-service
@@ -225,6 +230,11 @@ patches:
       - op: add
         path: /spec/template/spec/serviceAccountName
         value: notification-service
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: SPRING_PROFILES_ACTIVE
+          value: aws
   # the ALB (target-type ip) connects to pods from ENIs inside the VPC, not from an ingress-nginx namespace
   - target:
       kind: NetworkPolicy

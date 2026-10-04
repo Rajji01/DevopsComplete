@@ -42,7 +42,7 @@ class OrderControllerWebTest {
 
     @Test
     void optimisticLockConflictIs409() throws Exception {
-        when(orderService.cancel(anyLong()))
+        when(orderService.cancel(anyLong(), org.mockito.ArgumentMatchers.any()))
                 .thenThrow(new ObjectOptimisticLockingFailureException(Order.class, 7L));
 
         mockMvc.perform(delete("/api/v1/orders/7").with(jwt().authorities(new SimpleGrantedAuthority("ROLE_customer"))))
@@ -52,7 +52,7 @@ class OrderControllerWebTest {
 
     @Test
     void rateLimitExceededIs429() throws Exception {
-        when(orderService.placeOrder(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.any()))
+        when(orderService.placeOrder(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
                 .thenThrow(RequestNotPermitted.createRequestNotPermitted(RateLimiter.ofDefaults("orders")));
 
         mockMvc.perform(post("/api/v1/orders")
