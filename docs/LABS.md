@@ -247,7 +247,7 @@ kn exec deploy/order-service -- wget -qO- -T 3 http://inventory-service:8082/api
 
 **Why:** `default-deny-ingress` + explicit allow rules (`k8s/base/network-policies.yaml`). If one pod is compromised, the attacker can't move sideways to everything else.
 
-**Challenge:** write an egress policy so order-service can talk only to inventory-service, Postgres and DNS (port 53). Don't forget DNS!
+**Challenge:** egress is locked down too (`default-deny-egress-allow-dns`, `order-service-egress`, `inventory-service-egress`). Delete the DNS rule from the default-deny policy, redeploy, and watch every order fail with `UnknownHostException` even though nothing else changed. Then put it back. That is the most common NetworkPolicy mistake in real clusters.
 
 ---
 

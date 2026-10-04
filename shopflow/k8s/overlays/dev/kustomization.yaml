@@ -20,6 +20,14 @@ secretGenerator:
 patches:
   # single replica is enough on a laptop
   - target:
+      kind: PodDisruptionBudget
+    patch: |-
+      - op: remove
+        path: /spec/minAvailable
+      - op: add
+        path: /spec/maxUnavailable
+        value: 1
+  - target:
       kind: HorizontalPodAutoscaler
     patch: |-
       - op: replace
@@ -31,9 +39,6 @@ patches:
   - target:
       kind: Deployment
     patch: |-
-      - op: replace
-        path: /spec/replicas
-        value: 1
       - op: add
         path: /spec/template/spec/containers/0/imagePullPolicy
         value: IfNotPresent

@@ -69,3 +69,66 @@ spec:
                 values: ["order-service", "inventory-service"]
       ports:
         - port: 5432
+---
+# Egress: a compromised pod must not be able to call out to the internet or to other namespaces.
+# Every pod needs DNS (kube-dns in kube-system, port 53), so that is allowed for all of them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress-allow-dns
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: order-service-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: order-service
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: inventory-service
+      ports:
+        - port: 8082
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inventory-service-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: inventory-service
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - port: 5432

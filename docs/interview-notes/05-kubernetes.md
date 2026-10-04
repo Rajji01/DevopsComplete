@@ -381,7 +381,7 @@ Formula: `desired = ceil(currentReplicas × currentMetric / targetMetric)`, clam
 - Custom metrics (RPS, queue length) via Prometheus Adapter or **KEDA**.
 - Dev overlay patches HPA to 1–2, prod to 3–10.
 
-**HPA + `spec.replicas` gotcha**: the Deployment also has `replicas: 2` (prod patch: 3). The K8s docs warn that applying a manifest that sets `spec.replicas` (e.g. server-side apply, or a GitOps sync) can reset the count to that number, then HPA scales again → brief scale-down. With GitOps, common fix: remove `replicas` from the manifest when HPA manages it (or Argo CD `ignoreDifferences` on `/spec/replicas`). Good "what I'd improve" point.
+**HPA + `spec.replicas` gotcha**: ShopFlow's Deployments deliberately have **no `spec.replicas`**. If the manifest set it, every `kubectl apply` / GitOps sync would reset the count to that number and the HPA would scale again → a brief scale-down on each deploy. The HPA's `minReplicas` (1 in dev, 3 in prod) is the floor instead. Alternative when you can't drop the field: Argo CD `ignoreDifferences` on `/spec/replicas`.
 
 | | HPA | VPA | Cluster Autoscaler / Karpenter |
 |---|---|---|---|
@@ -404,7 +404,7 @@ spec:
 ```
 - Protects against **voluntary** disruptions: `kubectl drain`, node upgrades, cluster-autoscaler scale-down. **Not** against node crashes (involuntary).
 - The eviction API refuses evictions that would violate the budget. Deployment rolling updates and direct `kubectl delete pod` do **not** go through PDBs.
-- **Gotcha**: dev overlay sets replicas to 1 while PDB `minAvailable: 1` → `kubectl drain` keeps retrying that eviction forever (unless `--timeout`). Fine on minikube, but in a real dev cluster use `maxUnavailable: 1` or patch the PDB in dev. Good thing to mention proactively.
+- **Gotcha**: with 1 replica, `minAvailable: 1` means `kubectl drain` keeps retrying that eviction until `--timeout`. That is why the dev overlay patches the PDB to `maxUnavailable: 1` (JSON patch: remove `minAvailable`, add `maxUnavailable`) while prod keeps `minAvailable: 1` with 3+ replicas. Good thing to mention proactively.
 
 ---
 
@@ -540,7 +540,7 @@ monitoring (Prometheus) scrapes both
 ```
 - Multiple items in one `from` list = **OR**. A `namespaceSelector` and `podSelector` in the **same** item = **AND** (common bug).
 - Selecting namespaces uses the automatic label `kubernetes.io/metadata.name`.
-- Only `Ingress` policy type is restricted; **egress is open** (e.g., a compromised pod can still call the internet). Next step: default-deny egress + allow DNS (UDP/TCP 53 to kube-dns) + allowed destinations.
+- Egress is locked down too: `default-deny-egress-allow-dns` selects every pod, denies all egress, and allows only UDP/TCP 53 to `k8s-app: kube-dns` in `kube-system`; then `order-service-egress` (→ inventory-service 8082, postgres 5432) and `inventory-service-egress` (→ postgres 5432). **Forgetting DNS** is the classic egress-policy mistake: every Service lookup fails and it looks like the app is broken.
 
 ---
 

@@ -22,6 +22,7 @@ spec:
       containers:
         - name: postgres
           image: postgres:16-alpine
+          args: ["-c", "max_connections=200"]   # default 100 is too low for 2 services x 10 pods x pool 5
           ports:
             - name: postgres
               containerPort: 5432

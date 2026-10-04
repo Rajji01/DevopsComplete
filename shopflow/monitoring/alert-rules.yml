@@ -23,8 +23,10 @@ groups:
           summary: "{{ $labels.application }}: p99 latency above 1s"
 
       - alert: InventoryCircuitOpen
-        expr: resilience4j_circuitbreaker_state{name="inventory", state="open"} == 1
-        for: 1m
+        # the breaker cycles open -> half_open every 10s, so the 'state' gauge flaps; the counter of
+        # calls it rejected keeps rising for as long as the breaker is doing its job
+        expr: sum by (application) (rate(resilience4j_circuitbreaker_not_permitted_calls_total{name="inventory"}[5m])) > 0
+        for: 2m
         labels:
           severity: page
         annotations:

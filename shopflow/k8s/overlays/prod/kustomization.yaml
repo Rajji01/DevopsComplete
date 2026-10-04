@@ -4,15 +4,16 @@ kind: Kustomization
 namespace: shopflow   # also puts generated objects (secret) in the namespace so name references resolve
 resources:
   - ../../base
-# CI pins the exact image built from a commit:
-#   kustomize edit set image shopflow/order-service=ghcr.io/rajji01/shopflow-order-service:<git-sha>
+# Image tags below are written by CI (deploy-manifests job in .github/workflows/shopflow.yml):
+# every push to main rebuilds the images, then commits the exact git SHA here. Never edit by hand,
+# and never use ':latest' in prod: it is not traceable and cannot be rolled back reliably.
 images:
   - name: shopflow/order-service
     newName: ghcr.io/rajji01/shopflow-order-service
-    newTag: latest
+    newTag: set-by-ci   # replaced with the git SHA on the first push to main
   - name: shopflow/inventory-service
     newName: ghcr.io/rajji01/shopflow-inventory-service
-    newTag: latest
+    newTag: set-by-ci
 # Secret "shopflow-db" is NOT in git: it is synced from AWS Secrets Manager / Vault
 # by External Secrets Operator (or created once with Sealed Secrets).
 patches:
@@ -25,12 +26,6 @@ patches:
       - op: replace
         path: /spec/maxReplicas
         value: 10
-  - target:
-      kind: Deployment
-    patch: |-
-      - op: replace
-        path: /spec/replicas
-        value: 3
   - target:
       kind: Ingress
     patch: |-

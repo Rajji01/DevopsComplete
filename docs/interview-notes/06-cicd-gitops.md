@@ -342,7 +342,7 @@ Adding the tag-bump job to `shopflow.yml` (illustrative):
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "deploy: shopflow ${GITHUB_SHA}" && git push
 ```
-This replaces the placeholder `newTag: latest` in `overlays/prod` with an exact SHA — exactly what the file's comment says CI should do. Better practice: a **separate config repo** (or Argo CD Image Updater) so app history and deploy history stay apart. (A push made with `GITHUB_TOKEN` does not trigger new workflow runs, so there's no CI loop; with a PAT/App token you'd need `[skip ci]` or path filters. Branch protection on `main` would block this direct push → open a PR instead.) Secrets: prod `shopflow-db` via External Secrets Operator — git never contains secret values.
+This is the real `deploy-manifests` job in `shopflow.yml` (runs on `main` after the `image` jobs, with `permissions: contents: write`): it replaces the placeholder tag in `overlays/prod` with the exact commit SHA and commits it back. Better practice: a **separate config repo** (or Argo CD Image Updater) so app history and deploy history stay apart. (A push made with `GITHUB_TOKEN` does not trigger new workflow runs, so there's no CI loop; with a PAT/App token you'd need `[skip ci]` or path filters. Branch protection on `main` would block this direct push → open a PR instead.) Secrets: prod `shopflow-db` via External Secrets Operator — git never contains secret values.
 
 Argo CD terms: Application, AppProject, sync, sync waves/hooks (e.g., run a migration Job `PreSync`), health status, app-of-apps / ApplicationSet (one per env/cluster). Flux CD is the alternative.
 

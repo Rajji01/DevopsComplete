@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.springframework.context.MessageSourceResolvable;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
@@ -51,6 +52,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(DataIntegrityViolationException.class)
     ProblemDetail handleConflict(DataIntegrityViolationException ex) {
         return problem(HttpStatus.CONFLICT, "Concurrent request", "Request is already being processed, retry");
+    }
+
+    // @Version mismatch: e.g. the same order cancelled twice at the same moment; the loser gets 409
+    @ExceptionHandler(OptimisticLockingFailureException.class)
+    ProblemDetail handleOptimisticLock(OptimisticLockingFailureException ex) {
+        return problem(HttpStatus.CONFLICT, "Concurrent modification", "Order was modified by another request, reload and retry");
     }
 
     // @Valid @RequestBody failures: list which fields are wrong, e.g. "quantity: must be greater than or equal to 1"

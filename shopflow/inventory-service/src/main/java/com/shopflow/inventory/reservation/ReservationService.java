@@ -56,6 +56,12 @@ public class ReservationService {
         return reservationRepository.save(new Reservation(orderRef, sku, quantity));
     }
 
+    @Transactional(readOnly = true)
+    public Reservation get(String orderRef) {
+        return reservationRepository.findByOrderRef(orderRef)
+                .orElseThrow(() -> new IllegalStateException("reservation " + orderRef + " vanished"));
+    }
+
     /** Idempotent compensation: releasing twice (or releasing an unknown order) is a no-op. */
     @Transactional
     public void release(String orderRef) {

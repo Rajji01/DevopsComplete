@@ -139,6 +139,36 @@ class InventoryServiceApplicationTests {
     }
 
     @Test
+    void concurrentRetriesOfTheSameOrderReserveOnce() throws Exception {
+        // order-service retried after a timeout while the first request was still running
+        String orderRef = UUID.randomUUID().toString();
+        int before = stockOf("IPHONE-15");
+        int threads = 8;
+        AtomicInteger created = new AtomicInteger();
+        try (ExecutorService pool = Executors.newFixedThreadPool(threads)) {
+            var futures = new java.util.ArrayList<Future<?>>();
+            for (int i = 0; i < threads; i++) {
+                futures.add(pool.submit(() -> {
+                    int status = mockMvc.perform(post("/api/v1/reservations")
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content(reserveBody(orderRef, "IPHONE-15", 1)))
+                            .andReturn().getResponse().getStatus();
+                    if (status == 201) {
+                        created.incrementAndGet();
+                    }
+                    return null;
+                }));
+            }
+            for (Future<?> f : futures) {
+                f.get();
+            }
+        }
+
+        assertThat(created.get()).isEqualTo(threads);          // every caller gets the same answer
+        assertThat(stockOf("IPHONE-15")).isEqualTo(before - 1); // but stock moved only once
+    }
+
+    @Test
     void exposesHealthProbesAndPrometheusMetrics() throws Exception {
         mockMvc.perform(get("/actuator/health/readiness")).andExpect(status().isOk());
         mockMvc.perform(get("/actuator/health/liveness")).andExpect(status().isOk());

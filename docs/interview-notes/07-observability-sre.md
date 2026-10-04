@@ -152,11 +152,11 @@ Why p99 not average: averages hide the tail — 1% of users waiting 5s is invisi
 
 ### Rule 3 — `InventoryCircuitOpen` (page)
 ```promql
-resilience4j_circuitbreaker_state{name="inventory", state="open"} == 1
-for: 1m
+sum by (application) (rate(resilience4j_circuitbreaker_not_permitted_calls_total{name="inventory"}[5m])) > 0
+for: 2m
 ```
-Resilience4j exports a gauge per state (`closed`, `open`, `half_open`...) with value 1 for the current state. Config in order-service: opens when ≥ 50% of the last 10 calls failed (min 5 calls), stays open 10s, then half-open with 2 trial calls. If it's been open for a full minute, order placement is failing fast → page. It's a **cause** signal, but an early, high-confidence one (the file's header: *"Alerts on symptoms users feel (errors, latency), plus the circuit breaker as an early cause signal"*).
-Caveat worth raising yourself: with `wait-duration-in-open-state: 10s` + automatic transition, a failing breaker cycles open → half_open → open. If a rule evaluation catches `half_open`, the `for: 1m` timer resets, so the alert may flap or never fire. More robust: `max_over_time(resilience4j_circuitbreaker_state{name="inventory",state="open"}[1m]) == 1`, or alert on the rate of `resilience4j_circuitbreaker_not_permitted_calls_total`.
+`not_permitted_calls_total` counts calls the breaker rejected without calling inventory (Resilience4j also exports a `..._state` gauge per state: `closed`, `open`, `half_open`, with value 1 for the current one). Config in order-service: opens when ≥ 50% of the last 10 calls failed (min 5 calls), stays open 10s, then half-open with 2 trial calls. If it has been rejecting calls for two full minutes, order placement is failing fast → page. It's a **cause** signal, but an early, high-confidence one (the file's header: *"Alerts on symptoms users feel (errors, latency), plus the circuit breaker as an early cause signal"*).
+Why not simply `resilience4j_circuitbreaker_state{state="open"} == 1`? With `wait-duration-in-open-state: 10s` + automatic transition, a failing breaker cycles open → half_open → open. A rule evaluation that lands on `half_open` resets the `for:` timer, so that alert flaps or never fires. `not_permitted_calls_total` is a counter that keeps rising for as long as the breaker rejects calls, so `rate(...) > 0 for 2m` is stable. Alternative: `max_over_time(..._state{state="open"}[2m]) == 1`.
 
 ### Rule 4 — `ServiceDown` (page)
 ```promql
@@ -375,7 +375,7 @@ Causes:
 - Slow queries / lock contention holding connections longer.
 - Long transactions or holding a connection during a remote call (ShopFlow's `OrderService.placeOrder` deliberately has **no @Transactional** around the inventory HTTP call — a good design point; `open-in-view: false` also prevents holding connections through view rendering).
 - Connection leak (unclosed connections) → `leak-detection-threshold`.
-- Traffic spike + HPA scaling: **pods × pool size** must stay below Postgres `max_connections` (100 default). Prod HPA max 10 × 10 = 100 per service → two services can exceed it! Answer: size pools small, use PgBouncer, or cap HPA.
+- Traffic spike + HPA scaling: **pods × pool size** must stay below Postgres `max_connections` (100 by default). ShopFlow: `DB_POOL_SIZE=5` in the Deployments and `max_connections=200` on the StatefulSet → 2 services × 10 pods × 5 = 100 worst case. At real scale: PgBouncer in front of Postgres.
 Mitigate: kill long-running queries, rollback bad deploy, temporarily scale DB; don't just blindly raise pool size (more connections can make the DB slower).
 
 ### S5. "Disk full on a node / Prometheus"

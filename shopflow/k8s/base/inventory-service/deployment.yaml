@@ -5,7 +5,8 @@ metadata:
   labels:
     app.kubernetes.io/name: inventory-service
 spec:
-  replicas: 2
+  # no spec.replicas: the HPA owns the count. Setting it here would reset the
+  # replica count on every 'kubectl apply' and fight the autoscaler.
   revisionHistoryLimit: 5                # how far back 'kubectl rollout undo' can go
   strategy:
     type: RollingUpdate
@@ -47,6 +48,9 @@ spec:
             - name: http
               containerPort: 8082
           env:
+            # 10 pods (HPA max) x 5 connections = 50 per service, 100 total < max_connections=200
+            - name: DB_POOL_SIZE
+              value: "5"
             - name: DB_URL
               value: jdbc:postgresql://postgres:5432/inventory
             - name: DB_USERNAME

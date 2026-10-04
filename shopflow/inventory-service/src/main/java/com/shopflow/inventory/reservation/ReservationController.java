@@ -5,6 +5,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -36,11 +37,21 @@ public class ReservationController {
         this.reservationService = reservationService;
     }
 
+    /**
+     * Two retries of the same order can arrive at the same moment: both miss the idempotency
+     * lookup, both decrement stock, and the second insert hits the unique order_ref key once
+     * the first transaction commits. That rollback puts the stock back, so the loser simply
+     * returns the winner's reservation. The caller sees one outcome either way.
+     */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public ReservationResponse reserve(@Valid @RequestBody ReserveRequest request) {
-        return ReservationResponse.from(
-                reservationService.reserve(request.orderRef(), request.sku(), request.quantity()));
+        try {
+            return ReservationResponse.from(
+                    reservationService.reserve(request.orderRef(), request.sku(), request.quantity()));
+        } catch (DataIntegrityViolationException raceLost) {
+            return ReservationResponse.from(reservationService.get(request.orderRef()));
+        }
     }
 
     @DeleteMapping("/{orderRef}")

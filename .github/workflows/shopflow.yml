@@ -1,6 +1,7 @@
 # CI/CD for the ShopFlow microservices.
 # PR:   test -> validate manifests -> build images + vulnerability scan (no push)
-# main: same, then push images to GHCR tagged with the commit SHA
+# main: same, then push images to GHCR tagged with the commit SHA, and commit that SHA
+#       into k8s/overlays/prod (GitOps: a cluster running Argo CD would pick it up from there)
 name: shopflow
 
 on:
@@ -59,7 +60,7 @@ jobs:
             kustomize build "$overlay" | kubeconform -strict -summary -
             echo "::endgroup::"
           done
-      - name: Prometheus config + alert rules
+      - name: Alert rules (promtool)
         run: |
           docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v3.5.0 check rules /m/alert-rules.yml
       - name: docker compose config
@@ -122,3 +123,34 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}
+
+  deploy-manifests:
+    name: Pin prod overlay to this build
+    if: github.ref == 'refs/heads/main'
+    needs: [image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # commits the new image tags back to main
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install kustomize
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -sSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_amd64.tar.gz | tar xz
+          echo "$PWD" >> "$GITHUB_PATH"
+      - name: Set image tags to the commit SHA
+        working-directory: shopflow/k8s/overlays/prod
+        run: |
+          kustomize edit set image \
+            shopflow/order-service=ghcr.io/${{ github.repository_owner }}/shopflow-order-service:${{ github.sha }} \
+            shopflow/inventory-service=ghcr.io/${{ github.repository_owner }}/shopflow-inventory-service:${{ github.sha }}
+          kustomize build . > /dev/null      # still renders?
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add k8s/overlays/prod/kustomization.yaml
+          git diff --cached --quiet && exit 0
+          git commit -m "deploy(prod): pin images to ${GITHUB_SHA::7}"
+          # pushes made with GITHUB_TOKEN do not trigger another workflow run, so this cannot loop
+          git push

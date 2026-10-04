@@ -225,7 +225,7 @@ Today a crash between "save PENDING" and "reserve" leaves a stuck PENDING order,
 | `POST /api/v1/orders` | `Idempotency-Key` header → `orders.idempotency_key` UNIQUE → `findByIdempotencyKey` | replay → 200 + original order, inventory not called again |
 | `POST /api/v1/reservations` | `orderRef` → `reservation.order_ref` UNIQUE → `findByOrderRef` | replay → returns existing reservation, no second decrement |
 | `DELETE /api/v1/reservations/{orderRef}` | only RESERVED → RELEASED changes stock | second release / unknown ref = no-op 204 |
-| Concurrent first requests | unique constraint violation → `DataIntegrityViolationException` → 409 "Concurrent request" | client retries, then gets the stored result |
+| Concurrent first requests (same `orderRef`) | loser's insert hits the unique key → its transaction (incl. the decrement) rolls back → controller returns the **winner's** reservation | both callers get 201 with the same reservation, stock moved once |
 
 **Q: Why is idempotency the foundation of resilience?**
 Networks are unreliable — a timeout doesn't tell you whether the server did the work. Retrying is only safe if doing it twice has the same effect as once. Retries, at-least-once messaging, and saga compensation all depend on it.

@@ -448,10 +448,11 @@ env:
 - Changing a Deployment from `latest` to `latest` is **not a change** → no rollout happens.
 - The older manifests (`Devops/backenddeploy.yaml` → `rajji01/backend-micro001:latest`) do exactly this — good "what I learned" story.
 
-Honest note: `k8s/overlays/prod/kustomization.yaml` currently has `newTag: latest` as a placeholder, with the comment that CI should pin the SHA:
+In ShopFlow, `k8s/overlays/prod/kustomization.yaml` never carries `latest`: the `deploy-manifests` job in `.github/workflows/shopflow.yml` runs, after the images are pushed on `main`,
 ```
-kustomize edit set image shopflow/order-service=ghcr.io/rajji01/shopflow-order-service:<git-sha>
+kustomize edit set image shopflow/order-service=ghcr.io/<owner>/shopflow-order-service:${{ github.sha }}
 ```
+and commits the result, so the overlay always names the exact commit that is deployed (until the first `main` build it holds the placeholder `set-by-ci`).
 Best: deploy by **digest** (`image@sha256:...`) — truly immutable.
 
 Login/push (manual, from `notes.txt`):
