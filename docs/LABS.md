@@ -6,7 +6,8 @@ Setup used by the labs (run everything from `shopflow/`):
 
 | Labs | Environment |
 |---|---|
-| 1–4, 12–13, 16–22, 24–25 | Docker Compose: `docker compose up --build -d` |
+| 1–4, 12–13, 16–22, 24–26 | Docker Compose: `docker compose up --build -d` |
+| 27 | just Maven |
 | 5–11, 15 | minikube: see "Kubernetes" in [`../shopflow/README.md`](../shopflow/README.md) |
 | 14 | GitHub: a branch + pull request |
 | 23 | kubectl + Terraform (plan needs an AWS account) |
@@ -497,3 +498,38 @@ auth 'localhost:8081/api/v1/orders?size=3' | jq '.content[] | {id, status}'
 **Why:** `FAILED` means *outcome unknown*: maybe inventory reserved the stock and the response was lost. Leaving it is a leak of stock and a confused customer. Because release is idempotent, the reconciler can always call it safely and give the order a definite end state.
 
 **Challenge:** make the reconciler smarter: call `GET /api/v1/reservations/{orderRef}` (you'll need to add it) and *confirm* the order if the reservation exists instead of cancelling. Which is better for the business, and what new failure mode does it add?
+
+## Lab 26: The saga end to end — a declined card gives the stock back
+
+**Do**
+```sh
+TOKEN=$(token alice)
+# 3 iPhones = ₹239,700 > the fake gateway's ₹100,000 limit -> declined
+auth -XPOST localhost:8081/api/v1/orders -H 'Content-Type: application/json' -d '{"sku":"IPHONE-15","quantity":3}' | jq '{id, orderRef, status}'
+sleep 5
+auth 'localhost:8081/api/v1/orders?size=1' | jq '.content[0] | {status, failureReason}'
+curl -s localhost:8082/api/v1/products/IPHONE-15 | jq .quantity        # back to 25
+docker compose exec postgres psql -U postgres -d payments -c 'select order_ref, amount, status, failure_reason from payment order by created_at desc limit 2;'
+docker compose logs notification-service | grep EMAIL | tail -2          # "confirmed" then "cancelled"
+# and a happy path: 1 AirPods = ₹24,900 -> CAPTURED -> order PAID
+auth -XPOST localhost:8081/api/v1/orders -H 'Content-Type: application/json' -d '{"sku":"AIRPODS-PRO","quantity":1}' | jq .id
+sleep 5; auth 'localhost:8081/api/v1/orders?size=1' | jq '.content[0].status'
+```
+
+**Observe:** the order is `CONFIRMED` (201) immediately, becomes `CANCELLED` with `payment failed: card limit exceeded` a few seconds later, and the stock is restored; the happy path ends in `PAID`. Nobody called payment-service: it reacted to `OrderConfirmed` on `orders.events`, and order-service reacted to `PaymentFailed` on `payments.events`.
+
+**Why:** this is **saga choreography**: each service does its local transaction and publishes a fact; the next service reacts. Compensation (`release` + `CANCELLED`) is just another reaction. Compare with the reserve step, which is **orchestrated** (order-service calls inventory and waits) because the customer is waiting for that answer.
+
+**Challenge:** open Grafana → Tempo and follow one `orderRef` across all four services and two topics. Then answer: what happens if payment-service is down for an hour? (Nothing is lost: `OrderConfirmed` waits in Kafka; orders stay `CONFIRMED`; when it returns, the consumer group resumes from its offset.) What *user-visible* problem does that cause, and how would you surface it? (`KafkaConsumerLagHigh`.)
+
+## Lab 27: Break the architecture on purpose (ArchUnit)
+
+**Do**
+1. In `OrderController`, inject `OrderRepository` and call `orderRepository.count()` somewhere.
+2. `./mvnw -pl order-service test -Dtest=ArchitectureTest`
+
+**Observe:** the build fails with `Rule 'no classes that are annotated with @RestController should depend on classes that have simple name ending with 'Repository'' was violated`, naming the exact line.
+
+**Why:** architecture decisions are only real if something enforces them. A rule in the test suite is a reviewer that never gets tired, and new team members learn the rules from the failure message.
+
+**Challenge:** add a rule that `*Listener` classes (Kafka consumers) may only depend on `*Service` classes and their own event records, never on repositories directly. Then decide: should `PaymentEventListener` be allowed to use `ProcessedEventRepository`? Change the code or the rule, and justify it in the commit message.

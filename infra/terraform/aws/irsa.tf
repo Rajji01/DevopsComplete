@@ -44,7 +44,7 @@ module "irsa_kafka_clients" {
   oidc_providers = {
     main = {
       provider_arn               = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["shopflow:order-service", "shopflow:notification-service"]
+      namespace_service_accounts = ["shopflow:order-service", "shopflow:notification-service", "shopflow:payment-service"]
     }
   }
 
@@ -68,12 +68,19 @@ resource "aws_iam_policy" "kafka_clients" {
         Effect = "Allow"
         Action = ["kafka-cluster:*Topic*", "kafka-cluster:WriteData", "kafka-cluster:ReadData"]
         # topic ARN format: arn:aws:kafka:region:account:topic/cluster-name/cluster-uuid/topic-name
-        Resource = "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:topic/${var.name}/*/orders.events*"
+        Resource = [
+          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:topic/${var.name}/*/orders.events*",
+          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:topic/${var.name}/*/payments.events*"
+        ]
       },
       {
-        Effect   = "Allow"
-        Action   = ["kafka-cluster:AlterGroup", "kafka-cluster:DescribeGroup"]
-        Resource = "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/notification-service"
+        Effect = "Allow"
+        Action = ["kafka-cluster:AlterGroup", "kafka-cluster:DescribeGroup"]
+        Resource = [
+          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/notification-service",
+          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/payment-service",
+          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/order-service"
+        ]
       }
     ]
   })

@@ -127,7 +127,7 @@ Read, in order: `order-service/.../outbox/*`, `OrderService.saveWithEvent`, `not
 
 Do:
 - Labs 16–22
-- Add a `payment-service` that consumes `OrderConfirmed`, "charges" the card, and emits `PaymentCaptured`/`PaymentFailed`; order-service consumes those and cancels on failure (saga choreography). Keep every consumer idempotent.
+- Read `payment-service` and `order-service/.../payment` and run Lab 26: this is saga choreography. Then extend it with a refund (see Phase 7).
 - Replace JSON events with Avro + a Schema Registry (Confluent or Apicurio) and break compatibility on purpose to see the registry reject it.
 
 Done when:
@@ -178,16 +178,15 @@ Notes: [`08-linux-networking-cloud-iac.md`](interview-notes/08-linux-networking-
 
 ## Phase 7: Advanced (week 16+)
 
-Outbox, Kafka consumer, JWT, cache, tracing and rate limiting are already in the repo (read `docs/SELF-WALK.md` for why each exists). Extend it yourself; each item is a strong resume line:
+Outbox, Kafka saga (payment), JWT, cache, tracing, rate limiting, ArchUnit, Helm and k6 are already in the repo (read `docs/SELF-WALK.md` for why each exists). Extend it yourself; each item is a strong resume line:
 
 | Feature | What you learn |
 |---|---|
-| `payment-service` + saga choreography (`PaymentFailed` → order cancelled) | compensations across services, idempotent consumers |
-| Reconciliation job for `FAILED` orders + outbox cleaner | consistency in distributed systems, scheduled jobs, `SKIP LOCKED` |
+| Refund flow: cancelling a `PAID` order emits `RefundRequested`, payment-service refunds, order → `REFUNDED` | extending a saga, new compensation, state machine growth |
 | Avro + Schema Registry for `orders.events` | schema evolution, compatibility modes |
 | Testcontainers (real Postgres + Kafka in tests) | tests that catch PostgreSQL-only SQL (partial indexes, `SKIP LOCKED`) |
 | Spring Cloud Gateway / AWS API Gateway with per-user rate limits | API gateway pattern, Redis-backed limits |
-| k6 load test: 1000 buyers for 3 PS5s, p99 under 300 ms | performance testing, proving no overselling under load |
+| Run `loadtest/flash-sale.js` against compose, then against minikube; tune until thresholds pass with 1000 buyers | performance testing, proving no overselling under load |
 | MSK IAM auth in the services (`aws-msk-iam-auth`) | SASL, IRSA in a client library |
 | Karpenter instead of managed node groups; Spot for stateless pods | cost-aware autoscaling |
 | Chaos: kill a Kafka broker / RDS failover during a load test | resilience verification, RPO/RTO |

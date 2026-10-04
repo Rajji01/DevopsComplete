@@ -57,6 +57,13 @@
             <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- architecture rules as tests: layering, no field injection, no System.out -->
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <version>${archunit.version}</version>
+            <scope>test</scope>
+        </dependency>
         <!-- fake inventory-service over real HTTP in tests -->
         <dependency>
             <groupId>org.wiremock</groupId>

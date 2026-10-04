@@ -30,6 +30,9 @@ spring:
       resourceserver:
         jwt:
           issuer-uri: ${JWT_ISSUER_URI:http://localhost:8180/realms/shopflow}
+
+jwt:
+  audience: ${JWT_AUDIENCE:}   # Keycloak client id / Cognito app client id; empty = not checked
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/orders}
     username: ${DB_USERNAME:orders}

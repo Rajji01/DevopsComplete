@@ -1,0 +1,26 @@
+# helm upgrade --install order-service helm/shopflow-service -n shopflow -f helm/values/order-service.yaml
+name: order-service
+image:
+  repository: shopflow/order-service
+port: 8081
+db:
+  name: orders
+  secretKey: orders-db-password
+env:
+  - name: INVENTORY_URL
+    value: http://inventory-service:8082
+  - name: KAFKA_BOOTSTRAP_SERVERS
+    valueFrom:
+      configMapKeyRef:
+        name: shopflow-endpoints
+        key: kafka-bootstrap-servers
+  - name: JWT_ISSUER_URI
+    valueFrom:
+      configMapKeyRef:
+        name: shopflow-endpoints
+        key: jwt-issuer-uri
+  - name: OTLP_ENDPOINT
+    valueFrom:
+      configMapKeyRef:
+        name: shopflow-endpoints
+        key: otlp-endpoint

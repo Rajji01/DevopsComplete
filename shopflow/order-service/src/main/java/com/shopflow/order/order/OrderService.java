@@ -2,6 +2,7 @@ package com.shopflow.order.order;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -127,13 +128,16 @@ public class OrderService {
     }
 
     /**
-     * FAILED = we never learned whether inventory reserved the stock (timeout, breaker open).
+     * FAILED = we never learned whether inventory reserved the stock (timeout, breaker open);
+     * PENDING for a long time = the pod crashed mid-request. Both are "outcome unknown".
      * After a grace period, give up: release is idempotent (a no-op if nothing was reserved),
      * so calling it is always safe, and the customer gets a definite CANCELLED instead of limbo.
      * Runs on a schedule (OrderReconciler); returns how many orders it settled.
      */
     public int reconcileFailedOrders(Duration grace) {
-        var stale = orderRepository.findTop100ByStatusAndUpdatedAtBefore(OrderStatus.FAILED, Instant.now().minus(grace));
+        // PENDING this old means the pod died between "save PENDING" and "save outcome": same limbo
+        var stale = orderRepository.findTop100ByStatusInAndUpdatedAtBefore(
+                List.of(OrderStatus.FAILED, OrderStatus.PENDING), Instant.now().minus(grace));
         int settled = 0;
         for (Order order : stale) {
             try {

@@ -18,6 +18,7 @@ Koi bhi real system ek din mein "production-grade" nahi banta. Woh **incidents s
 | **v1: Works correctly** (ShopFlow pehla version) | Order + Inventory, Postgres, atomic stock update, idempotency | Flash sale mein oversell nahi hota, lekin inventory down ho to order-service bhi latak jaata hai | Timeouts, retry, circuit breaker, probes |
 | **v2: Survives failures** | Resilience4j, readiness/liveness, graceful shutdown, HPA, PDB, NetworkPolicy, alerts | Deploy pe scale-down, drain hang, alert kabhi fire nahi hota, DB connections khatam | Self-walk fixes (`SELF-WALK.md` Walk 2) |
 | **v3: Real product** | Kafka outbox + notification-service, JWT, Redis cache, rate limit, tracing | "Email do baar gaya", "kaunsi service slow hai?", "ye API kaun call kar sakta hai?" | Idempotent consumer, DLT, OAuth2, cache-aside, OpenTelemetry |
+| **v3b: Money + guardrails** | payment-service (saga choreography), PAID state, ArchUnit, aud check, Helm, k6, SBOM/cosign | "Card decline pe stock atka", "controllers DB touch kar rahe", "ye image kisne banayi?" | Compensation events, architecture tests, supply-chain signing |
 | **v4: On AWS** | EKS + RDS + MSK + ElastiCache + Cognito, Terraform, GitOps | Kaun DB ka backup lega? Kaun Kafka patch karega 3 AM ko? | Managed services, IRSA, External Secrets, Argo CD |
 
 **Pattern yaad rakho:** har stage pe ek **naya type ka failure** aata hai, aur uska ek **standard pattern** hota hai. Production engineer woh hai jise ye mapping yaad hai: *ye symptom → ye cause → ye pattern*.
@@ -222,6 +223,28 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 
 ---
 
+### 9b. Saga: choreography vs orchestration (ShopFlow dono use karta hai)
+
+**Problem:** Order confirm hua, ab paisa kaun lega? Agar order-service seedha payment-service ko call kare aur woh down ho, to order atak jaata hai. Aur card decline hua to reserve kiya stock kaun wapas karega?
+
+**Kyu:** Ek business flow 3–4 services mein phaila hai, aur distributed transaction (2PC) nahi hota. Saga = local transactions ki chain + har step ka **compensation** (undo).
+
+**Kaise (steps, ShopFlow mein):**
+1. **Orchestration** (sync part): order-service inventory ko REST se call karta hai aur wait karta hai, kyunki customer screen pe jawab ka wait kar raha hai. Fail → 503/REJECTED turant.
+2. **Choreography** (async part): order `CONFIRMED` → `OrderConfirmed` event (outbox). Koi payment-service ko call nahi karta.
+3. payment-service event sunta hai, charge karta hai, `PaymentCaptured` ya `PaymentFailed` publish karta hai (apna outbox, ek transaction).
+4. order-service `payments.events` sunta hai: Captured → `PAID`; Failed → **compensation**: inventory release (idempotent) + `CANCELLED` + `OrderCancelled` event.
+5. notification-service har step pe customer ko batata hai.
+6. Har consumer idempotent (eventId), har producer outbox. Isliye koi service ghante bhar down rahe to bhi kuch gum nahi hota, sirf late hota hai (consumer lag alert).
+
+**Kab kya choose karo:** Customer wait kar raha hai aur jawab chahiye → orchestration (ya sync call). Background flow, multiple reactions, services loosely coupled chahiye → choreography. Choreography ka cost: flow ek jagah dikhta nahi; isliye tracing zaroori hai.
+
+**ShopFlow mein:** `payment-service/OrderConfirmedListener`, `order-service/payment/PaymentEventListener`, `OrderService.onPaymentFailed`, Lab 26.
+
+**Ek line mein:** *Sync jahan user wait kare, events jahan na kare; har step ka undo pehle se socho.*
+
+---
+
 ### 10. Kafka basics jo rozana kaam aate hain
 
 - **Topic** = log; **partition** = parallelism unit; ordering sirf **ek partition ke andar**. Isliye key = `orderRef`: ek order ke saare events ek partition mein, order mein.
@@ -342,6 +365,20 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 ---
 
 ## Part 5: Platform (Kubernetes, CI/CD, AWS)
+
+### 13b. Architecture rules as tests (ArchUnit)
+
+**Problem:** Team ne decide kiya "controller kabhi repository use nahi karega". 6 mahine, 5 naye developers, 1 deadline. Ab 3 controllers seedha DB query kar rahe hain, aur koi review mein pakad nahi paya.
+
+**Kyu:** Jo rule sirf wiki mein hai, woh rule nahi, umeed hai. Build fail karne wala rule hi asli rule hai.
+
+**Kaise:** ArchUnit test: `noClasses().that().areAnnotatedWith(RestController.class).should().dependOnClassesThat().haveSimpleNameEndingWith("Repository")`. Violation pe build red, exact class aur line ke saath. Aur rules: services web layer pe depend na karein (taaki Kafka listener/scheduler se bhi call ho sakein), field injection nahi, `System.out` nahi, entities controller se bahar na jayein.
+
+**ShopFlow mein:** `order-service/.../architecture/ArchitectureTest.java` (7 rules), Lab 27.
+
+**Ek line mein:** *Architecture decision = test, warna woh sirf ek purani Slack message hai.*
+
+---
 
 ### 14. Resources, HPA, PDB: scaling jo sach mein kaam kare
 
@@ -514,5 +551,8 @@ Har dependency ke liye poochho: **slow ho to? down ho to? galat jawab de to?**
 | Rollback nahi ho pa raha | `:latest` | SHA tags + GitOps |
 | Secret leak | git mein literal | Secrets Manager + ESO + IRSA |
 | Koi bhi user kisi ka bhi order dekh/cancel kar raha | role check hai, ownership check nahi (IDOR) | owner column + service-layer check, 404 |
+| Card decline hua par stock atka raha | compensation step nahi | saga: PaymentFailed → release + CANCELLED |
+| Doosri API ka token chal gaya | sirf issuer check, audience nahi | aud/azp/client_id validation |
+| Controllers DB query karne lage | architecture sirf wiki mein | ArchUnit rules in the build |
 | Orders hamesha ke liye FAILED | "outcome unknown" ka koi owner nahi | reconciler job + idempotent release |
 | Redis down → reads fail | cache hard dependency | CacheErrorHandler fail-open |

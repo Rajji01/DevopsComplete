@@ -15,5 +15,6 @@ resources:
   - inventory-service
   - order-service
   - notification-service
+  - payment-service
   - ingress.yaml
   - network-policies.yaml

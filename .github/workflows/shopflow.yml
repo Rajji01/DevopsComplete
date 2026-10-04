@@ -66,6 +66,13 @@ jobs:
           docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v3.5.0 check rules /m/alert-rules.yml
       - name: docker compose config
         run: docker compose config --quiet
+      - name: Helm chart lint + template | kubeconform
+        run: |
+          curl -sSL https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz | tar xz --strip-components=1 linux-amd64/helm
+          ./helm lint helm/shopflow-service -f helm/values/order-service.yaml
+          for v in helm/values/order-service.yaml helm/values/payment-service.yaml; do
+            ./helm template svc helm/shopflow-service -f "$v" | kubeconform -strict -summary -
+          done
 
   terraform:
     name: Terraform fmt + validate
@@ -91,10 +98,10 @@ jobs:
     permissions:
       contents: read
       packages: write          # push to ghcr.io
-      id-token: write          # OIDC token to assume the AWS role (ci-oidc.tf)
+      id-token: write          # OIDC token: AWS role (ci-oidc.tf) and keyless cosign signing
     strategy:
       matrix:
-        service: [order-service, inventory-service, notification-service]
+        service: [order-service, inventory-service, notification-service, payment-service]
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/shopflow-${{ matrix.service }}
     steps:
@@ -125,6 +132,14 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+      # Supply chain: an SBOM (what is inside the image) is kept with the build so a future CVE
+      # can be answered with "which images contain log4j 2.14?" without rebuilding anything.
+      - name: SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE }}:${{ github.sha }}
+          format: cyclonedx-json
+          artifact-name: sbom-${{ matrix.service }}.cdx.json
       - name: Log in to GHCR
         if: github.ref == 'refs/heads/main'
         uses: docker/login-action@v4
@@ -134,6 +149,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push
         if: github.ref == 'refs/heads/main'
+        id: push
         uses: docker/build-push-action@v7
         with:
           context: shopflow
@@ -142,6 +158,14 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}
+      # Sign the pushed digest with the workflow's OIDC identity (keyless cosign). A cluster
+      # admission policy (Kyverno / sigstore policy-controller) can then refuse unsigned images.
+      - name: Install cosign
+        if: github.ref == 'refs/heads/main'
+        uses: sigstore/cosign-installer@v4
+      - name: Sign image
+        if: github.ref == 'refs/heads/main'
+        run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"
 
       # --- AWS: mirror the same image into ECR (EKS pulls from there). Runs only when the repository
       # variable AWS_ROLE_ARN is set to the role from `terraform output github_actions_role_arn`.
@@ -163,6 +187,14 @@ jobs:
           DST=${{ steps.ecr.outputs.registry }}/shopflow/${{ matrix.service }}:${{ github.sha }}
           docker tag "$SRC" "$DST" && docker push "$DST"
 
+  loadtest-syntax:
+    name: k6 script compiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: grafana/setup-k6-action@v1
+      - run: k6 inspect shopflow/loadtest/flash-sale.js   # parses + evaluates options, no traffic
+
   deploy-manifests:
     name: Pin prod overlay to this build
     if: github.ref == 'refs/heads/main'
@@ -183,7 +215,8 @@ jobs:
           kustomize edit set image \
             shopflow/order-service=ghcr.io/${{ github.repository_owner }}/shopflow-order-service:${{ github.sha }} \
             shopflow/inventory-service=ghcr.io/${{ github.repository_owner }}/shopflow-inventory-service:${{ github.sha }} \
-            shopflow/notification-service=ghcr.io/${{ github.repository_owner }}/shopflow-notification-service:${{ github.sha }}
+            shopflow/notification-service=ghcr.io/${{ github.repository_owner }}/shopflow-notification-service:${{ github.sha }} \
+            shopflow/payment-service=ghcr.io/${{ github.repository_owner }}/shopflow-payment-service:${{ github.sha }}
           kustomize build . > /dev/null      # still renders?
       - name: Commit and push
         run: |

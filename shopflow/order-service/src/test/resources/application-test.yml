@@ -11,6 +11,9 @@ spring:
         jwt:
           issuer-uri: http://test-issuer/realms/shopflow
 
+jwt:
+  audience: shopflow-web
+
 inventory:
   read-timeout: 500ms
 

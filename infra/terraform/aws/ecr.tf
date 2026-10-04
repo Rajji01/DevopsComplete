@@ -1,7 +1,7 @@
 # One repository per service. Immutable tags: a pushed SHA can never be overwritten, so what
 # the prod overlay names is exactly what runs. Scan on push for CVEs.
 resource "aws_ecr_repository" "service" {
-  for_each = toset(["order-service", "inventory-service", "notification-service"])
+  for_each = toset(["order-service", "inventory-service", "notification-service", "payment-service"])
 
   name                 = "${var.name}/${each.key}"
   image_tag_mutability = "IMMUTABLE"

@@ -1,0 +1,41 @@
+# One chart, one values file per service. Compare with Kustomize: there the base is copied per
+# service and overlays patch it; here one template is parameterised and each service is a release.
+name: order-service
+image:
+  repository: shopflow/order-service
+  tag: dev
+  pullPolicy: IfNotPresent
+port: 8081
+replicas: null            # null = let the HPA own the count (same reasoning as the Kustomize base)
+serviceAccount:
+  create: false
+  name: ""                # prod: ServiceAccount annotated with an IRSA role
+  annotations: {}
+env: []                   # - name: INVENTORY_URL
+                          #   value: http://inventory-service:8082
+envFrom: []
+profiles: ""              # e.g. "aws" -> SPRING_PROFILES_ACTIVE
+db:
+  name: orders
+  secretName: shopflow-db
+  secretKey: orders-db-password
+  endpoint: postgres:5432 # prod: RDS endpoint
+  poolSize: 5
+resources:
+  requests:
+    cpu: 250m
+    memory: 384Mi
+  limits:
+    memory: 512Mi
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  cpu: 70
+pdb:
+  enabled: true
+  minAvailable: 1
+probes:
+  startupFailureThreshold: 30
+monitoring:
+  scrape: true

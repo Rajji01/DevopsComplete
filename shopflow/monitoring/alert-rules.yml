@@ -58,3 +58,13 @@ groups:
           severity: ticket
         annotations:
           summary: "{{ $labels.application }}: Kafka consumer lag above 1000 records"
+
+      - alert: PaymentFailureRateHigh
+        # declined cards are normal; most of them failing in 10 minutes means the gateway or our pricing is broken
+        expr: |
+          sum(rate(payments_total{status="FAILED"}[10m])) / sum(rate(payments_total[10m])) > 0.5
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "more than half of all payments are failing"

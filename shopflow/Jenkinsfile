@@ -55,7 +55,7 @@ pipeline {
                 axes {
                     axis {
                         name 'SERVICE'
-                        values 'order-service', 'inventory-service', 'notification-service'
+                        values 'order-service', 'inventory-service', 'notification-service', 'payment-service'
                     }
                 }
                 stages {
@@ -81,7 +81,7 @@ pipeline {
                 withCredentials([usernamePassword(credentialsId: 'ghcr', usernameVariable: 'USER', passwordVariable: 'TOKEN')]) {
                     sh '''
                       echo "$TOKEN" | docker login ghcr.io -u "$USER" --password-stdin
-                      for s in order-service inventory-service notification-service; do
+                      for s in order-service inventory-service notification-service payment-service; do
                         docker push ${REGISTRY}/shopflow-$s:${IMAGE_TAG}
                       done
                     '''
@@ -98,7 +98,8 @@ pipeline {
                           ../../../kustomize edit set image \
                             shopflow/order-service=${REGISTRY}/shopflow-order-service:${IMAGE_TAG} \
                             shopflow/inventory-service=${REGISTRY}/shopflow-inventory-service:${IMAGE_TAG} \
-                            shopflow/notification-service=${REGISTRY}/shopflow-notification-service:${IMAGE_TAG}
+                            shopflow/notification-service=${REGISTRY}/shopflow-notification-service:${IMAGE_TAG} \
+                            shopflow/payment-service=${REGISTRY}/shopflow-payment-service:${IMAGE_TAG}
                           git config user.name jenkins && git config user.email jenkins@example.com
                           git commit -am "deploy(prod): pin images to ${IMAGE_TAG:0:7}" && git push origin HEAD:main
                         '''

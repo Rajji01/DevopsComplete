@@ -1,0 +1,12 @@
+# layered on top of order-service.yaml:  -f helm/values/order-service.yaml -f helm/values/order-service-prod.yaml
+image:
+  repository: ghcr.io/rajji01/shopflow-order-service
+  tag: set-by-ci
+profiles: aws
+serviceAccount:
+  name: order-service
+db:
+  endpoint: shopflow.xxxxxx.ap-south-1.rds.amazonaws.com:5432
+hpa:
+  minReplicas: 3
+  maxReplicas: 10

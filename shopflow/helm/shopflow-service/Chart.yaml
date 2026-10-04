@@ -1,0 +1,6 @@
+apiVersion: v2
+name: shopflow-service
+description: Generic chart for one ShopFlow Spring Boot service (the Helm counterpart of k8s/base/<service>)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

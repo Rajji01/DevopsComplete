@@ -1,7 +1,7 @@
 # One PostgreSQL instance, three databases (one per service, created by the same init script
 # as docker-compose). Multi-AZ, encrypted, automated backups, deletion protection.
 resource "random_password" "db" {
-  for_each = toset(["master", "orders", "inventory", "notifications"])
+  for_each = toset(["master", "orders", "inventory", "notifications", "payments"])
   length   = 32
   special  = false
 }
@@ -122,6 +122,7 @@ resource "aws_secretsmanager_secret_version" "db" {
     orders        = random_password.db["orders"].result
     inventory     = random_password.db["inventory"].result
     notifications = random_password.db["notifications"].result
+    payments      = random_password.db["payments"].result
     host          = aws_db_instance.postgres.address
     port          = aws_db_instance.postgres.port
   })

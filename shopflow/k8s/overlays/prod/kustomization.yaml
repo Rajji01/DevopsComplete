@@ -24,6 +24,9 @@ images:
   - name: shopflow/notification-service
     newName: ghcr.io/rajji01/shopflow-notification-service
     newTag: set-by-ci
+  - name: shopflow/payment-service
+    newName: ghcr.io/rajji01/shopflow-payment-service
+    newTag: set-by-ci
 # Endpoints of the managed services: copy from `terraform output` after apply.
 configMapGenerator:
   - name: shopflow-endpoints
@@ -143,6 +146,45 @@ patches:
             configMapKeyRef:
               name: shopflow-endpoints
               key: rds-endpoint
+  - target:
+      kind: Deployment
+      name: payment-service
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1
+        value:
+          name: DB_URL
+          value: jdbc:postgresql://$(RDS_ENDPOINT)/payments?sslmode=require
+      - op: add
+        path: /spec/template/spec/containers/0/env/0
+        value:
+          name: RDS_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: shopflow-endpoints
+              key: rds-endpoint
+      - op: add
+        path: /spec/template/spec/serviceAccountName
+        value: payment-service
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: SPRING_PROFILES_ACTIVE
+          value: aws
+  - target:
+      kind: NetworkPolicy
+      name: payment-service-egress
+    patch: |-
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - ipBlock:
+                cidr: 10.0.0.0/16
+          ports:
+            - port: 5432
+            - port: 9092
+            - port: 9098
   - target:
       kind: Deployment
       name: notification-service
