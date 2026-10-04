@@ -9,11 +9,13 @@ How to use this repo:
 | Folder | Use it for |
 |---|---|
 | `Devops/`, `microservice01/`, `notes.txt` | Basics you already did: Docker, pods, services, volumes, jobs |
-| `shopflow/` | The production-style project; you'll read it, run it, break it and extend it |
+| `shopflow/` | The production-style project (3 services, Kafka, Redis, JWT, tracing); you'll read it, run it, break it and extend it |
+| `infra/terraform/aws/` | How prod runs on AWS: EKS, RDS, MSK, ElastiCache, Cognito, IRSA |
+| `docs/SELF-WALK.md` | The review log: every bug found in this repo, why it mattered, how it was fixed |
 | `docs/LABS.md` | Hands-on break/fix labs (the most important part) |
 | `docs/interview-notes/` | Revision + interview answers for every topic |
 
-Rough timeline: **~16 weeks at 1.5–2 h/day**. Speed doesn't matter, the "Done when" checklists do.
+Rough timeline: **~18 weeks at 1.5–2 h/day**. Speed doesn't matter, the "Done when" checklists do.
 
 ---
 
@@ -116,7 +118,27 @@ Notes: [`06-cicd-gitops.md`](interview-notes/06-cicd-gitops.md)
 
 ---
 
-## Phase 5: Observability + SRE (week 12)
+## Phase 4b: Events + security + cache (week 11–12)
+
+Learn: Kafka fundamentals, the dual-write problem and the transactional outbox, idempotent consumers, dead-letter topics, OAuth2/OIDC + JWT, cache-aside and eviction, rate limiting, tracing.
+
+Read, in order: `order-service/.../outbox/*`, `OrderService.saveWithEvent`, `notification-service/.../OrderEventListener`, `KafkaErrorConfig`, `order-service/.../security/*`, `ProductController` + `ReservationService` cache annotations.
+
+Do:
+- Labs 16–22
+- Add a `payment-service` that consumes `OrderConfirmed`, "charges" the card, and emits `PaymentCaptured`/`PaymentFailed`; order-service consumes those and cancels on failure (saga choreography). Keep every consumer idempotent.
+- Replace JSON events with Avro + a Schema Registry (Confluent or Apicurio) and break compatibility on purpose to see the registry reject it.
+
+Done when:
+- [ ] You can explain outbox vs CDC vs 2PC and why "exactly-once" doesn't cover sending an email
+- [ ] You can explain a JWT's lifecycle from login to a 401 without looking anything up
+- [ ] You can say when NOT to cache and why ShopFlow evicts instead of updating
+
+Notes: [`10-kafka-event-driven.md`](interview-notes/10-kafka-event-driven.md), [`11-security-caching-performance.md`](interview-notes/11-security-caching-performance.md)
+
+---
+
+## Phase 5: Observability + SRE (week 13)
 
 Learn: logs/metrics/traces, PromQL, Grafana, alerting (symptoms not causes), RED/USE, SLI/SLO/error budgets, incident response.
 
@@ -133,13 +155,17 @@ Notes: [`07-observability-sre.md`](interview-notes/07-observability-sre.md)
 
 ---
 
-## Phase 6: Cloud + Infrastructure as Code (week 13–14)
+## Phase 6: AWS + Infrastructure as Code (week 14–15)
 
-Learn: AWS core (VPC, subnets, SG, EC2, ALB, EKS, ECR, RDS, S3, IAM, CloudWatch), Terraform (state, backend, modules, plan/apply), basic Ansible.
+Learn: AWS core (VPC, subnets, SG/NACL, EC2, ALB, EKS, ECR, RDS, ElastiCache, MSK, Cognito, Secrets Manager, IAM/IRSA, CloudWatch), Terraform (state, backend, modules, plan/apply, drift), basic Ansible.
+
+Read: `infra/terraform/aws/` file by file with its README, then `k8s/overlays/prod/` and see how every managed endpoint reaches the pods.
 
 Do:
-- Terraform: create an ECR repo + S3 bucket with remote state (S3 backend + locking)
-- Optional, and watch the cost: EKS cluster via the `terraform-aws-modules/eks` module, deploy ShopFlow with RDS instead of the in-cluster Postgres, then `terraform destroy` the same day
+- Lab 23, then `terraform plan` against your own account and read every line of the plan
+- Cheap first: a `terraform.tfvars` with `db_multi_az=false`, small instances, destroy the same day. Compare the bill estimate with the README's numbers.
+- Install External Secrets Operator + AWS Load Balancer Controller with Helm, annotate their ServiceAccounts with the IRSA role ARNs, and watch a Secret appear from Secrets Manager
+- Point Argo CD at `k8s/overlays/prod` and do one GitOps deploy end to end (push to main → CI pins the SHA → Argo syncs)
 
 Done when:
 - [ ] You can draw ShopFlow's AWS architecture (VPC, public/private subnets, ALB, EKS, RDS)
@@ -149,19 +175,22 @@ Notes: [`08-linux-networking-cloud-iac.md`](interview-notes/08-linux-networking-
 
 ---
 
-## Phase 7: Advanced backend (week 15–16+)
+## Phase 7: Advanced (week 16+)
 
-Extend ShopFlow yourself. Each item is a strong resume line:
+Outbox, Kafka consumer, JWT, cache, tracing and rate limiting are already in the repo (read `docs/SELF-WALK.md` for why each exists). Extend it yourself; each item is a strong resume line:
 
 | Feature | What you learn |
 |---|---|
-| `payment-service` + Kafka: order publishes `OrderPlaced` via **transactional outbox** | async messaging, at-least-once delivery, idempotent consumers |
-| Redis cache for `GET /products/{sku}` | caching, TTL, cache invalidation |
-| Spring Security + Keycloak (OAuth2/JWT) | authn/authz, resource server |
-| Spring Cloud Gateway in front, with rate limiting | API gateway pattern |
-| Testcontainers (real Postgres in tests) | realistic integration tests |
-| k6 / Gatling load test: 500 parallel buyers for 3 PS5s | performance testing, proving no overselling under load |
-| Outbox cleaner / scheduled reconciliation of `FAILED` orders | consistency in distributed systems |
+| `payment-service` + saga choreography (`PaymentFailed` → order cancelled) | compensations across services, idempotent consumers |
+| Reconciliation job for `FAILED` orders + outbox cleaner | consistency in distributed systems, scheduled jobs, `SKIP LOCKED` |
+| Avro + Schema Registry for `orders.events` | schema evolution, compatibility modes |
+| Testcontainers (real Postgres + Kafka in tests) | tests that catch PostgreSQL-only SQL (partial indexes, `SKIP LOCKED`) |
+| Spring Cloud Gateway / AWS API Gateway with per-user rate limits | API gateway pattern, Redis-backed limits |
+| k6 load test: 1000 buyers for 3 PS5s, p99 under 300 ms | performance testing, proving no overselling under load |
+| MSK IAM auth in the services (`aws-msk-iam-auth`) | SASL, IRSA in a client library |
+| Karpenter instead of managed node groups; Spot for stateless pods | cost-aware autoscaling |
+| Chaos: kill a Kafka broker / RDS failover during a load test | resilience verification, RPO/RTO |
+| Service mesh (Istio/Linkerd) for mTLS between services | zero trust, L7 policy |
 
 ---
 
@@ -169,7 +198,10 @@ Extend ShopFlow yourself. Each item is a strong resume line:
 
 - Built order and inventory microservices (Java 21, Spring Boot 3, PostgreSQL) with idempotent APIs and atomic stock reservation, verified race-free by a concurrency test.
 - Added resilience: timeouts, retry with backoff, and a Resilience4j circuit breaker. Inventory outages degrade to fast 503s instead of cascading.
-- Containerized the services with multi-stage, layered, non-root images, and deployed them to Kubernetes using Kustomize (HPA, PDB, NetworkPolicies, probes, zero-downtime rolling updates).
-- Built a GitHub Actions pipeline: tests, manifest validation, Trivy image scanning, and pushes to GHCR. Set up Prometheus alerts on error rate, latency and circuit-breaker state.
+- Implemented the transactional outbox pattern with Kafka and an idempotent consumer with a dead-letter topic, so order events are never lost or processed twice.
+- Secured the API as an OAuth2 resource server (Keycloak locally, Amazon Cognito in prod) with role-based access, and added Redis cache-aside, rate limiting and OpenTelemetry tracing linked to logs and metrics in Grafana.
+- Containerized the services with multi-stage, layered, non-root images, and deployed them to Kubernetes using Kustomize (HPA, PDB, ingress+egress NetworkPolicies, probes, zero-downtime rolling updates).
+- Wrote Terraform for the AWS production platform (VPC, EKS with IRSA, ECR, Multi-AZ RDS, ElastiCache, MSK, Cognito, Secrets Manager via External Secrets) and a GitOps flow: GitHub Actions builds, scans and pins the image SHA; Argo CD deploys.
+- Built the CI pipeline: tests, manifest/alert/Terraform validation, Trivy image scanning, pushes to GHCR; Prometheus alerts on error rate, latency, circuit-breaker rejections, outbox backlog and consumer lag.
 
 > Tip: Interview mein har line pe "why" ka jawab ready rakho. Jaise: "Why circuit breaker?", "Why maxUnavailable 0?", "Why readiness doesn't check inventory?" Yeh sab answers notes mein hain.

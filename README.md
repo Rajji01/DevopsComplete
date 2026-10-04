@@ -4,10 +4,12 @@ Goal: **mastery in DevOps + Java backend**, by building, shipping, running and d
 
 | Start here | What it is |
 |---|---|
-| [`shopflow/`](shopflow/README.md) | Production-style microservices project: order + inventory services (Spring Boot 3.5, Java 21, PostgreSQL, Resilience4j), Docker, Kubernetes (Kustomize, HPA, PDB, NetworkPolicy), CI/CD with image scanning, Prometheus alerts |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | 16-week mastery roadmap built around this repo |
-| [`docs/LABS.md`](docs/LABS.md) | 15 hands-on break/fix labs (OOMKilled, CrashLoopBackOff, circuit breaker, zero-downtime deploy, ...) |
-| [`docs/interview-notes/`](docs/interview-notes/) | Interview notes: project walkthrough, Java/Spring, microservices, Docker, Kubernetes, CI/CD, observability, Linux/networking/cloud |
+| [`shopflow/`](shopflow/README.md) | Production-style microservices: order, inventory and notification services (Spring Boot 3.5, Java 21, PostgreSQL, Kafka with transactional outbox, Redis, OAuth2/JWT, Resilience4j, OpenTelemetry), Docker Compose stack, Kubernetes (Kustomize, HPA, PDB, NetworkPolicies), CI/CD with image scanning, Jenkinsfile, Argo CD |
+| [`infra/terraform/aws/`](infra/terraform/aws/README.md) | Production on AWS: VPC, EKS (IRSA), ECR, RDS Multi-AZ, ElastiCache, MSK, Cognito, Secrets Manager, GitHub OIDC |
+| [`docs/SELF-WALK.md`](docs/SELF-WALK.md) | Review log: every bug found in this repo, why it mattered, how it was fixed, what is still open |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | 18-week mastery roadmap built around this repo |
+| [`docs/LABS.md`](docs/LABS.md) | 23 hands-on break/fix labs (OOMKilled, CrashLoopBackOff, circuit breaker, zero-downtime deploy, kill Kafka, duplicate events, poison pill, JWT, cache, tracing, ...) |
+| [`docs/interview-notes/`](docs/interview-notes/) | Interview notes: project walkthrough, Java/Spring, microservices, Docker, Kubernetes, CI/CD, observability, Linux/networking, AWS production, Kafka, security/caching/performance, and a hard-questions file |
 
 ## Basics (first learning project)
 

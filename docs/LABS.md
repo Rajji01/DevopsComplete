@@ -6,9 +6,10 @@ Setup used by the labs (run everything from `shopflow/`):
 
 | Labs | Environment |
 |---|---|
-| 1–4, 12–13 | Docker Compose: `docker compose up --build -d` |
+| 1–4, 12–13, 16–22 | Docker Compose: `docker compose up --build -d` |
 | 5–11, 15 | minikube: see "Kubernetes" in [`../shopflow/README.md`](../shopflow/README.md) |
 | 14 | GitHub: a branch + pull request |
+| 23 | kubectl + Terraform (plan needs an AWS account) |
 
 Handy aliases:
 ```sh
@@ -312,3 +313,151 @@ for i in 1 2 3; do kn delete pod -l app.kubernetes.io/name=order-service --wait=
 **Why:** the pod shutdown sequence is: removed from endpoints + `preStop` sleep 5 s → SIGTERM → Spring stops accepting requests and finishes the in-flight ones (up to 20 s) → exit. This must fit in `terminationGracePeriodSeconds: 45`.
 
 **Challenge:** what happens if the app ignores SIGTERM? (Hint: SIGKILL after the grace period. Shell-form `ENTRYPOINT` is a classic cause, because PID 1 is `sh`, which doesn't forward the signal.)
+
+---
+
+# Part 2: events, security, cache, tracing, AWS
+
+Setup: `docker compose up --build -d` from `shopflow/`, plus a token helper:
+```sh
+token() { curl -s -X POST http://localhost:8180/realms/shopflow/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=shopflow-web -d username=$1 -d password=$1 | jq -r .access_token; }
+TOKEN=$(token alice)                      # alice = customer, bob = support
+auth() { curl -s -H "Authorization: Bearer $TOKEN" "$@"; }
+```
+
+## Lab 16: JWT — who is allowed to do what
+
+**Do**
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' -XPOST localhost:8081/api/v1/orders -H 'Content-Type: application/json' -d '{"sku":"PIXEL-9","quantity":1}'      # no token
+auth -o /dev/null -w '%{http_code}\n' -XPOST localhost:8081/api/v1/orders -H 'Content-Type: application/json' -d '{"sku":"PIXEL-9","quantity":1}'  # alice
+TOKEN=$(token bob); auth -o /dev/null -w '%{http_code}\n' -XPOST localhost:8081/api/v1/orders -H 'Content-Type: application/json' -d '{"sku":"PIXEL-9","quantity":1}'
+auth 'localhost:8081/api/v1/orders?size=2' | jq '.content[].status'                                       # bob may read
+echo $TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq '{iss, exp, realm_access}'                          # look inside the token
+```
+
+**Observe:** `401` without a token, `201` for alice, `403` for bob on POST but `200` on GET. The token's `iss` must equal `JWT_ISSUER_URI`, and `realm_access.roles` is where the roles come from.
+
+**Why:** order-service never sees a password. It downloads Keycloak's public keys (JWKS) once and verifies the signature locally, so authentication costs nothing per request and Keycloak can be down without taking orders down (already-issued tokens still verify).
+
+**Challenge:** wait 15 minutes (token lifetime) and call again. What do you get, and how would a frontend handle it? (Refresh tokens.) Then swap `JWT_ISSUER_URI` to the Cognito issuer format from `infra/terraform/aws/outputs.tf` and explain what else must change (nothing in the code: the converter also reads `cognito:groups`).
+
+## Lab 17: The outbox — kill Kafka and nothing is lost
+
+**Do**
+```sh
+docker compose stop kafka
+for i in 1 2 3; do auth -XPOST localhost:8081/api/v1/orders -H 'Content-Type: application/json' -d '{"sku":"AIRPODS-PRO","quantity":1}' | jq -r .status; done
+curl -s localhost:8081/actuator/prometheus | grep '^outbox_unpublished'
+docker compose exec postgres psql -U postgres -d orders -c 'select event_type, published_at from outbox_event order by created_at desc limit 5;'
+docker compose start kafka; sleep 20
+curl -s localhost:8081/actuator/prometheus | grep '^outbox_unpublished'
+docker compose logs notification-service | grep EMAIL | tail -3
+```
+
+**Observe:** orders are still `CONFIRMED` while Kafka is down (the customer is never blocked by the notification path). `outbox_unpublished` is 3, the rows have `published_at = null`. After Kafka returns the relay drains the backlog and the three emails appear.
+
+**Why:** the event is written in the same transaction as the order, so it exists exactly when the order exists. Compare with "save order, then `kafkaTemplate.send()`": a crash between the two loses the event, and a Kafka outage makes order placement fail.
+
+**Challenge:** with Kafka stopped, place 101 orders (a loop) and watch `OutboxBacklogGrowing` go *pending* → *firing* in Prometheus → Alerts after 5 minutes.
+
+## Lab 18: At-least-once — deliver the same event twice
+
+**Do**
+```sh
+EVENT_ID=$(uuidgen); REF=lab18-$RANDOM
+MSG="{\"eventId\":\"$EVENT_ID\",\"type\":\"OrderConfirmed\",\"orderRef\":\"$REF\",\"sku\":\"PS5-SLIM\",\"quantity\":1,\"status\":\"CONFIRMED\",\"occurredAt\":\"2026-10-04T10:00:00Z\"}"
+for i in 1 2 3; do echo "$REF:$MSG" | docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 --topic orders.events --property parse.key=true --property key.separator=:; done
+docker compose logs notification-service | grep -E "EMAIL.*$REF|duplicate event" | tail -4
+curl -s localhost:8083/actuator/prometheus | grep -E '^notifications_(sent|duplicates)_total'
+```
+
+**Observe:** one `EMAIL` line, two `duplicate event ... skipped` lines, `notifications_duplicates_total` went up by 2.
+
+**Why:** Kafka guarantees at-least-once, not exactly-once, between independent systems. The consumer makes the *effect* exactly-once by recording `eventId` in the same transaction as the side effect. This is the "idempotent consumer" pattern; it is why every event carries an `eventId`.
+
+**Challenge:** remove the `existsById` check, restart, repeat. Then put it back. Now explain why "exactly-once" in Kafka's own docs does not cover sending an email.
+
+## Lab 19: Poison pill → dead-letter topic
+
+**Do**
+```sh
+echo 'bad:this is not json' | docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic orders.events --property parse.key=true --property key.separator=:
+auth -XPOST localhost:8081/api/v1/orders -H 'Content-Type: application/json' -d '{"sku":"PIXEL-9","quantity":1}' | jq -r .orderRef   # a good event right behind it
+docker compose logs -f notification-service | grep -E "EMAIL|Backoff|DLT"      # ctrl-c after ~15s
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic orders.events.DLT --from-beginning --max-messages 1 --property print.headers=true
+```
+
+**Observe:** the bad record is retried with growing backoff for ~10 s, then lands on `orders.events.DLT` with headers describing the exception; the good order's email still arrives.
+
+**Why:** without an error handler a single bad message blocks its partition forever (the consumer keeps re-reading the same offset). A DLT turns an outage into a ticket: someone inspects the message, fixes the bug, and replays it.
+
+**Challenge:** write a tiny replay: consume from the DLT and produce back to `orders.events`. When is replaying dangerous? (Non-idempotent consumers, ordering.)
+
+## Lab 20: Cache-aside — see Redis work, and see why eviction matters
+
+**Do**
+```sh
+docker compose exec redis redis-cli FLUSHALL >/dev/null
+curl -s -o /dev/null -w 'cold: %{time_total}s\n' localhost:8082/api/v1/products/PIXEL-9
+curl -s -o /dev/null -w 'warm: %{time_total}s\n' localhost:8082/api/v1/products/PIXEL-9
+docker compose exec redis redis-cli KEYS 'inventory:*'
+docker compose exec redis redis-cli TTL 'inventory:products::PIXEL-9'
+auth -XPOST localhost:8081/api/v1/orders -H 'Content-Type: application/json' -d '{"sku":"PIXEL-9","quantity":1}' >/dev/null
+docker compose exec redis redis-cli KEYS 'inventory:*'          # PIXEL-9 is gone
+curl -s localhost:8082/api/v1/products/PIXEL-9 | jq .quantity    # fresh value
+```
+
+**Observe:** the second read is faster and comes from Redis; the key has a 60 s TTL; a reservation evicts it so the next read is correct.
+
+**Why:** reads outnumber writes by orders of magnitude, but a wrong stock number in a flash sale is worse than a slow one. Evicting on write (instead of updating the cache) avoids a race where two writers update the cache in the wrong order. The TTL is only a safety net.
+
+**Challenge:** stop Redis (`docker compose stop redis`). What happens to product reads and to readiness? (Reads fail: Spring Cache does not fall back. How would you make the cache *optional*? Hint: `CacheErrorHandler`.) Also: why is the DTO cached and not the JPA entity?
+
+## Lab 21: Rate limiting — 429 before the database melts
+
+**Do**
+```sh
+# 200 requests as fast as possible with 20 workers (install 'hey', or use the xargs loop from Lab 2)
+hey -n 200 -c 20 -m POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"sku":"AIRPODS-PRO","quantity":1}' http://localhost:8081/api/v1/orders | grep -A6 'Status code'
+curl -s localhost:8081/actuator/prometheus | grep 'resilience4j_ratelimiter_available_permissions'
+```
+
+**Observe:** about 50 × `201` per second, the rest `429` with a problem+json body. Latency of the accepted ones stays flat.
+
+**Why:** the HPA needs minutes to add pods; the rate limiter protects Postgres and inventory in the first seconds of a burst. Per-pod limits are simple but add up with replicas; a shared limit needs Redis or the gateway.
+
+**Challenge:** why is a limiter in the service weaker than one at the ingress/API gateway? (The request already consumed a thread and a TLS handshake.) Sketch where you would put a per-user limit.
+
+## Lab 22: Follow one order across three services (tracing)
+
+**Do**
+1. Place an order (Lab 16) and copy its `orderRef`.
+2. Grafana → Explore → **Loki** → query `{service="order-service"} |= "<orderRef>"`. Click the `trace.id` value in the log line.
+3. You land in **Tempo**: spans for `POST /api/v1/orders` → `POST /api/v1/reservations` (inventory) → the Kafka send → `orders.events process` in notification-service.
+4. In the trace, click "Logs for this span" to jump back to Loki filtered by that trace id.
+
+**Observe:** one `trace.id` appears in the logs of all three services; the Kafka hop carries it in message headers (`traceparent`).
+
+**Why:** metrics tell you *that* p99 is bad, traces tell you *where* (which span is slow), logs tell you *why*. Linking them by trace id is what turns a 40-minute investigation into 4 minutes.
+
+**Challenge:** set `TRACING_SAMPLE=0.1` on order-service and explain the trade-off. Then add a custom span around `decrementStock` with `@Observed` and find it in Tempo.
+
+## Lab 23: Render prod — the AWS overlay
+
+**Do**
+```sh
+kubectl kustomize k8s/overlays/prod > /tmp/prod.yaml
+grep -E '^kind:' /tmp/prod.yaml | sort | uniq -c           # no Postgres/Kafka/Redis/Keycloak
+grep -E 'image: ghcr|rds-endpoint|cognito|ExternalSecret|alb.ingress' /tmp/prod.yaml
+cd ../infra/terraform/aws && terraform init -backend=false && terraform validate && terraform plan   # needs AWS creds for plan
+```
+
+**Observe:** the same base renders to in-cluster dependencies for dev and to managed-service endpoints for prod; secrets come from an `ExternalSecret`, not from git; the Ingress becomes an ALB with an ACM certificate.
+
+**Why:** databases, brokers and identity are *undifferentiated heavy lifting*; a managed service gives you backups, failover and patching for money, which is cheaper than an on-call engineer learning Kafka operations at 3 AM.
+
+**Challenge:** read `infra/terraform/aws/README.md`'s cost section and produce a "learning budget" variant (`terraform.tfvars`) that costs under $150/month. Which pillar of the Well-Architected Framework did you trade away, and is that acceptable for a dev environment?
