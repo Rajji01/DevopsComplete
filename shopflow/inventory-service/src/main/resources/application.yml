@@ -5,8 +5,20 @@ server:
 spring:
   application:
     name: inventory-service
+  threads:
+    virtual:
+      enabled: true
   lifecycle:
     timeout-per-shutdown-phase: 20s
+  cache:
+    type: ${CACHE_TYPE:simple}   # 'redis' in compose/K8s (shared across pods), 'simple' = local ConcurrentHashMap
+    redis:
+      time-to-live: 60s          # safety net if an eviction is ever missed
+      key-prefix: "inventory:"
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/inventory}
     username: ${DB_USERNAME:inventory}
@@ -22,6 +34,15 @@ spring:
       enabled: true
 
 management:
+  health:
+    redis:
+      enabled: ${REDIS_HEALTH:false}  # only meaningful when CACHE_TYPE=redis
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE:1.0}
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:

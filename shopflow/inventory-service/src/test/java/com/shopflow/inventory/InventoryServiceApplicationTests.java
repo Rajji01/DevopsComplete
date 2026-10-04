@@ -41,6 +41,9 @@ class InventoryServiceApplicationTests {
     @Autowired
     private ReservationService reservationService;
 
+    @Autowired
+    private org.springframework.cache.CacheManager cacheManager;
+
     private int stockOf(String sku) {
         return productRepository.findBySku(sku).orElseThrow().getQuantity();
     }
@@ -166,6 +169,17 @@ class InventoryServiceApplicationTests {
 
         assertThat(created.get()).isEqualTo(threads);          // every caller gets the same answer
         assertThat(stockOf("IPHONE-15")).isEqualTo(before - 1); // but stock moved only once
+    }
+
+    @Test
+    void productReadIsCachedAndEvictedOnReserve() throws Exception {
+        int before = stockOf("PIXEL-9");
+        mockMvc.perform(get("/api/v1/products/PIXEL-9")).andExpect(jsonPath("$.quantity").value(before));
+        assertThat(cacheManager.getCache("products").get("PIXEL-9")).as("cached after first read").isNotNull();
+
+        reservationService.reserve(UUID.randomUUID().toString(), "PIXEL-9", 1);
+        assertThat(cacheManager.getCache("products").get("PIXEL-9")).as("evicted by reserve").isNull();
+        mockMvc.perform(get("/api/v1/products/PIXEL-9")).andExpect(jsonPath("$.quantity").value(before - 1));
     }
 
     @Test

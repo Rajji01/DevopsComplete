@@ -1,0 +1,11 @@
+# Where the services find their dependencies. One ConfigMap, overridden per environment:
+# dev = in-cluster Kafka/Redis/Keycloak, prod = MSK / ElastiCache / Cognito from Terraform outputs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shopflow-endpoints
+data:
+  kafka-bootstrap-servers: kafka:9092
+  redis-host: redis
+  jwt-issuer-uri: http://keycloak.shopflow.local/realms/shopflow
+  otlp-endpoint: http://tempo.monitoring:4318/v1/traces   # Tempo/OTel collector in the monitoring namespace

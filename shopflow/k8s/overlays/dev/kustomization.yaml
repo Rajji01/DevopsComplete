@@ -10,6 +10,8 @@ images:
     newTag: dev
   - name: shopflow/inventory-service
     newTag: dev
+  - name: shopflow/notification-service
+    newTag: dev
 # dev-only throwaway passwords; prod gets them from a secret manager (see overlays/prod)
 secretGenerator:
   - name: shopflow-db
@@ -17,6 +19,10 @@ secretGenerator:
       - postgres-password=postgres
       - orders-db-password=orders
       - inventory-db-password=inventory
+      - notifications-db-password=notifications
+  - name: keycloak-admin
+    literals:
+      - password=admin
 patches:
   # single replica is enough on a laptop
   - target:

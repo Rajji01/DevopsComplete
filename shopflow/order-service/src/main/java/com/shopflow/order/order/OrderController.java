@@ -23,6 +23,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
+
 @RestController
 @RequestMapping("/api/v1/orders")
 public class OrderController {
@@ -51,6 +53,7 @@ public class OrderController {
      * The body's status says whether stock was reserved (CONFIRMED) or not (REJECTED).
      */
     @PostMapping
+    @RateLimiter(name = "orders") // protects the DB and inventory from a traffic burst; excess -> 429
     public ResponseEntity<OrderResponse> create(
             @Valid @RequestBody CreateOrderRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) @Size(max = 100) String idempotencyKey) {

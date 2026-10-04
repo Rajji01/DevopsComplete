@@ -1,0 +1,38 @@
+# GitOps: Argo CD watches k8s/overlays/prod on main and makes the cluster match it.
+# CI never runs kubectl against prod; it only commits the new image tag (deploy-manifests job).
+#   kubectl apply -n argocd -f shopflow/argocd/application-prod.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopflow-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io   # deleting the Application also deletes what it deployed
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Rajji01/DevopsComplete.git
+    targetRevision: main
+    path: shopflow/k8s/overlays/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: shopflow
+  syncPolicy:
+    automated:
+      prune: true        # resources removed from git are removed from the cluster
+      selfHeal: true     # manual kubectl edits are reverted (git is the only source of truth)
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+    # the HPA changes replica counts at runtime; that is not drift
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas

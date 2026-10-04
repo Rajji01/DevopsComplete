@@ -2,6 +2,7 @@ package com.shopflow.inventory.reservation;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,6 +38,7 @@ public class ReservationService {
      * Decrement + insert happen in one transaction, so a failed insert rolls the stock back.
      */
     @Transactional
+    @CacheEvict(cacheNames = "products", key = "#sku")
     public Reservation reserve(String orderRef, String sku, int quantity) {
         var existing = reservationRepository.findByOrderRef(orderRef);
         if (existing.isPresent()) {
@@ -64,6 +66,7 @@ public class ReservationService {
 
     /** Idempotent compensation: releasing twice (or releasing an unknown order) is a no-op. */
     @Transactional
+    @CacheEvict(cacheNames = "products", allEntries = true) // sku is only known after the lookup; releases are rare
     public void release(String orderRef) {
         reservationRepository.findByOrderRef(orderRef)
                 .filter(r -> r.getStatus() == Reservation.Status.RESERVED)

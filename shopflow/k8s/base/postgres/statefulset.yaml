@@ -44,6 +44,11 @@ spec:
                 secretKeyRef:
                   name: shopflow-db
                   key: inventory-db-password
+            - name: NOTIFICATIONS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shopflow-db
+                  key: notifications-db-password
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "postgres"]

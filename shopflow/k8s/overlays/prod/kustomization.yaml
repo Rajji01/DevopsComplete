@@ -1,9 +1,15 @@
-# kubectl apply -k k8s/overlays/prod   (normally applied by Argo CD / the CD pipeline, not by hand)
+# Production on AWS (EKS). Normally applied by Argo CD from this folder, never by hand.
+#
+# Everything stateful is a managed AWS service created by infra/terraform/aws:
+#   PostgreSQL -> Amazon RDS      Kafka -> Amazon MSK      Redis -> ElastiCache     JWTs -> Amazon Cognito
+# so the in-cluster Postgres/Kafka/Redis/Keycloak from the base are deleted here, and the services are
+# pointed at the managed endpoints through the shopflow-endpoints ConfigMap + an ExternalSecret.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: shopflow   # also puts generated objects (secret) in the namespace so name references resolve
 resources:
   - ../../base
+  - external-secret.yaml
 # Image tags below are written by CI (deploy-manifests job in .github/workflows/shopflow.yml):
 # every push to main rebuilds the images, then commits the exact git SHA here. Never edit by hand,
 # and never use ':latest' in prod: it is not traceable and cannot be rolled back reliably.
@@ -14,9 +20,195 @@ images:
   - name: shopflow/inventory-service
     newName: ghcr.io/rajji01/shopflow-inventory-service
     newTag: set-by-ci
-# Secret "shopflow-db" is NOT in git: it is synced from AWS Secrets Manager / Vault
-# by External Secrets Operator (or created once with Sealed Secrets).
+  - name: shopflow/notification-service
+    newName: ghcr.io/rajji01/shopflow-notification-service
+    newTag: set-by-ci
+# Endpoints of the managed services: copy from `terraform output` after apply.
+configMapGenerator:
+  - name: shopflow-endpoints
+    behavior: replace
+    literals:
+      - kafka-bootstrap-servers=b-1.shopflow.xxxxxx.c2.kafka.ap-south-1.amazonaws.com:9092,b-2.shopflow.xxxxxx.c2.kafka.ap-south-1.amazonaws.com:9092
+      - redis-host=shopflow-cache.xxxxxx.0001.aps1.cache.amazonaws.com
+      - jwt-issuer-uri=https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_XXXXXXXXX
+      - otlp-endpoint=http://otel-collector.monitoring:4318/v1/traces   # ADOT collector -> AWS X-Ray / Grafana Tempo
+      - rds-endpoint=shopflow.xxxxxx.ap-south-1.rds.amazonaws.com:5432
 patches:
+  # managed services replace these
+  - patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: postgres
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: postgres
+  - patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: kafka
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: kafka
+  - patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: redis
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: redis
+  - patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: keycloak
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: keycloak
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: postgres-ingress
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: kafka-ingress
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: redis-ingress
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: keycloak-ingress
+  # the DB URL now points at RDS (from the ConfigMap) instead of the in-cluster Service
+  - target:
+      kind: Deployment
+      name: order-service
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1
+        value:
+          name: DB_URL
+          value: jdbc:postgresql://$(RDS_ENDPOINT)/orders?sslmode=require
+      - op: add
+        path: /spec/template/spec/containers/0/env/0
+        value:
+          name: RDS_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: shopflow-endpoints
+              key: rds-endpoint
+  - target:
+      kind: Deployment
+      name: inventory-service
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1
+        value:
+          name: DB_URL
+          value: jdbc:postgresql://$(RDS_ENDPOINT)/inventory?sslmode=require
+      - op: add
+        path: /spec/template/spec/containers/0/env/0
+        value:
+          name: RDS_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: shopflow-endpoints
+              key: rds-endpoint
+  - target:
+      kind: Deployment
+      name: notification-service
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1
+        value:
+          name: DB_URL
+          value: jdbc:postgresql://$(RDS_ENDPOINT)/notifications?sslmode=require
+      - op: add
+        path: /spec/template/spec/containers/0/env/0
+        value:
+          name: RDS_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: shopflow-endpoints
+              key: rds-endpoint
+  # egress to AWS managed services goes to IPs outside the cluster: allow the VPC CIDR on those ports
+  - target:
+      kind: NetworkPolicy
+      name: order-service-egress
+    patch: |-
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - ipBlock:
+                cidr: 10.0.0.0/16        # VPC CIDR from Terraform (RDS, MSK live here)
+          ports:
+            - port: 5432
+            - port: 9092
+            - port: 9098                 # MSK IAM auth listener
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - ipBlock:
+                cidr: 0.0.0.0/0          # Cognito JWKS over HTTPS (public AWS endpoint)
+          ports:
+            - port: 443
+  - target:
+      kind: NetworkPolicy
+      name: inventory-service-egress
+    patch: |-
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - ipBlock:
+                cidr: 10.0.0.0/16
+          ports:
+            - port: 5432
+            - port: 6379
+  - target:
+      kind: NetworkPolicy
+      name: notification-service-egress
+    patch: |-
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - ipBlock:
+                cidr: 10.0.0.0/16
+          ports:
+            - port: 5432
+            - port: 9092
+            - port: 9098
   - target:
       kind: HorizontalPodAutoscaler
     patch: |-
@@ -26,14 +218,23 @@ patches:
       - op: replace
         path: /spec/maxReplicas
         value: 10
+  # AWS Load Balancer Controller provisions an ALB; TLS cert from ACM; Keycloak rule removed
   - target:
       kind: Ingress
     patch: |-
       - op: replace
+        path: /spec/ingressClassName
+        value: alb
+      - op: add
+        path: /metadata/annotations
+        value:
+          alb.ingress.kubernetes.io/scheme: internet-facing
+          alb.ingress.kubernetes.io/target-type: ip
+          alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+          alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-south-1:123456789012:certificate/REPLACE-ME
+          alb.ingress.kubernetes.io/healthcheck-path: /actuator/health/readiness
+      - op: replace
         path: /spec/rules/0/host
         value: shop.example.com
-      - op: add
-        path: /spec/tls
-        value:
-          - hosts: ["shop.example.com"]
-            secretName: shopflow-tls   # issued by cert-manager
+      - op: remove
+        path: /spec/rules/1

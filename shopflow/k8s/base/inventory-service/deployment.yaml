@@ -60,6 +60,18 @@ spec:
                 secretKeyRef:
                   name: shopflow-db
                   key: inventory-db-password
+            - name: CACHE_TYPE
+              value: redis
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: shopflow-endpoints
+                  key: redis-host
+            - name: OTLP_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: shopflow-endpoints
+                  key: otlp-endpoint
             - name: LOGGING_STRUCTURED_FORMAT_CONSOLE
               value: ecs                 # JSON logs for Loki / ELK
           resources:

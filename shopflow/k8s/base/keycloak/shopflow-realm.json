@@ -1,0 +1,34 @@
+{
+  "realm": "shopflow",
+  "enabled": true,
+  "accessTokenLifespan": 900,
+  "roles": {
+    "realm": [
+      { "name": "customer", "description": "Can place, read and cancel own orders" },
+      { "name": "support",  "description": "Read-only access to orders" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "shopflow-web",
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "redirectUris": ["http://localhost:*"],
+      "webOrigins": ["*"],
+      "protocol": "openid-connect"
+    }
+  ],
+  "users": [
+    {
+      "username": "alice", "enabled": true, "email": "alice@example.com", "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "alice", "temporary": false }],
+      "realmRoles": ["customer"]
+    },
+    {
+      "username": "bob", "enabled": true, "email": "bob@example.com", "emailVerified": true,
+      "credentials": [{ "type": "password", "value": "bob", "temporary": false }],
+      "realmRoles": ["support"]
+    }
+  ]
+}

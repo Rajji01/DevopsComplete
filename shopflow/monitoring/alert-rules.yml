@@ -39,3 +39,21 @@ groups:
           severity: page
         annotations:
           summary: "{{ $labels.instance }} is not being scraped"
+
+      - alert: OutboxBacklogGrowing
+        # events written but not yet published to Kafka: broker down, or the relay is stuck
+        expr: max by (application) (outbox_unpublished) > 100
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.application }}: more than 100 order events waiting in the outbox"
+
+      - alert: KafkaConsumerLagHigh
+        # notification-service is falling behind the producers
+        expr: sum by (application) (spring_kafka_listener_records_lag_max) > 1000
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $labels.application }}: Kafka consumer lag above 1000 records"

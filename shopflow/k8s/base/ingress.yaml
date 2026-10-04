@@ -23,3 +23,13 @@ spec:
                 name: inventory-service
                 port:
                   name: http
+    - host: keycloak.shopflow.local   # dev only: the prod overlay removes this rule (Cognito is external)
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: keycloak
+                port:
+                  name: http

@@ -11,6 +11,8 @@ import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathMatching;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMockConfig;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -19,6 +21,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.kafka.test.context.EmbeddedKafka;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import java.time.Duration;
+import java.util.UUID;
+import java.util.Map;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.test.EmbeddedKafkaBroker;
+import org.springframework.kafka.test.utils.KafkaTestUtils;
+import com.shopflow.order.outbox.OrderEvent;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -37,11 +50,18 @@ import com.jayway.jsonpath.JsonPath;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 
-/** Full Spring context + real HTTP calls to a WireMock stand-in for inventory-service. */
+/**
+ * Full Spring context + real HTTP calls to a WireMock stand-in for inventory-service
+ * + an in-process Kafka broker for the outbox relay. Requests carry a fake JWT with the customer role.
+ */
 @SpringBootTest
 @AutoConfigureMockMvc
+@EmbeddedKafka(partitions = 1, topics = OrderEvent.TOPIC)
 @ActiveProfiles("test")
 class OrderServiceApplicationTests {
+
+    @Autowired
+    private EmbeddedKafkaBroker kafka;
 
     static final WireMockServer inventory = new WireMockServer(wireMockConfig().dynamicPort());
 
@@ -73,9 +93,14 @@ class OrderServiceApplicationTests {
 
     private static MockHttpServletRequestBuilder createOrder(String sku, int quantity) {
         return MockMvcRequestBuilders.post("/api/v1/orders")
+                .with(customer())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
                         {"sku":"%s","quantity":%d}""".formatted(sku, quantity));
+    }
+
+    private static org.springframework.test.web.servlet.request.RequestPostProcessor customer() {
+        return jwt().authorities(new SimpleGrantedAuthority("ROLE_customer"));
     }
 
     private static void stubReserve(int status) {
@@ -137,7 +162,7 @@ class OrderServiceApplicationTests {
         inventory.verify(3, postRequestedFor(urlEqualTo("/api/v1/reservations")));
 
         Number orderId = JsonPath.read(body, "$.orderId");
-        mockMvc.perform(get("/api/v1/orders/" + orderId))
+        mockMvc.perform(get("/api/v1/orders/" + orderId).with(customer()))
                 .andExpect(jsonPath("$.status").value("FAILED"));
     }
 
@@ -183,13 +208,13 @@ class OrderServiceApplicationTests {
         Number id = JsonPath.read(body, "$.id");
         String orderRef = JsonPath.read(body, "$.orderRef");
 
-        mockMvc.perform(MockMvcRequestBuilders.delete("/api/v1/orders/" + id))
+        mockMvc.perform(MockMvcRequestBuilders.delete("/api/v1/orders/" + id).with(customer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("CANCELLED"));
         inventory.verify(deleteRequestedFor(urlEqualTo("/api/v1/reservations/" + orderRef)));
 
         // cancelling twice is a conflict, not a second release
-        mockMvc.perform(MockMvcRequestBuilders.delete("/api/v1/orders/" + id))
+        mockMvc.perform(MockMvcRequestBuilders.delete("/api/v1/orders/" + id).with(customer()))
                 .andExpect(status().isConflict());
     }
 
@@ -199,9 +224,9 @@ class OrderServiceApplicationTests {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errors[0]").value("quantity: must be greater than or equal to 1"))
                 .andExpect(jsonPath("$.errors[1]").value("sku: must not be blank"));
-        mockMvc.perform(get("/api/v1/orders?size=1000"))
+        mockMvc.perform(get("/api/v1/orders?size=1000").with(customer()))
                 .andExpect(status().isBadRequest());
-        mockMvc.perform(get("/api/v1/orders/999999"))
+        mockMvc.perform(get("/api/v1/orders/999999").with(customer()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.title").value("Order not found"));
     }
@@ -212,10 +237,49 @@ class OrderServiceApplicationTests {
         mockMvc.perform(createOrder("AIRPODS-PRO", 1));
         mockMvc.perform(createOrder("AIRPODS-PRO", 2));
 
-        mockMvc.perform(get("/api/v1/orders?size=1"))
+        mockMvc.perform(get("/api/v1/orders?size=1").with(customer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content[0].quantity").value(2))
                 .andExpect(jsonPath("$.page.size").value(1));
+    }
+
+    @Test
+    void rejectsRequestsWithoutAValidToken() throws Exception {
+        mockMvc.perform(MockMvcRequestBuilders.post("/api/v1/orders")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"sku":"IPHONE-15","quantity":1}"""))
+                .andExpect(status().isUnauthorized());
+        // support staff may read but not place orders
+        mockMvc.perform(createOrder("IPHONE-15", 1).with(jwt().authorities(new SimpleGrantedAuthority("ROLE_support"))))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/actuator/health/liveness")).andExpect(status().isOk());
+    }
+
+    @Test
+    void publishesOrderEventThroughTheOutbox() throws Exception {
+        stubReserve(201);
+        String body = mockMvc.perform(createOrder("AIRPODS-PRO", 3))
+                .andReturn().getResponse().getContentAsString();
+        String orderRef = JsonPath.read(body, "$.orderRef");
+
+        Map<String, Object> props = KafkaTestUtils.consumerProps("test-" + UUID.randomUUID(), "true", kafka);
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        try (var consumer = new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), new StringDeserializer()).createConsumer()) {
+            kafka.consumeFromAnEmbeddedTopic(consumer, OrderEvent.TOPIC);
+            // the relay runs every 100ms in tests; wait for the event keyed by this order
+            await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
+                var records = KafkaTestUtils.getRecords(consumer, Duration.ofMillis(500));
+                boolean found = false;
+                for (var r : records) {
+                    if (orderRef.equals(r.key())) {
+                        assertThat(r.value()).contains("\"type\":\"OrderConfirmed\"").contains("\"quantity\":3");
+                        found = true;
+                    }
+                }
+                assertThat(found).isTrue();
+            });
+        }
     }
 
     @Test

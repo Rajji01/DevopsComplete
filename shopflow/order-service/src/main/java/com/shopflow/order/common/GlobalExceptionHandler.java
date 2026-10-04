@@ -20,6 +20,7 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.ratelimiter.RequestNotPermitted;
 
 /** RFC 7807 problem+json for every error; validation errors are handled by the parent class. */
 @RestControllerAdvice
@@ -81,6 +82,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 .map(e -> e instanceof FieldError fe ? fe.getField() + ": " + fe.getDefaultMessage() : e.getDefaultMessage())
                 .sorted()
                 .toList();
+    }
+
+    @ExceptionHandler(RequestNotPermitted.class)
+    ProblemDetail handleRateLimited(RequestNotPermitted ex) {
+        return problem(HttpStatus.TOO_MANY_REQUESTS, "Too many requests", "Rate limit exceeded, slow down");
     }
 
     private static ProblemDetail problem(HttpStatus status, String title, String detail) {

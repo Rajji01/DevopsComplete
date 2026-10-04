@@ -62,6 +62,21 @@ spec:
                   key: orders-db-password
             - name: INVENTORY_URL
               value: http://inventory-service:8082   # K8s DNS name of the Service
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              valueFrom:
+                configMapKeyRef:
+                  name: shopflow-endpoints
+                  key: kafka-bootstrap-servers
+            - name: JWT_ISSUER_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: shopflow-endpoints
+                  key: jwt-issuer-uri
+            - name: OTLP_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: shopflow-endpoints
+                  key: otlp-endpoint
             - name: LOGGING_STRUCTURED_FORMAT_CONSOLE
               value: ecs                 # JSON logs for Loki / ELK
           resources:

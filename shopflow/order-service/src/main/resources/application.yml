@@ -5,8 +5,24 @@ server:
 spring:
   application:
     name: order-service
+  threads:
+    virtual:
+      enabled: true             # Java 21: blocking IO (DB, HTTP to inventory) no longer pins a platform thread
   lifecycle:
     timeout-per-shutdown-phase: 20s
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all                 # leader + all in-sync replicas have the record before we mark it published
+      properties:
+        enable.idempotence: true  # broker de-duplicates producer retries
+    template:
+      observation-enabled: true # trace context travels in the Kafka headers
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${JWT_ISSUER_URI:http://localhost:8180/realms/shopflow}
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/orders}
     username: ${DB_USERNAME:orders}
@@ -26,7 +42,17 @@ inventory:
   connect-timeout: 1s
   read-timeout: 2s              # never wait forever on a downstream call
 
+outbox:
+  relay:
+    delay: 1s
+
 resilience4j:
+  ratelimiter:
+    instances:
+      orders:
+        limit-for-period: 50      # 50 order creations ...
+        limit-refresh-period: 1s  # ... per second per pod
+        timeout-duration: 0       # don't queue, fail fast with 429
   retry:
     instances:
       inventory:
@@ -54,6 +80,12 @@ resilience4j:
           - com.shopflow.order.inventory.InventoryRejectedException
 
 management:
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE:1.0}   # 100% locally; 0.1 is typical in prod
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:

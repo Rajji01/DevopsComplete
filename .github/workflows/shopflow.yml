@@ -7,9 +7,9 @@ name: shopflow
 on:
   push:
     branches: [main]
-    paths: ["shopflow/**", ".github/workflows/shopflow.yml"]
+    paths: ["shopflow/**", "infra/**", ".github/workflows/shopflow.yml"]
   pull_request:
-    paths: ["shopflow/**", ".github/workflows/shopflow.yml"]
+    paths: ["shopflow/**", "infra/**", ".github/workflows/shopflow.yml"]
 
 # a newer push to the same branch cancels the older run
 concurrency:
@@ -57,7 +57,8 @@ jobs:
         run: |
           for overlay in k8s/overlays/*/; do
             echo "::group::$overlay"
-            kustomize build "$overlay" | kubeconform -strict -summary -
+            # -ignore-missing-schemas: ExternalSecret CRDs have no upstream JSON schema
+            kustomize build "$overlay" | kubeconform -strict -summary -ignore-missing-schemas -
             echo "::endgroup::"
           done
       - name: Alert rules (promtool)
@@ -65,6 +66,23 @@ jobs:
           docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v3.5.0 check rules /m/alert-rules.yml
       - name: docker compose config
         run: docker compose config --quiet
+
+  terraform:
+    name: Terraform fmt + validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform/aws
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.13.3"
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false   # validate needs providers/modules, not the state bucket
+      - run: terraform validate
+      # a real deploy job would follow: assume the OIDC role (ci-oidc.tf), terraform plan on PRs,
+      # apply on main behind a manual approval environment
 
   image:
     name: Image ${{ matrix.service }}
@@ -75,7 +93,7 @@ jobs:
       packages: write          # push to ghcr.io
     strategy:
       matrix:
-        service: [order-service, inventory-service]
+        service: [order-service, inventory-service, notification-service]
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/shopflow-${{ matrix.service }}
     steps:
@@ -143,7 +161,8 @@ jobs:
         run: |
           kustomize edit set image \
             shopflow/order-service=ghcr.io/${{ github.repository_owner }}/shopflow-order-service:${{ github.sha }} \
-            shopflow/inventory-service=ghcr.io/${{ github.repository_owner }}/shopflow-inventory-service:${{ github.sha }}
+            shopflow/inventory-service=ghcr.io/${{ github.repository_owner }}/shopflow-inventory-service:${{ github.sha }} \
+            shopflow/notification-service=ghcr.io/${{ github.repository_owner }}/shopflow-notification-service:${{ github.sha }}
           kustomize build . > /dev/null      # still renders?
       - name: Commit and push
         run: |

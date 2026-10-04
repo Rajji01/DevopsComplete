@@ -7,8 +7,13 @@ labels:
     includeSelectors: false
 resources:
   - namespace.yaml
+  - endpoints-configmap.yaml
   - postgres
+  - kafka
+  - redis
+  - keycloak
   - inventory-service
   - order-service
+  - notification-service
   - ingress.yaml
   - network-policies.yaml

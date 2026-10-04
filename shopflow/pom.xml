@@ -20,6 +20,7 @@
     <modules>
         <module>inventory-service</module>
         <module>order-service</module>
+        <module>notification-service</module>
     </modules>
 
     <properties>
@@ -50,6 +51,15 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <!-- distributed tracing: traceId in logs + spans exported over OTLP (Tempo / Jaeger) -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
         </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>

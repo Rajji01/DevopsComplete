@@ -1,0 +1,19 @@
+# Dev environment tracks the branch you are working on; sync by hand (no automated policy) so you
+# can inspect the diff in the Argo CD UI before applying.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopflow-dev
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Rajji01/DevopsComplete.git
+    targetRevision: HEAD
+    path: shopflow/k8s/overlays/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: shopflow
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

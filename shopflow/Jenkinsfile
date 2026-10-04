@@ -1,0 +1,116 @@
+// Same pipeline as .github/workflows/shopflow.yml, written for Jenkins (declarative syntax).
+// Many companies still run Jenkins; the stages are identical, only the plumbing differs.
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()                       // like GitHub's concurrency group
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        timeout(time: 45, unit: 'MINUTES')
+    }
+
+    environment {
+        REGISTRY   = 'ghcr.io/rajji01'
+        IMAGE_TAG  = "${env.GIT_COMMIT}"                 // immutable: the commit SHA
+        KUSTOMIZE  = 'v5.7.1'
+        KUBECONFORM = 'v0.6.7'
+    }
+
+    tools {
+        jdk 'temurin-21'                                 // configured under Manage Jenkins -> Tools
+    }
+
+    stages {
+        stage('Test') {
+            steps {
+                dir('shopflow') {
+                    sh './mvnw -B verify'
+                }
+            }
+            post {
+                always {
+                    junit 'shopflow/**/target/surefire-reports/*.xml'
+                }
+            }
+        }
+
+        stage('Validate manifests') {
+            steps {
+                dir('shopflow') {
+                    sh '''
+                      curl -sSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE}/kustomize_${KUSTOMIZE}_linux_amd64.tar.gz | tar xz
+                      curl -sSL https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM}/kubeconform-linux-amd64.tar.gz | tar xz
+                      for overlay in k8s/overlays/*/; do
+                        ./kustomize build "$overlay" | ./kubeconform -strict -summary -ignore-missing-schemas -
+                      done
+                      docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v3.5.0 check rules /m/alert-rules.yml
+                    '''
+                }
+            }
+        }
+
+        stage('Build & scan images') {
+            matrix {
+                axes {
+                    axis {
+                        name 'SERVICE'
+                        values 'order-service', 'inventory-service', 'notification-service'
+                    }
+                }
+                stages {
+                    stage('docker build') {
+                        steps {
+                            dir('shopflow') {
+                                sh 'DOCKER_BUILDKIT=1 docker build --build-arg SERVICE=${SERVICE} -t ${REGISTRY}/shopflow-${SERVICE}:${IMAGE_TAG} .'
+                            }
+                        }
+                    }
+                    stage('trivy') {
+                        steps {
+                            sh 'trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 ${REGISTRY}/shopflow-${SERVICE}:${IMAGE_TAG}'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Push images') {
+            when { branch 'main' }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'ghcr', usernameVariable: 'USER', passwordVariable: 'TOKEN')]) {
+                    sh '''
+                      echo "$TOKEN" | docker login ghcr.io -u "$USER" --password-stdin
+                      for s in order-service inventory-service notification-service; do
+                        docker push ${REGISTRY}/shopflow-$s:${IMAGE_TAG}
+                      done
+                    '''
+                }
+            }
+        }
+
+        stage('Pin prod overlay') {
+            when { branch 'main' }
+            steps {
+                dir('shopflow/k8s/overlays/prod') {
+                    sshagent(['github-deploy-key']) {
+                        sh '''
+                          ../../../kustomize edit set image \
+                            shopflow/order-service=${REGISTRY}/shopflow-order-service:${IMAGE_TAG} \
+                            shopflow/inventory-service=${REGISTRY}/shopflow-inventory-service:${IMAGE_TAG} \
+                            shopflow/notification-service=${REGISTRY}/shopflow-notification-service:${IMAGE_TAG}
+                          git config user.name jenkins && git config user.email jenkins@example.com
+                          git commit -am "deploy(prod): pin images to ${IMAGE_TAG:0:7}" && git push origin HEAD:main
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo "Build failed: ${env.BUILD_URL}"       // real life: slackSend / mail step
+        }
+    }
+}
