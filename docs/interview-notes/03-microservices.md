@@ -228,7 +228,7 @@ Relay options:
 Delivery is **at-least-once** (crash after send, before marking) → consumers dedupe by **event id** (not `orderRef`: one order emits several events). The mirror pattern on the consumer side is the **inbox** — ShopFlow's `processed_event` table in notification-service.
 
 **Q: What does the outbox fix in ShopFlow, and what is still open?**
-Fixed: "order saved but notification lost" (and the reverse) — the event is durable the moment the order commits; a Kafka outage only grows the backlog, users still get 201. Still open: a crash between "save PENDING" and "reserve" leaves a stuck PENDING order, and a timeout leaves a FAILED order with unknown stock, because the **reservation** is still a synchronous call. Extending the outbox to an `OrderPlaced` event consumed by inventory (already idempotent by `orderRef`) would close that too.
+Fixed: "order saved but notification lost" (and the reverse) — the event is durable the moment the order commits; a Kafka outage only grows the backlog, users still get 201. A timeout leaves a FAILED order with unknown stock — that is now settled by `OrderReconciler` (after a 2-minute grace: idempotent `release` + CANCELLED + `OrderCancelled` event). Still open: a crash between "save PENDING" and "reserve" leaves a stuck PENDING order, because the **reservation** is still a synchronous call. Extending the outbox to an `OrderPlaced` event consumed by inventory (already idempotent by `orderRef`) would close that too.
 
 ---
 
@@ -606,7 +606,7 @@ SecurityFilterChain filterChain(HttpSecurity http, JwtRolesConverter rolesConver
         .build();
 }
 ```
-Tests: `mockMvc.perform(post(...).with(jwt().authorities(new SimpleGrantedAuthority("ROLE_customer"))))`; no token → 401, `support` posting → 403 (`rejectsRequestsWithoutAValidToken`). Gaps to admit: no per-order ownership check, `aud` not validated.
+Tests: `mockMvc.perform(post(...).with(jwt().authorities(new SimpleGrantedAuthority("ROLE_customer"))))`; no token → 401, `support` posting → 403 (`rejectsRequestsWithoutAValidToken`). Ownership is enforced in the service (`Order.customerId` = JWT `sub`, `Caller.mayAccess`; another customer's order → 404, scoped list, foreign `Idempotency-Key` → 422). Gap to admit: `aud` not validated.
 
 **Q: JWT pros/cons?**
 Pros: stateless validation, no session store, carries claims. Cons: can't revoke easily before expiry (keep access tokens short, 5–15 min, use refresh tokens), size, sensitive data must not go in the payload (it's only encoded, not encrypted).

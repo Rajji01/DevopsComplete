@@ -19,10 +19,11 @@
 | Validation | signature via issuer's **JWKS** (auto-discovered from `issuer-uri`), `exp`, `iss`; algorithm RS256 (asymmetric) | Spring Security defaults |
 | Roles | `realm_access.roles` (Keycloak) **or** `cognito:groups` (Cognito) → `ROLE_<name>` authorities | `JwtRolesConverter` |
 | Rules | `/actuator/**`, swagger → `permitAll`; `GET /api/v1/orders/**` → `customer` or `support`; other `/api/v1/orders/**` → `customer`; everything else `denyAll` | `SecurityConfig` |
+| Ownership | `Order.customerId` = JWT `sub`; `Caller(customerId, support)` from the `Authentication`; `get`/`cancel` → 404 unless owner or support, `list` → `findByCustomerId` unless support; foreign `Idempotency-Key` → 422 | `Caller`, `OrderService`, `V3__order_owner.sql` |
 | Realm | realm `shopflow`, roles `customer`, `support`; users `alice`/`alice` (customer), `bob`/`bob` (support); public client `shopflow-web` (auth code + direct grant), access token lifetime 900s | `shopflow-realm.json` |
 | Test auth | `jwt().authorities(new SimpleGrantedAuthority("ROLE_customer"))`; `@WebMvcTest` imports `SecurityConfig` + `JwtRolesConverter`, `@MockitoBean JwtDecoder` | both order test classes |
 | Cache | `@Cacheable(cacheNames = "products", key = "#sku")` on a **DTO**; `@CacheEvict(key = "#sku")` in `reserve`, `allEntries = true` in `release` | `ProductController`, `ReservationService` |
-| Cache backend | `CACHE_TYPE=simple` (ConcurrentHashMap) by default/tests; `redis` in compose/K8s; TTL 60s, key prefix `inventory:`, values stored as JSON (`CacheConfig`) | `application.yml`, `CacheConfig` |
+| Cache backend | `CACHE_TYPE=simple` (ConcurrentHashMap) by default/tests; `redis` in compose/K8s; TTL 60s, key prefix `inventory:`, values stored as JSON; **fail-open** via `LoggingCacheErrorHandler` (`CacheConfig implements CachingConfigurer`) | `application.yml`, `CacheConfig` |
 | Redis | `redis:7.4-alpine --maxmemory 64mb --maxmemory-policy allkeys-lru`; prod ElastiCache (TLS) | compose, `k8s/base/redis`, `elasticache.tf` |
 | Rate limit | 50 order creations / 1s / pod, `timeout-duration: 0` → immediate **429** ProblemDetail "Too many requests" | `application.yml`, `GlobalExceptionHandler` |
 | Threads | `spring.threads.virtual.enabled: true` (Tomcat + `@Scheduled` + Kafka listener run on virtual threads) | all `application.yml` |
@@ -157,7 +158,39 @@ What Spring's resource server does with `issuer-uri` set:
 
 ShopFlow uses **roles**: `GET /api/v1/orders/**` → `hasAnyRole("customer", "support")`, writes (`POST`, `DELETE`) → `hasRole("customer")`. Test `rejectsRequestsWithoutAValidToken`: no token → **401**, support posting → **403**, liveness without token → 200. 401 = "who are you?" (missing/invalid token), 403 = "I know you, you may not".
 
-`@EnableMethodSecurity` is on `SecurityConfig`, so `@PreAuthorize` works, but **no method is annotated yet** — the rules are URL-based. The natural next step is ownership: today any `customer` can read or cancel *any* order (honest gap). Fix: store `sub` on the order at creation and check `authentication.name == order.ownerSub` in the service or with `@PostAuthorize`.
+`@EnableMethodSecurity` is on `SecurityConfig`, so `@PreAuthorize` would work, but ShopFlow enforces the **permission** level (ownership) in plain service code instead of an annotation — see A4.1. Reason: the check needs the loaded row (`order.customerId`) and must produce a 404, which is awkward to express in SpEL; a `@PostAuthorize` would throw `AccessDeniedException` → 403.
+
+### A4.1 Object-level authorization / IDOR (OWASP API #1) — as implemented
+
+Roles answer "may this *kind* of user call this endpoint"; they say nothing about *which* row. Without a second check, any authenticated `customer` could `GET /api/v1/orders/42` or cancel it — an **Insecure Direct Object Reference**. ShopFlow closes it in three places:
+
+```java
+// order/Caller.java — built once per request from the Authentication
+public record Caller(String customerId, boolean support) {
+    public static Caller from(Authentication a) {           // customerId = a.getName() = JWT sub; support = has ROLE_support
+        ...
+    }
+    boolean mayAccess(Order order) { return support || order.isOwnedBy(customerId); }
+}
+
+// OrderService
+public Order get(long id, Caller caller) {                    // 404 (not 403) for someone else's order: don't reveal that the id exists
+    return orderRepository.findById(id).filter(caller::mayAccess).orElseThrow(() -> new OrderNotFoundException(id));
+}
+public Page<Order> list(Pageable p, Caller caller) {           // the query itself is scoped, not filtered after the fact
+    return caller.support() ? orderRepository.findAll(p) : orderRepository.findByCustomerId(caller.customerId(), p);
+}
+public Order cancel(long id, Caller caller) { Order order = get(id, caller); ... }
+```
+
+- **Where the owner comes from**: `placeOrder(..., Caller)` stamps `Order.customerId = caller.customerId()` (the JWT `sub`), persisted as `customer_id not null` (`V3__order_owner.sql`, index `idx_orders_customer_created (customer_id, created_at desc)` for "my orders, newest first"). The owner is never taken from the request body.
+- **404, not 403**: a 403 confirms the id exists ("there is an order 42, just not yours") and turns sequential ids into an enumeration oracle; the same `OrderNotFoundException` for "missing" and "not yours" leaks nothing. Trade-off: slightly less helpful error for a legitimate client with a typo — acceptable.
+- **Scoped query, not post-filtering**: `list` uses `findByCustomerId`, so pagination counts are correct and a bug in a mapper cannot leak other rows.
+- **Idempotency-Key is an object too**: a replay is only honoured for the customer who created the order; another `sub` with the same key gets `IdempotencyKeyConflictException` → **422 "Idempotency-Key conflict"** (otherwise a guessed key would return someone else's order — IDOR through a side door).
+- **Support role** (`ROLE_support`) bypasses ownership for reads; `DELETE` still needs `customer` by URL rule, so support cannot cancel (S2).
+- **Tests**: `customersOnlySeeTheirOwnOrders` (alice creates; mallory gets 404 on GET and DELETE, zero `DELETE /reservations` calls reach WireMock; owner and support get 200; mallory's list excludes the id, support's includes it) and `idempotencyKeyOfAnotherCustomerIsRejected`.
+
+Say: *"Authentication tells me who you are, the role rule tells me what kind of thing you may do, and the ownership check in the service tells me which rows you may do it to. All three run on every request."*
 
 `JwtRolesConverter` replaces Spring's default `JwtGrantedAuthoritiesConverter` (which only reads `scope`/`scp`) because Keycloak/Cognito put roles in nested/custom claims; the `ROLE_` prefix is what `hasRole()` expects.
 
@@ -184,7 +217,7 @@ Say: *"Defense in depth: NetworkPolicy today, and I would add client-credentials
 
 | Risk | ShopFlow status |
 |---|---|
-| API1 Broken object-level authorization | **gap**: any `customer` can `GET/DELETE` any order id → add ownership check |
+| API1 Broken object-level authorization | **closed**: `Order.customerId` = JWT `sub`; `Caller.mayAccess` in `OrderService.get/list/cancel` (owner or support); foreign ids → 404, foreign `Idempotency-Key` → 422 (A4.1) |
 | API2 Broken authentication | JWT validated (signature, exp, iss); short-lived tokens; direct grant only for local testing |
 | API3 Broken object property level auth | DTO records (`OrderResponse`) — entities and `version`/internal fields are never exposed |
 | API4 Unrestricted resource consumption | `@RateLimiter` 50 rps/pod → 429; pagination `size ≤ 100`; `quantity ≤ 100`; timeouts on downstream calls; memory limits |
@@ -216,7 +249,7 @@ Spring Security adds defaults: `Cache-Control: no-store`, `X-Content-Type-Option
 
 | Pattern | Read | Write | Pros / cons |
 |---|---|---|---|
-| **Cache-aside** (ShopFlow) | app checks cache → miss → DB → put | app writes DB and **evicts** (or updates) cache | simple, cache failure = just misses; risk of stale data between write and evict |
+| **Cache-aside** (ShopFlow) | app checks cache → miss → DB → put | app writes DB and **evicts** (or updates) cache | simple, cache failure = just misses (ShopFlow: `LoggingCacheErrorHandler` makes that literally true); risk of stale data between write and evict |
 | Read-through | cache loads from DB itself (loader) | — | app code simpler; needs a cache that supports loaders (Caffeine `LoadingCache`) |
 | Write-through | — | write to cache, cache writes DB synchronously | always consistent, slower writes |
 | Write-behind | — | write to cache, flush to DB async | fastest writes; data loss if cache dies, ordering issues |
@@ -245,6 +278,7 @@ Why each decision:
 - **TTL as a safety net**: eviction can be missed (a new write path, a Redis blip during evict) — TTL bounds the staleness to 60s.
 - **`allEntries = true` on release**: `release(orderRef)` only learns the SKU after loading the reservation; a precise `@CacheEvict(key = "#result...")` is not possible for a `void` method. Releases are rare, so flushing the whole `products` cache is acceptable — mention the alternative (evict manually via `CacheManager` inside the method).
 - **Test**: `productReadIsCachedAndEvictedOnReserve` — GET caches (`cacheManager.getCache("products").get("PIXEL-9")` not null), `reserve` evicts (null), next GET shows `quantity - 1`.
+- **Fail open**: `CacheConfig implements CachingConfigurer` and overrides `errorHandler()` to return Spring's `LoggingCacheErrorHandler`. The default `SimpleCacheErrorHandler` rethrows, so with `CACHE_TYPE=redis` a Redis outage would turn every `GET /products/{sku}` into a 500 and every `reserve`/`release` (which `@CacheEvict`) into a failed write — the cache would be a **hard dependency**. With the logging handler a failing `get` is treated as a miss (method body runs, DB answers), a failing `put`/`evict` is logged and ignored. Consequence to state honestly: a failed *evict* can leave a stale value until the 60s TTL — bounded staleness in exchange for availability. Readiness already excluded Redis (`REDIS_HEALTH=false` default); now the request path matches that intent.
 
 The serializer pitfall, and how ShopFlow handles it (a classic "works with `simple`, explodes on the first Redis put" bug): Spring Boot's `RedisCacheManager` defaults to **JDK serialization** for values, which requires `Serializable`; `ProductResponse` is a plain record and does not implement it, so with `CACHE_TYPE=redis` the first put would throw `SerializationException`. ShopFlow fixes it in `config/CacheConfig.java` with one bean, a `RedisCacheManagerBuilderCustomizer` that sets `builder.cacheDefaults().serializeValuesWith(SerializationPair.fromSerializer(new GenericJackson2JsonRedisSerializer()))` — values are JSON with a type hint, readable in `redis-cli`, and class changes do not break the cache. `CacheSerializationTest` pins the round-trip of `ProductResponse` through that serializer; the customizer is only applied when the cache type is `redis`, so the `simple` cache in tests is untouched. Remaining gap to admit: no test runs the full `@Cacheable` path against a real Redis (Testcontainers would close it).
 
@@ -257,6 +291,7 @@ The serializer pitfall, and how ShopFlow handles it (a classic "works with `simp
 5. **Conditional**: `condition = "#quantity > 0"`, `sync = true` to coalesce concurrent misses for the same key in one JVM (stampede protection).
 6. **Transactions**: `@CacheEvict` runs when the method returns — *before* the surrounding `@Transactional` commits (`reserve` is annotated with both). A concurrent reader can re-populate the cache with the **old** value between evict and commit. Mitigation: make the cache manager transaction-aware (`RedisCacheManager.builder(...).transactionAware()` / `TransactionAwareCacheManagerProxy`, which defers evictions to after commit), or evict in an `@TransactionalEventListener(phase = AFTER_COMMIT)`. ShopFlow's TTL (60s) bounds the damage.
 7. **`type: simple` across pods**: each pod has its own map → a reserve on pod A does not evict pod B's copy. That is why compose/K8s set `CACHE_TYPE=redis` (shared).
+8. **Error handling**: the default `CacheErrorHandler` propagates Redis exceptions into your business method. Override `CachingConfigurer.errorHandler()` (ShopFlow: `LoggingCacheErrorHandler`) or write a custom handler that also bumps a metric; never let a cache outage fail a read path.
 
 ## B3. Redis essentials
 
@@ -295,7 +330,7 @@ Reading the key: Spring's default `CacheKeyPrefix` is `<cacheName>::`, so with `
 - **Cache stampede / thundering herd**: a hot key expires → hundreds of requests miss at once → DB spike. Fixes: `sync = true` (per-JVM coalescing), **single-flight / lock** (`SET lock NX PX`), **jittered TTL** (60s ± 10%), **stale-while-revalidate** / probabilistic early refresh, request collapsing at the gateway, or never expire + explicit evict.
 - **Consistency**: cache-aside + evict gives *eventual* consistency with a small window (evict-before-commit race, replication lag). For stock, ShopFlow sidesteps the problem: reservation decisions never use the cache.
 - **Hot keys**: one SKU (flash sale) hammers one Redis shard → local L1 cache (Caffeine, ~1s TTL) in front of Redis (L2), key replication (`sku#1..N` suffixes), or serve the product page from a CDN.
-- **Local (Caffeine) vs distributed (Redis)**: Caffeine is in-process (ns latency, no network, no serialization, size/TTL/weight-based eviction, W-TinyLFU) but per pod and lost on restart; Redis is shared, survives pod restarts, supports TTL/eviction policies centrally, but adds ~1ms network + serialization + a dependency. Common: two-level cache. `type: simple` in ShopFlow is a Caffeine-less `ConcurrentHashMap` with **no eviction and no TTL** — fine for tests, never for prod (unbounded growth).
+- **Local (Caffeine) vs distributed (Redis)**: Caffeine is in-process (ns latency, no network, no serialization, size/TTL/weight-based eviction, W-TinyLFU) but per pod and lost on restart; Redis is shared, survives pod restarts, supports TTL/eviction policies centrally, but adds ~1ms network + serialization + a dependency (soft in ShopFlow thanks to the fail-open error handler). Common: two-level cache. `type: simple` in ShopFlow is a Caffeine-less `ConcurrentHashMap` with **no eviction and no TTL** — fine for tests, never for prod (unbounded growth).
 - **Cache metrics**: `cache_gets_total{result="hit|miss"}`, `cache_puts_total`, `cache_evictions_total` via Micrometer `CacheMetricsRegistrar` (auto for Redis/Caffeine; the simple cache exposes limited stats). Alert on hit ratio collapse.
 
 ---
@@ -515,7 +550,7 @@ Field names depend on the ECS layout (`log.level` → `log_level`, `trace.id` �
 
 ---
 
-## E. Interview Q&A (28)
+## E. Interview Q&A (30)
 
 **Q1. How is order-service secured?**
 It is an OAuth2 resource server: stateless, CSRF off, every `/api/v1/orders` request needs a bearer JWT issued by the configured issuer (Keycloak locally, Cognito in prod). Spring fetches the issuer's JWKS, verifies the RS256 signature, `exp` and `iss`, and my `JwtRolesConverter` maps `realm_access.roles` or `cognito:groups` to `ROLE_*`. Reads need `customer` or `support`, writes need `customer`; actuator/swagger are open but network-restricted; anything else is denied.
@@ -536,7 +571,7 @@ CSRF exploits credentials the browser sends automatically (cookies). We use a be
 401: not authenticated (missing/invalid/expired token) — the test posts without a token. 403: authenticated but not allowed — `support` posting an order.
 
 **Q7. Role vs scope?**
-Role = what the user is (from the IdP); scope = what the client application was allowed to request on the user's behalf. Fine-grained ownership is a permission check in code (`@PreAuthorize`), which ShopFlow does not do yet — any customer can read any order. I would store `sub` on the order and check it.
+Role = what the user is (from the IdP); scope = what the client application was allowed to request on the user's behalf. Fine-grained ownership is a permission check in code: ShopFlow stores the JWT `sub` on the order (`customerId`) and `OrderService` checks `Caller.mayAccess` (owner or support) on `get`/`cancel` and scopes `list` with `findByCustomerId`.
 
 **Q8. How do you test security without Keycloak?**
 `spring-security-test`: `mockMvc.perform(post(...).with(jwt().authorities(new SimpleGrantedAuthority("ROLE_customer"))))` injects an authenticated JWT; in the `@WebMvcTest` slice I `@Import` `SecurityConfig` + `JwtRolesConverter` and `@MockitoBean` the `JwtDecoder` so the context starts without an issuer.
@@ -548,10 +583,10 @@ NetworkPolicy: only pods labelled `order-service` reach inventory:8082, and `/ap
 Kubernetes Secrets generated in dev, `ExternalSecret` from Secrets Manager (ESO + IRSA) in prod; GHCR via `GITHUB_TOKEN`; AWS via OIDC; only `health,info,prometheus` actuator endpoints; Trivy + Dependabot for supply-chain.
 
 **Q11. Which OWASP API risk is your biggest gap?**
-API1 broken object-level authorization — ownership is not enforced. Second: `aud` is not validated, so a token minted for another API of the same issuer would be accepted.
+It *was* API1 broken object-level authorization — now closed with the `Caller`/`customerId` ownership check (404 for foreign ids, 422 for a foreign Idempotency-Key). The remaining one is `aud`: it is not validated, so a token minted for another API of the same issuer would be accepted; and inventory/notification trust the network (NetworkPolicy) rather than a caller identity.
 
 **Q12. Cache-aside vs write-through?**
-Cache-aside: the app reads through the cache and on writes updates the DB then evicts — simple, tolerant to cache outages, briefly stale. Write-through: writes go to the cache which writes the DB synchronously — consistent but slower and the cache becomes critical. ShopFlow is cache-aside with evict.
+Cache-aside: the app reads through the cache and on writes updates the DB then evicts — simple, tolerant to cache outages (ShopFlow's `LoggingCacheErrorHandler` turns a Redis error into a logged miss), briefly stale. Write-through: writes go to the cache which writes the DB synchronously — consistent but slower and the cache becomes critical. ShopFlow is cache-aside with evict.
 
 **Q13. Why evict instead of update the cached product?**
 The stock change is a conditional bulk UPDATE; the app never knows the resulting quantity, and two pods updating the cache would race. Evicting and letting the next read fetch the truth is simpler and correct; the 60s TTL bounds any missed eviction.
@@ -601,6 +636,12 @@ Recording a fraction of traces. 1.0 locally (`TRACING_SAMPLE`), 0.1 typical in p
 **Q28. How do traces and logs connect?**
 Boot puts `trace.id`/`span.id` into the ECS JSON log fields; Loki's derived field links them to Tempo, and Tempo's traces-to-logs runs the reverse query. Alloy ships container stdout to Loki with the compose service name as a label.
 
+**Q29. Why does a customer get 404 and not 403 for another customer's order?**
+403 answers "does this id exist?" with yes; 404 answers nothing. With numeric ids that difference is an enumeration oracle. ShopFlow's `OrderService.get` filters by `Caller.mayAccess` and throws the same `OrderNotFoundException` either way; `cancel` reuses `get`, so no release ever reaches inventory for a foreign order (asserted with WireMock in `customersOnlySeeTheirOwnOrders`).
+
+**Q30. What happens to inventory-service if Redis dies?**
+Nothing visible except latency and log noise: `CacheConfig` implements `CachingConfigurer` and returns `LoggingCacheErrorHandler`, so a failing cache `get` is a miss (DB answers), a failing `put`/`evict` is logged. Readiness excludes Redis by default, so pods stay in the Service. Staleness is bounded by the 60s TTL once Redis is back. Without the handler the default `SimpleCacheErrorHandler` rethrows and every cached read would be a 500.
+
 ---
 
 ## F. Scenarios
@@ -637,7 +678,8 @@ Structured logging not active (`LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs` missing i
 - Validating the JWT only at the gateway and trusting internal traffic blindly (zero trust says every service validates).
 - Storing JWTs in `localStorage` for SPAs (XSS) without discussion of the trade-off vs httpOnly cookies + CSRF.
 - Exposing `/actuator/env`, `/heapdump`; leaking stack traces in error bodies.
-- Caching JPA entities; caching with unbounded `ConcurrentHashMap` in prod; no TTL; updating the cache from stale app memory instead of evicting; deciding stock from the cache.
+- Checking only roles and forgetting the row (IDOR); answering 403 where it confirms a resource exists.
+- Caching JPA entities; caching with unbounded `ConcurrentHashMap` in prod; no TTL; letting the default `CacheErrorHandler` turn a Redis blip into 500s; updating the cache from stale app memory instead of evicting; deciding stock from the cache.
 - Forgetting that `@Cacheable`/`@RateLimiter`/`@Transactional` are proxies (self-invocation does nothing).
 - Rate limiting per pod and calling it a "global limit"; no `Retry-After`; 429 counted as an error in SLOs.
 - Thread pools of 500 to "fix" latency instead of finding the bottleneck; pool sizes larger than `max_connections`.
@@ -645,4 +687,4 @@ Structured logging not active (`LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs` missing i
 - 100% trace sampling in prod; `traceparent` lost by a hand-built HTTP client; metrics with `orderId` labels (cardinality).
 - Load tests without thresholds or without watching the business invariant (no oversell).
 
-> Tip: Security round me "maine JWT lagaya" se zyada impressive hai "JWT lagaya, lekin ownership check aur `aud` validation abhi gap hai, aur yeh fix karunga". Honest gaps + plan = senior signal.
+> Tip: Security round me "maine JWT lagaya" se zyada impressive hai "JWT lagaya, ownership check bhi lagaya (404 not 403, test ke saath), lekin `aud` validation abhi gap hai, aur yeh fix karunga". Closed gaps + honest remaining gap + plan = senior signal.

@@ -12,14 +12,14 @@
 | Build | Maven multi-module: `shopflow/pom.xml` (parent) → `inventory-service`, `order-service`, `notification-service` |
 | Stack | Spring Boot **3.5.x**, Java **21** (virtual threads on in all three), PostgreSQL, Flyway, Spring Data JPA (Hibernate), Spring Kafka |
 | Resilience | Resilience4j **2.4** (`resilience4j-spring-boot3` + `spring-boot-starter-aop`) — only in order-service: retry, circuit breaker, **rate limiter** (`@RateLimiter("orders")`, 50 rps/pod → 429) |
-| Messaging | **Transactional outbox** (`outbox_event` table, `OutboxRelay` `@Scheduled` + `FOR UPDATE SKIP LOCKED`) → Kafka topic `orders.events` (key `orderRef`, `acks=all`, idempotent producer) → **notification-service** idempotent consumer (`processed_event`), DLT `orders.events.DLT` |
-| Security | order-service is an **OAuth2 resource server** (stateless JWT; Keycloak locally, Cognito in prod; `JwtRolesConverter` maps `realm_access.roles` / `cognito:groups` → `ROLE_*`); inventory/notification have no app auth (NetworkPolicy only) |
-| Caching | inventory-service `@EnableCaching`; `@Cacheable("products")` on `GET /products/{sku}` (DTO), `@CacheEvict` in `reserve`/`release`; `CACHE_TYPE=simple` default, `redis` in compose/K8s, TTL 60s |
+| Messaging | **Transactional outbox** (`outbox_event` table, `OutboxRelay` `@Scheduled` + `FOR UPDATE SKIP LOCKED`, nightly `cleanup` deletes published rows older than 7d) → Kafka topic `orders.events` (key `orderRef`, `acks=all`, idempotent producer) → **notification-service** idempotent consumer (`processed_event`), DLT `orders.events.DLT` |
+| Security | order-service is an **OAuth2 resource server** (stateless JWT; Keycloak locally, Cognito in prod; `JwtRolesConverter` maps `realm_access.roles` / `cognito:groups` → `ROLE_*`); **object-level authorization**: `Order.customerId` = JWT `sub`, `Caller` record (`customerId`, `support`), owner-or-support check in `OrderService` (someone else's order → 404, list scoped by `findByCustomerId`); inventory/notification have no app auth (NetworkPolicy only) |
+| Caching | inventory-service `@EnableCaching`; `@Cacheable("products")` on `GET /products/{sku}` (DTO), `@CacheEvict` in `reserve`/`release`; `CACHE_TYPE=simple` default, `redis` in compose/K8s, TTL 60s; **fail-open**: `CacheConfig implements CachingConfigurer` → `LoggingCacheErrorHandler` (Redis down = logged cache miss, request falls through to the DB) |
 | HTTP client | Spring `RestClient` with `SimpleClientHttpRequestFactory` (connect 1s, read 2s) |
 | API docs | springdoc-openapi → `/swagger-ui.html` |
 | Observability | Actuator (`health`, `info`, `prometheus` exposed), Micrometer Prometheus registry, custom counters; **tracing** via `micrometer-tracing-bridge-otel` + OTLP exporter → Tempo; ECS JSON logs → Loki (Alloy); Grafana links traces↔logs |
 | Error format | RFC 7807 `ProblemDetail` (`application/problem+json`) via `@RestControllerAdvice` (incl. 429 for rate limit) |
-| Tests | `@SpringBootTest` + `MockMvc`, H2 in `MODE=PostgreSQL`, WireMock standalone for inventory, `@EmbeddedKafka`, `spring-security-test` `jwt()`; one `@WebMvcTest` slice. Counts: inventory **10**, order **12 + 2**, notification **2** = 26 |
+| Tests | `@SpringBootTest` + `MockMvc`, H2 in `MODE=PostgreSQL`, WireMock standalone for inventory, `@EmbeddedKafka`, `spring-security-test` `jwt()`; one `@WebMvcTest` slice. Counts: inventory **10 + 1** (`CacheSerializationTest`), order **15 + 2 + 1** (`OrderServiceApplicationTests`, `OrderControllerWebTest`, `OutboxCleanupTest`), notification **2** = 31 |
 | Ports | order-service **8081**, inventory-service **8082**, notification-service **8083**, Keycloak **8180** |
 | Packaging | `<finalName>app</finalName>` → `target/app.jar`; `build-info` goal → version at `/actuator/info` |
 | Container | one multi-stage, layered, non-root `shopflow/Dockerfile` (`--build-arg SERVICE=...`), `MaxRAMPercentage=75` |
@@ -152,21 +152,22 @@ Points to say about the diagram:
 |---|---|---|
 | `product` (inventory) | `sku unique`, `quantity integer not null check (quantity >= 0)` | DB itself refuses negative stock — last line of defence |
 | `reservation` (inventory) | `order_ref unique`, `sku references product(sku)`, `status` RESERVED/RELEASED, `check (quantity > 0)` | unique `order_ref` = idempotency; one reservation per order |
-| `orders` (order) | `order_ref unique`, `idempotency_key unique` (nullable), `status`, `failure_reason`, `version bigint`, index `idx_orders_created_at (created_at desc)` | duplicate-POST protection; optimistic lock; fast "newest first" listing |
+| `orders` (order) | `order_ref unique`, `idempotency_key unique` (nullable), **`customer_id not null`** (JWT `sub`, `V3__order_owner.sql`), `status`, `failure_reason`, `version bigint`, indexes `idx_orders_created_at (created_at desc)`, `idx_orders_customer_created (customer_id, created_at desc)`, `idx_orders_status_updated (status, updated_at)` | duplicate-POST protection; **ownership** (who may read/cancel); optimistic lock; fast "my orders, newest first" listing; reconciler query "FAILED older than X" |
 | `outbox_event` (order) | `id uuid pk`, `aggregate_type`, `aggregate_id` (= orderRef = Kafka key), `event_type`, `payload text` (JSON), `created_at`, `published_at` nullable, index `idx_outbox_pending (published_at, created_at)` | transactional outbox: written in the same tx as the order; relay publishes rows where `published_at is null` oldest-first |
 | `processed_event` (notification) | `event_id uuid pk`, `order_ref`, `processed_at` | idempotent consumer: duplicate delivery hits the PK and is skipped |
 
 > Note: the table is `orders`, not `order` — `order` is a reserved SQL word (comment in `Order.java`).
+> `V3__order_owner.sql` is written as expand → backfill (`'unknown'`) → `NOT NULL` in one file, with a comment that on a live table the `NOT NULL` step would ship in a later release (expand/contract).
 > Simplification: one order = one SKU + quantity (no order lines). Be upfront about it.
 
 ### API surface
 
 | Service | Method & path | Success | Errors |
 |---|---|---|---|
-| order | `POST /api/v1/orders` (+ optional `Idempotency-Key`) — role `customer` | `201 Created` + `Location` (new), `200 OK` (replay) | 400 validation, 401 no/invalid JWT, 403 wrong role, 409 concurrent same key, 429 rate limit (50/s/pod), 503 inventory unavailable (body has `orderId`) |
-| order | `GET /api/v1/orders/{id}` — role `customer` or `support` | 200 | 401, 403, 404 |
-| order | `GET /api/v1/orders?page=0&size=20` — `customer`/`support` | 200, `PagedModel` (`content` + `page` metadata), newest first | 400 if `size > 100` |
-| order | `DELETE /api/v1/orders/{id}` (cancel) — role `customer` | 200 with `CANCELLED` order | 404, 409 not cancellable, 503 inventory down |
+| order | `POST /api/v1/orders` (+ optional `Idempotency-Key`) — role `customer`; the order is stamped with the caller's JWT `sub` | `201 Created` + `Location` (new), `200 OK` (replay **by the same customer**) | 400 validation, 401 no/invalid JWT, 403 wrong role, 409 concurrent same key, **422 "Idempotency-Key conflict"** (key already used by another customer), 429 rate limit (50/s/pod), 503 inventory unavailable (body has `orderId`) |
+| order | `GET /api/v1/orders/{id}` — **owner** (`customer`) or `support` | 200 | 401, 403 (wrong role), 404 (unknown id **or someone else's order** — same response, so ids are not enumerable) |
+| order | `GET /api/v1/orders?page=0&size=20` — `customer`/`support` | 200, `PagedModel` (`content` + `page` metadata), newest first; a `customer` sees **only their own orders** (`findByCustomerId`), `support` sees all | 400 if `size > 100` |
+| order | `DELETE /api/v1/orders/{id}` (cancel) — role `customer`, **owner only** | 200 with `CANCELLED` order | 404 (also for another customer's order), 409 not cancellable, 503 inventory down |
 | inventory | `GET /api/v1/products`, `GET /api/v1/products/{sku}` (cached, key = sku) | 200 | 404 |
 | inventory | `POST /api/v1/reservations` `{orderRef, sku, quantity}` | 201 (also on idempotent replay) | 400, 404 unknown SKU, 409 insufficient stock / concurrent |
 | inventory | `DELETE /api/v1/reservations/{orderRef}` | 204 (always, idempotent) | — |
@@ -181,8 +182,8 @@ Note: a REJECTED order still returns **201** — the HTTP request succeeded (an 
 
 0. **Authentication + rate limit** — Spring Security's filter chain runs first: the bearer JWT is validated against the issuer's JWKS (signature, `exp`, `iss`) and `JwtRolesConverter` turns `realm_access.roles` / `cognito:groups` into `ROLE_*`; no/invalid token → **401**, a token without `customer` → **403** (test `rejectsRequestsWithoutAValidToken`). Then the Resilience4j `@RateLimiter("orders")` proxy on `OrderController.create` takes a permit (50 per second per pod, `timeout-duration: 0`); none left → `RequestNotPermitted` → **429** ProblemDetail (test `rateLimitExceededIs429`).
 1. **Validation** — `OrderController.CreateOrderRequest` is a record with `@NotBlank @Size(max=64) sku` and `@Min(1) @Max(100) quantity`. Because the `Idempotency-Key` header parameter carries `@Size(max=100)`, Spring 6.1+ method validation applies to the whole method, so an invalid body raises `HandlerMethodValidationException` (not `MethodArgumentNotValidException`) → `GlobalExceptionHandler.handleHandlerMethodValidationException` (overridden from `ResponseEntityExceptionHandler`) adds a sorted `errors` list like `["quantity: must be greater than or equal to 1", "sku: must not be blank"]` → **400 ProblemDetail**. `handleMethodArgumentNotValid` is overridden the same way for plain `@Valid @RequestBody` endpoints (e.g. inventory's reservations).
-2. **Idempotency check** — `OrderService.placeOrder` calls `orderRepository.findByIdempotencyKey(key)`. If found → return existing order with `created=false` → controller returns **200** with the same body. Inventory is **not called again** (test `idempotencyKeyPreventsDuplicateOrders` verifies exactly 1 POST to WireMock).
-3. **Save PENDING** — `Order.pending(sku, qty, key)` generates `orderRef = UUID`, status `PENDING`; `orderRepository.save(...)` commits in its own short transaction (Spring Data repository methods are transactional by default). If two requests with the same key race, the second insert hits the `idempotency_key` unique constraint → `DataIntegrityViolationException` → **409 "Concurrent request"**.
+2. **Idempotency check** — the controller builds a `Caller.from(authentication)` (record: `customerId` = JWT `sub` via `authentication.getName()`, `support` = has `ROLE_support`) and passes it to `OrderService.placeOrder`, which calls `orderRepository.findByIdempotencyKey(key)`. If found **and owned by this caller** → return existing order with `created=false` → controller returns **200** with the same body. Inventory is **not called again** (test `idempotencyKeyPreventsDuplicateOrders` verifies exactly 1 POST to WireMock). If the key exists but belongs to **another customer** → `IdempotencyKeyConflictException` → **422 "Idempotency-Key conflict"** — never replay someone else's order to a different user (test `idempotencyKeyOfAnotherCustomerIsRejected`).
+3. **Save PENDING** — `Order.pending(sku, qty, key, caller.customerId())` generates `orderRef = UUID`, status `PENDING`, stamps `customerId`; `orderRepository.save(...)` commits in its own short transaction (Spring Data repository methods are transactional by default). If two requests with the same key race, the second insert hits the `idempotency_key` unique constraint → `DataIntegrityViolationException` → **409 "Concurrent request"**.
 4. **Remote call** — `inventoryClient.reserve(orderRef, sku, qty)`:
    - Proxy order: **Retry( CircuitBreaker( HTTP call ) )** (Resilience4j default aspect order — Retry is outermost).
    - Timeouts: `inventory.connect-timeout: 1s`, `inventory.read-timeout: 2s`.
@@ -204,13 +205,23 @@ Note: a REJECTED order still returns **201** — the HTTP request succeeded (an 
 
 `DELETE /api/v1/orders/{id}` → `OrderService.cancel`:
 
-1. Load order (404 if missing).
+1. `get(id, caller)`: load the order and filter with `caller.mayAccess(order)` (`support || order.isOwnedBy(customerId)`); missing **or not yours** → `OrderNotFoundException` → **404** (deliberately not 403: a 403 would confirm the id exists — test `customersOnlySeeTheirOwnOrders` also verifies that no `DELETE /reservations` reaches inventory for the foreign cancel).
 2. `isCancellable()` is true only for **CONFIRMED** or **FAILED**. Otherwise `OrderNotCancellableException` → 409 (so cancelling twice gives 409, not a second release — test `cancelReleasesReservedStock`).
 3. `inventoryClient.release(orderRef)` → `DELETE /api/v1/reservations/{orderRef}` (also retried + breaker-protected).
 4. Inventory `ReservationService.release`: if a reservation exists **and** is RESERVED → mark RELEASED and `incrementStock` (and `@CacheEvict(allEntries = true)` on the `products` cache). Unknown or already released → **no-op, 204**. This is what makes it safe to cancel a FAILED order whose real outcome is unknown.
 5. `order.cancel()` → `saveWithEvent` (order + `OrderCancelled` outbox row) → counter → notification-service later logs "Order … was cancelled".
 
 Why **FAILED is cancellable**: FAILED means "we don't know" — the request may have timed out *after* inventory committed. Releasing an unknown `orderRef` is a harmless no-op, so cancel is always safe.
+
+### FAILED orders — automatic reconciliation (saga timeout)
+
+A customer should not have to cancel a FAILED order by hand. `OrderReconciler` (`@Scheduled(fixedDelayString = "${orders.reconcile.delay:60s}")`) calls `OrderService.reconcileFailedOrders(grace)` with `orders.reconcile.grace: 2m`:
+
+1. `orderRepository.findTop100ByStatusAndUpdatedAtBefore(FAILED, now - grace)` (index `idx_orders_status_updated`) — orders whose inventory outcome has been unknown for longer than the grace period.
+2. For each: `inventoryClient.release(orderRef)` (idempotent — a no-op if nothing was reserved, frees the stock if the timeout happened after inventory committed) → `order.cancel()` → `saveWithEvent` (`OrderCancelled` outbox event) → `orders_total{status="CANCELLED"}`.
+3. If inventory is **still** unavailable (`RestClientException` / `CallNotPermittedException`), the batch stops (`break`) and the orders stay FAILED until the next run — no point hammering a dead dependency.
+
+Result: the customer gets a definite CANCELLED instead of limbo, and leaked reservations are freed within ~3 minutes of inventory coming back. Test `reconcilerCancelsStaleFailedOrdersOnceInventoryIsBack`: with inventory returning 503 the reconciler settles 0; once it returns 204 the order is CANCELLED. Why release instead of re-calling `reserve` to learn the truth: the customer already received a 503, so confirming the order minutes later would surprise them; releasing is the conservative, always-safe choice.
 
 ---
 
@@ -323,17 +334,20 @@ Worst case when inventory hangs (accepts connection, never answers): 3 attempts 
 | Invalid request | 400 ProblemDetail with `errors` list | none created | untouched | client fixes input |
 | Out of stock / unknown SKU | 201, `status: REJECTED`, `failureReason` | REJECTED | untouched | client retries with new key / different qty |
 | Inventory 5xx once, then OK | 201 CONFIRMED (slightly slower) | CONFIRMED | reserved once | automatic (retry) |
-| Inventory down / timing out | 503 "Inventory unavailable" with `orderId` | FAILED | **unknown** — maybe reserved if the timeout happened after commit | user/ops cancels → idempotent release |
+| Inventory down / timing out | 503 "Inventory unavailable" with `orderId` | FAILED → CANCELLED | **unknown** — maybe reserved if the timeout happened after commit | user cancels (idempotent release) or `OrderReconciler` releases + cancels after 2m grace |
 | Many failures | 503 instantly (breaker OPEN) | FAILED | untouched | breaker half-opens after 10s |
-| Read timeout but inventory committed | 503 | FAILED | **reserved (leaked)** | cancel releases it. Gap: no automatic reconciliation |
+| Read timeout but inventory committed | 503 | FAILED → CANCELLED | **reserved (leaked)** until released | cancel releases it, or `OrderReconciler` does (release is idempotent; stops the batch while inventory is still down) |
 | Duplicate POST with same key | 200 with original order | unchanged | unchanged | — |
 | Two concurrent POSTs, same key | one 201, other 409 "Concurrent request" | one order | reserved once | client retries → gets 200 |
-| order-service crashes after saving PENDING, before reserve result | connection error | **stuck PENDING** | maybe reserved | Gap: needs a sweeper job; PENDING is not cancellable today |
+| order-service crashes after saving PENDING, before reserve result | connection error | **stuck PENDING** | maybe reserved | Gap: the reconciler handles only FAILED; PENDING needs a sweeper (e.g. mark FAILED after N minutes, then the reconciler takes over); PENDING is not cancellable today |
 | Order DB down | readiness DOWN → pod removed from Service; requests 500 | — | — | K8s routes elsewhere / DB recovers |
-| Cancel while inventory down | 503 | stays CONFIRMED/FAILED | still reserved | retry cancel later (release is idempotent) |
+| Cancel while inventory down | 503 | stays CONFIRMED/FAILED | still reserved | retry cancel later (release is idempotent); a FAILED order is settled by the reconciler anyway |
+| Another customer's order id in `GET`/`DELETE` | 404 (not 403) | unchanged | unchanged | — (`customersOnlySeeTheirOwnOrders`) |
+| Idempotency-Key reused by a different customer | 422 "Idempotency-Key conflict" | unchanged | unchanged | client picks its own key (`idempotencyKeyOfAnotherCustomerIsRejected`) |
+| Redis down (inventory) | product reads slower, still 200 | — | — | `LoggingCacheErrorHandler`: cache errors logged, reads fall through to Postgres (fail-open) |
 | Pod receives SIGTERM | in-flight requests finish (`server.shutdown: graceful`, 20s phase timeout) | — | — | new requests go to other pods |
 
-> Tip: Interviewers love it when you list your own gaps ("stuck PENDING", "FAILED may leak stock") and how you'd fix them. Yeh maturity dikhata hai.
+> Tip: Interviewers love it when you list your own gaps ("stuck PENDING", "PENDING replay returns a stale order") and what you already closed (FAILED reconciliation, ownership check). Yeh maturity dikhata hai.
 
 ### 4.9 Other small but explainable decisions
 
@@ -345,6 +359,9 @@ Worst case when inventory hangs (accepts connection, never answers): 3 attempts 
 - **Graceful shutdown** — `server.shutdown: graceful` + `spring.lifecycle.timeout-per-shutdown-phase: 20s`; pairs with the Deployment's `preStop: sleep 5` and `terminationGracePeriodSeconds: 45` (must exceed preStop + shutdown phase: 5 + 20 < 45).
 - **Metrics** — `management.metrics.tags.application` tags every metric with the service name; `percentiles-histogram.http.server.requests: true` publishes histogram buckets so Prometheus can compute p95/p99 with `histogram_quantile`.
 - **Business metrics** — `orders_total{status=...}` (order-service), `inventory_reservations_rejected_total` (inventory-service), `outbox_unpublished` gauge (order-service), `notifications_sent_total{type}` / `notifications_duplicates_total` (notification-service). Alerts (`monitoring/alert-rules.yml`): 5xx ratio > 5% (HighErrorRate), p99 > 1s excluding `/actuator` (HighP99Latency), `rate(resilience4j_circuitbreaker_not_permitted_calls_total{name="inventory"}[5m]) > 0` (InventoryCircuitOpen), `up == 0` (ServiceDown), `outbox_unpublished > 100` for 5m (OutboxBacklogGrowing — Kafka down or relay stuck), consumer lag > 1000 for 10m (KafkaConsumerLagHigh). A business alert to add: spike in `orders_total{status="FAILED"}`.
+- **Outbox housekeeping** — `OutboxRelay.cleanup()` (`@Scheduled(cron = "${outbox.cleanup.cron:0 30 3 * * *}")`, 03:30 UTC daily) runs `OutboxRepository.deletePublishedBefore(now - outbox.cleanup.retention)` (`7d`): a `@Modifying` JPQL delete of rows with `published_at < :before`; unpublished rows are never touched. Published rows are only kept for debugging, so without this the table would grow forever. Test `OutboxCleanupTest.deletesOnlyPublishedEventsOlderThanRetention`.
+- **Cache fail-open** — inventory's `CacheConfig implements CachingConfigurer` and returns a `LoggingCacheErrorHandler`: a Redis `get`/`put`/`evict` error is logged and the `@Cacheable` method body runs against the DB. A cache must never be a hard dependency of a read path (readiness already excluded Redis by default; now the request path tolerates it too).
+- **MSK profile** — `application-aws.yml` (order- and notification-service) sets `security.protocol: SASL_SSL`, `sasl.mechanism: AWS_MSK_IAM`, `sasl.jaas.config: ...IAMLoginModule required;`, `sasl.client.callback.handler.class: ...IAMClientCallbackHandler`; runtime dependency `software.amazon.msk:aws-msk-iam-auth:2.3.9` (version in the parent pom); the prod overlay sets `SPRING_PROFILES_ACTIVE=aws` on both Deployments. Credentials come from the IRSA role via the AWS default chain — no username/password anywhere.
 - **Tracing** — parent pom brings `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp`; `management.tracing.sampling.probability: ${TRACING_SAMPLE:1.0}`, `management.otlp.tracing.endpoint: ${OTLP_ENDPOINT:...4318/v1/traces}`; `spring.kafka.template/listener.observation-enabled: true` carries the trace through Kafka. Disabled in tests (`management.otlp.tracing.export.enabled: false`).
 - **Virtual threads** — `spring.threads.virtual.enabled: true` in all three services: blocking JDBC/HTTP/Kafka waits no longer pin a platform thread; the DB pool becomes the real concurrency limit (hence explicit `DB_POOL_SIZE`).
 - **Validation error details** — both `GlobalExceptionHandler`s override `handleMethodArgumentNotValid` and `handleHandlerMethodValidationException` to add a sorted `errors` list (`"field: message"`) to the ProblemDetail; asserted in `OrderServiceApplicationTests.validatesRequests`.
@@ -358,12 +375,13 @@ Worst case when inventory hangs (accepts connection, never answers): 3 attempts 
 
 | Test class | Style | What it proves |
 |---|---|---|
-| `inventory-service/src/test/.../InventoryServiceApplicationTests.java` (10 tests) | `@SpringBootTest` + `@AutoConfigureMockMvc` + `@AutoConfigureObservability` + profile `test` (H2 `MODE=PostgreSQL`, cache type `simple`) | idempotent reserve, release-only-once, 409/404/400 mapping, **20-thread no-oversell test**, 8 concurrent retries reserve once, **product read cached and evicted on reserve** (`productReadIsCachedAndEvictedOnReserve` via `CacheManager`), probes + `/actuator/prometheus` |
-| `order-service/src/test/.../OrderServiceApplicationTests.java` (12 tests) | `@SpringBootTest` + MockMvc + **WireMockServer on a dynamic port** wired via `@DynamicPropertySource` (`inventory.base-url`) + **`@EmbeddedKafka(partitions = 1, topics = "orders.events")`**; every request carries `jwt().authorities("ROLE_customer")` | CONFIRMED path, REJECTED without retry, retry after 503 (WireMock *scenario*), 503 + FAILED after 3 attempts, **breaker opens and makes 0 calls**, Idempotency-Key replay, cancel → DELETE call, validation, pagination, **401 / 403 / open liveness**, **outbox → Kafka record keyed by orderRef** (`publishesOrderEventThroughTheOutbox`), readiness independent of inventory |
+| `inventory-service/src/test/.../InventoryServiceApplicationTests.java` (10 tests) + `config/CacheSerializationTest.java` (1) | `@SpringBootTest` + `@AutoConfigureMockMvc` + `@AutoConfigureObservability` + profile `test` (H2 `MODE=PostgreSQL`, cache type `simple`) | idempotent reserve, release-only-once, 409/404/400 mapping, **20-thread no-oversell test**, 8 concurrent retries reserve once, **product read cached and evicted on reserve** (`productReadIsCachedAndEvictedOnReserve` via `CacheManager`), probes + `/actuator/prometheus`; `CacheSerializationTest` pins the JSON round-trip of `ProductResponse` through `GenericJackson2JsonRedisSerializer` |
+| `order-service/src/test/.../OrderServiceApplicationTests.java` (15 tests) | `@SpringBootTest` + MockMvc + **WireMockServer on a dynamic port** wired via `@DynamicPropertySource` (`inventory.base-url`) + **`@EmbeddedKafka(partitions = 1, topics = "orders.events")`**; every request carries a `jwt()` with `ROLE_customer` and a subject (`customer()` = alice, `customer("mallory")`, `support()`) | CONFIRMED path, REJECTED without retry, retry after 503 (WireMock *scenario*), 503 + FAILED after 3 attempts, **breaker opens and makes 0 calls**, Idempotency-Key replay, cancel → DELETE call, validation, pagination, **401 / 403 / open liveness**, **ownership: another customer gets 404 on GET/DELETE and no release reaches inventory, list is scoped, support sees all** (`customersOnlySeeTheirOwnOrders`), **foreign Idempotency-Key → 422** (`idempotencyKeyOfAnotherCustomerIsRejected`), **reconciler: 0 settled while inventory is 503, CANCELLED once it is back** (`reconcilerCancelsStaleFailedOrdersOnceInventoryIsBack`), **outbox → Kafka record keyed by orderRef** (`publishesOrderEventThroughTheOutbox`), readiness independent of inventory |
+| `order-service/src/test/.../OutboxCleanupTest.java` (1 test) | `@SpringBootTest` + `@EmbeddedKafka`, calls `OutboxRelay.cleanupPublishedBefore` directly | a published row older than the cut-off is deleted, an unpublished row is kept (`deletesOnlyPublishedEventsOlderThanRetention`) |
 | `order-service/src/test/.../OrderControllerWebTest.java` (2 tests) | `@WebMvcTest(OrderController.class)` + `@Import(SecurityConfig, JwtRolesConverter)` + `@MockitoBean JwtDecoder` + `@MockitoBean OrderService` | error mappings hard to provoke end-to-end: optimistic-lock → **409**, `RequestNotPermitted` → **429** |
 | `notification-service/src/test/.../NotificationServiceApplicationTests.java` (2 tests) | `@SpringBootTest` + `@EmbeddedKafka(topics = {"orders.events", "orders.events.DLT"})` + Awaitility | same event delivered twice → processed once (`notifications.duplicates` ≥ 1, `notifications.sent` = 1); **poison pill ("this is not json") goes to the DLT and the next event is still processed** |
 
-Test-profile tweaks (`application-test.yml`): H2 URL, `spring.kafka.bootstrap-servers: ${spring.embedded.kafka.brokers}`, a fake `issuer-uri` (never contacted — `jwt()` injects the authentication), `inventory.read-timeout: 500ms`, retry `wait-duration: 10ms`, `outbox.relay.delay: 100ms`, tracing export off → fast tests. 26 tests in total.
+Test-profile tweaks (`application-test.yml`): H2 URL, `spring.kafka.bootstrap-servers: ${spring.embedded.kafka.brokers}`, a fake `issuer-uri` (never contacted — `jwt()` injects the authentication), `inventory.read-timeout: 500ms`, retry `wait-duration: 10ms`, `outbox.relay.delay: 100ms`, tracing export off → fast tests. 31 tests in total.
 
 Honest limitation: H2 is "Postgres-like", not Postgres. Locking semantics and SQL dialect can differ. Next step: **Testcontainers** with a real `postgres:16` image (and `@ServiceConnection`).
 
@@ -392,15 +410,15 @@ Honest limitation: H2 is "Postgres-like", not Postgres. Locking semantics and SQ
 | Improvement | Why | How (concretely) |
 |---|---|---|
 | **Event-driven reservation** | Today order→inventory is still synchronous; an inventory outage = failed orders. The outbox + Kafka already exist for notifications; extending them to the reservation would decouple availability. | Emit `OrderPlaced` from the PENDING save; inventory consumes, reserves idempotently (it already dedupes on `orderRef`), publishes `StockReserved`/`StockRejected`; order consumes and updates status. Cost: the client must poll a PENDING order. |
-| **Reconciliation / sweeper job** | fixes stuck PENDING and leaked FAILED reservations | `@Scheduled` (or K8s CronJob) finds PENDING/FAILED older than N minutes → re-call `reserve` (idempotent) to learn the truth, or release. Make PENDING cancellable. |
-| **Authorization hardening** | any `customer` can read/cancel any order; `aud` not validated; inventory/notification have no app-level auth | store the JWT `sub` on the order and check ownership (`@PreAuthorize` — `@EnableMethodSecurity` is already on); add audience validation; client-credentials tokens or a service mesh (mTLS) between services. |
+| **PENDING sweeper** | `OrderReconciler` settles FAILED orders, but a crash between "save PENDING" and the reserve result still leaves a stuck PENDING | extend the reconciler: PENDING older than N minutes → re-call `reserve` with the same `orderRef` (idempotent, tells us the truth) → CONFIRMED, or mark FAILED and let the existing release path settle it. Make PENDING cancellable; make an Idempotency-Key replay of a PENDING order resume the saga. |
+| **Authorization hardening** | ownership is now enforced (`Caller` / `customerId`), but `aud` is not validated and inventory/notification have no app-level auth | add audience validation (`JwtClaimValidator`); client-credentials tokens or a service mesh (mTLS) between services; optionally move the ownership rule to `@PostAuthorize` (`@EnableMethodSecurity` is already on). |
 | **Distributed rate limiting at the edge** | today only an NGINX Ingress does path routing; the Resilience4j limit is **per pod** (50 rps × N pods) and not per user | NGINX Ingress annotations (`limit-rps`) or Spring Cloud Gateway / Kong with a Redis token bucket per user; add `Retry-After`. |
 | **Redis cache test against a real Redis** | the JDK-serialization trap is already closed: `inventory-service/config/CacheConfig.java` (`RedisCacheManagerBuilderCustomizer` + `GenericJackson2JsonRedisSerializer`) stores values as JSON and `CacheSerializationTest` pins the round-trip — but no test exercises `@Cacheable` against a real Redis | Testcontainers Redis profile running `productReadIsCachedAndEvictedOnReserve`. |
-| **Schema Registry / contract tests** | the event contract is a copied record with `ignoreUnknown`; a rename would silently break the consumer | Avro/JSON Schema + registry with BACKWARD compatibility in CI, or a shared contract test; `aws-msk-iam-auth` client config for MSK. |
+| **Schema Registry / contract tests** | the event contract is a copied record with `ignoreUnknown`; a rename would silently break the consumer | Avro/JSON Schema + registry with BACKWARD compatibility in CI, or a shared contract test. |
 | **Testcontainers** | real Postgres/Kafka/Redis semantics in tests | `@Testcontainers` + `PostgreSQLContainer` + `@ServiceConnection`. |
-| **Idempotency hardening** | same key + different body; keys never expire | store request hash, 422 on mismatch; TTL cleanup. |
+| **Idempotency hardening** | same key + different body is still replayed (only a different *customer* gets 422 today); keys never expire | store request hash, 422 on mismatch; TTL cleanup. |
 | **Jitter on retries, bulkhead** | avoid thundering herd; isolate inventory call threads | `randomized-wait-factor`; Resilience4j `@Bulkhead`. |
-| **Outbox housekeeping** | published rows are never deleted; polling adds ~1s latency | archive/delete job for `published_at < now() - 7d`; move to Debezium CDC when volume grows. |
+| **Outbox → CDC** | the nightly `cleanup` keeps the table bounded, but polling still adds ~1s latency and one query per second per pod | Debezium CDC on `outbox_event` when volume or latency requirements grow; partition the table by day if the daily delete gets heavy. |
 | **Exemplars + alert on DLT** | traces and metrics are linked only via logs today; nobody is alerted on `orders.events.DLT` | enable exemplar storage in Prometheus; alert on DLT message count / consumer-group lag on the DLT. |
 | **Multi-line orders** | realistic carts | `order_line` table, reserve multiple SKUs in one inventory tx (sort SKUs to avoid deadlocks). |
 
@@ -418,7 +436,7 @@ A single conditional `UPDATE product SET quantity = quantity - :qty WHERE sku = 
 Both may miss `findByOrderRef`, both decrement, but only one insert passes the `order_ref` unique constraint. The loser's transaction rolls back **including its decrement** (same `@Transactional`). `ReservationController` catches that `DataIntegrityViolationException` *outside* the transaction and returns the **winner's reservation with 201**, so both callers see the same answer and stock moves once (`concurrentRetriesOfTheSameOrderReserveOnce`: 8 parallel requests, 8 × 201, stock −1). Why in the controller and not inside `reserve()`? Catching inside the `@Transactional` method would leave the transaction marked rollback-only and still fail at commit. Earlier version returned 409 here, which order-service would have mis-read as "insufficient stock" → REJECTED although stock was reserved; a good example of why a 409 must mean exactly one thing per endpoint.
 
 **Q4. Inventory timed out but actually reserved the stock. Now what?**
-Order is FAILED and the client gets 503 with the `orderId`. The reservation exists. Since `release` is idempotent, cancelling the FAILED order frees the stock. Automatic fix would be a reconciliation job that retries `reserve` with the same `orderRef` — inventory returns the existing reservation, so we learn it succeeded and can mark CONFIRMED.
+Order is FAILED and the client gets 503 with the `orderId`. The reservation may exist. Two ways out, both built on the idempotent `release`: the customer cancels the FAILED order right away, or `OrderReconciler` does it automatically — every 60s it picks up to 100 FAILED orders older than the 2-minute grace, calls `release(orderRef)` (no-op if nothing was reserved) and marks them CANCELLED with an `OrderCancelled` event. The alternative, re-calling `reserve` to learn the truth and confirm, I rejected on purpose: the customer already saw a 503, so a surprise CONFIRMED minutes later is worse than a clean CANCELLED.
 
 **Q5. Why not put `@Transactional` on `placeOrder`?**
 A remote call inside a transaction holds a DB connection for up to ~6.6s; with a pool of 10, ten slow orders block the whole service. Also the remote reservation can't be rolled back by our DB rollback, so the transaction gives false safety. Instead every state change is a short separate save and the status tells us where we stopped.
@@ -433,7 +451,7 @@ They're healthy responses from a healthy service. `InventoryRejectedException` i
 Only `ResourceAccessException` (connection refused, timeouts) and `HttpServerErrorException` (5xx). Never 4xx. And retrying POST is only safe because the reservation is idempotent by `orderRef`.
 
 **Q9. What is the `Idempotency-Key` flow, and what happens if the client sends none?**
-With key: lookup → replay returns 200 with the original order. Without key: every POST creates a new order (the header is `required = false`). In production I'd make it mandatory for checkout clients or have the gateway generate one.
+With key: lookup → replay returns 200 with the original order, but only for the customer who created it — the same key from a different JWT `sub` gets 422 "Idempotency-Key conflict". Without key: every POST creates a new order (the header is `required = false`). In production I'd make it mandatory for checkout clients or have the gateway generate one.
 
 **Q10. How does optimistic locking help in order-service?**
 `@Version` on `Order`. Hibernate adds `WHERE version = ?` to updates; if another transaction updated the row first, 0 rows → `ObjectOptimisticLockingFailureException`. Prevents lost updates like a cancel racing with a status update.
@@ -460,7 +478,7 @@ WireMock on a random port, injected via `@DynamicPropertySource`. I stub 409 (ex
 It's fast and needs no Docker, and `MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE` covers the dialect basics; Flyway runs the same migrations. Risk: locking/isolation differences. Next step is Testcontainers with real Postgres, at least for the concurrency test.
 
 **Q18. Is there a security layer?**
-Yes, in order-service: Spring Security as an **OAuth2 resource server** (`spring-boot-starter-oauth2-resource-server`). Requests carry a JWT issued by Keycloak (compose/minikube, realm `shopflow`, users `alice`=customer, `bob`=support) or Amazon Cognito (prod); Spring validates signature via the issuer's JWKS, `exp` and `iss`; `JwtRolesConverter` maps `realm_access.roles` or `cognito:groups` to `ROLE_*`. Rules: GET orders → `customer` or `support`, writes → `customer`, actuator/swagger open (network-restricted), everything else denied; stateless, CSRF off (bearer tokens, no cookies). Tests inject fake JWTs with `jwt().authorities(...)`. Infrastructure security on top: NetworkPolicies (default deny ingress + egress; inventory only from order-service; Kafka only from order/notification; Redis only from inventory), non-root UID 10001, `readOnlyRootFilesystem`, all capabilities dropped, `automountServiceAccountToken: false`, Secrets (External Secrets in prod), Trivy + Dependabot. Honest gaps: no ownership check (any customer can read any order), `aud` not validated, inventory/notification rely on network isolation only. Details: [11-security-caching-performance.md](11-security-caching-performance.md).
+Yes, in order-service: Spring Security as an **OAuth2 resource server** (`spring-boot-starter-oauth2-resource-server`). Requests carry a JWT issued by Keycloak (compose/minikube, realm `shopflow`, users `alice`=customer, `bob`=support) or Amazon Cognito (prod); Spring validates signature via the issuer's JWKS, `exp` and `iss`; `JwtRolesConverter` maps `realm_access.roles` or `cognito:groups` to `ROLE_*`. Rules: GET orders → `customer` or `support`, writes → `customer`, actuator/swagger open (network-restricted), everything else denied; stateless, CSRF off (bearer tokens, no cookies). On top of the role rules, **object-level authorization**: orders carry the creator's `sub`, a customer only sees/cancels their own (others → 404), support reads everything (Q23/Q24). Tests inject fake JWTs with `jwt().authorities(...)`. Infrastructure security on top: NetworkPolicies (default deny ingress + egress; inventory only from order-service; Kafka only from order/notification; Redis only from inventory), non-root UID 10001, `readOnlyRootFilesystem`, all capabilities dropped, `automountServiceAccountToken: false`, Secrets (External Secrets in prod), Trivy + Dependabot. Honest gaps: no ownership check (any customer can read any order), `aud` not validated, inventory/notification rely on network isolation only. Details: [11-security-caching-performance.md](11-security-caching-performance.md).
 
 **Q19. Is there service discovery / a gateway / Kafka / tracing / caching?**
 Kafka: yes — transactional outbox in order-service → `orders.events` → notification-service (idempotent consumer, DLT). Tracing: yes — Micrometer Tracing + OTel bridge, OTLP to Tempo, trace ids in JSON logs in Loki, propagated over HTTP and Kafka headers. Caching: yes — Spring Cache on `GET /products/{sku}` with Redis in compose/K8s, evicted on reserve/release. A real API gateway is **not** in the project: discovery is plain Kubernetes DNS (`INVENTORY_URL=http://inventory-service:8082`, no Eureka) and the edge is an NGINX Ingress (`shopflow.local`, TLS via cert-manager in prod) routing only `/api/v1/orders` and `/api/v1/products` — `/api/v1/reservations` is deliberately not exposed publicly. Rate limiting exists but per pod inside order-service, not at the edge.
@@ -476,6 +494,17 @@ CI (`.github/workflows/shopflow.yml`): `./mvnw -B verify` → `kustomize build |
 
 ---
 
+**Q23. Can one customer read another customer's order? (IDOR / OWASP API #1)**
+No. Every order stores the creator's JWT `sub` (`Order.customerId`, migration `V3__order_owner.sql`). The controller turns the `Authentication` into a `Caller(customerId, support)` and the service filters: `get` returns the order only if `caller.mayAccess(order)` (owner or `ROLE_support`), `list` uses `findByCustomerId` unless the caller is support, and `cancel` goes through `get`. Role checks in `SecurityConfig` answer "may this *kind* of user call this endpoint"; the ownership check answers "may *this* user touch *this* row" — both are needed. Test `customersOnlySeeTheirOwnOrders`.
+
+**Q24. Why 404 and not 403 for someone else's order?**
+A 403 would tell an attacker that the id exists ("there is an order 42, just not yours"), which turns sequential ids into an enumeration oracle. Returning the same 404 as for a missing id leaks nothing. The same reasoning applies to the Idempotency-Key: a key owned by another customer gets a 422 "Idempotency-Key conflict" rather than replaying their order to you.
+
+**Q25. Is the reconciler safe? Could it release stock for an order that was actually fine?**
+It only touches FAILED orders, and FAILED means the reserve outcome is unknown — the saga never reached CONFIRMED. `release` on inventory is idempotent and tolerant: unknown `orderRef` or already-released → no-op, RESERVED → stock back. So the worst case is a harmless no-op, never a double release (the `RELEASED` status flip is tested by `releaseRestoresStockOnlyOnce`). It also stops the batch when inventory throws, so an outage is not amplified by a background loop, and it runs through the same `@Retry`/`@CircuitBreaker` client as the request path.
+
+---
+
 ## 8. One-page cheat sheet
 
 ```
@@ -485,12 +514,14 @@ IDEMP     Idempotency-Key -> orders.idempotency_key UNIQUE ; orderRef -> reserva
 RETRY     3 attempts, 200ms x2 backoff, only ResourceAccessException + 5xx, no jitter (yet)
 BREAKER   count window 10, min 5 calls, 50% -> OPEN 10s -> HALF_OPEN 2 calls; ignores business 409/404
 TIMEOUTS  connect 1s, read 2s  -> worst case ~6.6s before breaker opens
-STATES    PENDING -> CONFIRMED | REJECTED | FAILED ;  CONFIRMED|FAILED -> CANCELLED (release)
+STATES    PENDING -> CONFIRMED | REJECTED | FAILED ;  CONFIRMED|FAILED -> CANCELLED (release) ; FAILED > 2m -> OrderReconciler (60s) release + CANCELLED
 NO TX     no @Transactional around HTTP (pool of 10 would starve); saveWithEvent = short TransactionTemplate (order + outbox row)
-OUTBOX    outbox_event -> OutboxRelay @Scheduled 1s, FOR UPDATE SKIP LOCKED, batch 100, acks=all, key=orderRef -> orders.events
+OUTBOX    outbox_event -> OutboxRelay @Scheduled 1s, FOR UPDATE SKIP LOCKED, batch 100, acks=all, key=orderRef -> orders.events ; cleanup 03:30 UTC deletes published > 7d
 CONSUMER  group notification-service, auto-commit off, processed_event dedupe, ExponentialBackOff 0.5s x2 <=10s -> orders.events.DLT
 AUTH      resource server, JWT RS256 via JWKS, stateless, CSRF off; GET customer|support, writes customer; Keycloak local / Cognito prod
-CACHE     @Cacheable("products") DTO by sku, @CacheEvict on reserve/release, simple|redis (TTL 60s, allkeys-lru)
+OWNER     Order.customerId = sub; Caller(customerId, support); not yours -> 404 (not 403); list scoped; foreign Idempotency-Key -> 422
+CACHE     @Cacheable("products") DTO by sku, @CacheEvict on reserve/release, simple|redis (TTL 60s, allkeys-lru); LoggingCacheErrorHandler = fail-open
+MSK       application-aws.yml: SASL_SSL + AWS_MSK_IAM (aws-msk-iam-auth 2.3.9, IRSA creds); prod overlay SPRING_PROFILES_ACTIVE=aws
 LIMIT     @RateLimiter("orders") 50/s/pod, timeout 0 -> 429 ProblemDetail
 TRACE     micrometer-tracing-bridge-otel + OTLP -> Tempo; trace.id in ECS logs -> Loki (Alloy); Kafka headers carry traceparent
 THREADS   spring.threads.virtual.enabled=true (all 3); DB pool is the real limit (DB_POOL_SIZE=5 in K8s)
@@ -499,6 +530,6 @@ METRICS   orders_total{status}, inventory_reservations_rejected_total, outbox_un
 ALERTS    HighErrorRate, HighP99Latency, InventoryCircuitOpen, ServiceDown, OutboxBacklogGrowing, KafkaConsumerLagHigh
 DEPLOY    layered non-root image, compose (+Kafka/Redis/Keycloak/Tempo/Loki), Kustomize dev/prod, HPA, PDB, NetPol, Ingress; prod = RDS/MSK/ElastiCache/Cognito
 CI/CD     verify -> kubeconform/promtool/terraform validate -> build x3 -> Trivy -> push GHCR (sha) -> pin prod overlay -> Argo CD
-GAPS      stuck PENDING, FAILED may leak stock, no ownership check / aud, per-pod rate limit, H2 not real PG, no jitter
-NEXT      event-driven reservation, sweeper job, @PreAuthorize ownership, edge rate limit, Schema Registry, Testcontainers
+GAPS      stuck PENDING (reconciler covers FAILED only), aud not validated, per-pod rate limit, H2 not real PG, no jitter, MSK config never run against real MSK
+NEXT      event-driven reservation, PENDING sweeper, aud validation, edge rate limit, Schema Registry, Testcontainers
 ```

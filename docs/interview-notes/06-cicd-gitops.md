@@ -64,7 +64,7 @@ ShopFlow today = **CI + artifact publishing** (immutable image per commit on mai
  │ checkout, JDK 21     │ │ install kustomize v5.7.1 +       │ │ setup-terraform 1.13.3   │
  │ (temurin, maven cache) │   kubeconform v0.6.7             │ │ fmt -check -recursive    │
  │ ./mvnw -B verify     │ │ for each overlay (dev, prod):    │ │ init -backend=false      │
- │  (26 tests: H2,      │ │   kustomize build | kubeconform  │ │ validate                 │
+ │  (31 tests: H2,      │ │   kustomize build | kubeconform  │ │ validate                 │
  │   EmbeddedKafka,     │ │   -strict -summary -             │ │ (infra/terraform/aws)    │
  │   WireMock, jwt())   │ │ promtool check rules alert-rules │ └──────────────────────────┘
  │ on failure: upload   │ │ docker compose config --quiet    │
@@ -434,7 +434,7 @@ Each step is safe to roll back app-wise because the old app still finds what it 
 ## 12. Interview Q&A
 
 **Q1. Walk me through your pipeline.**
-On PRs and pushes to main touching `shopflow/` or `infra/`, three jobs run in parallel: tests with `./mvnw -B verify` on JDK 21 with Maven cache (26 tests incl. embedded Kafka and fake JWTs), config validation — every Kustomize overlay rendered and checked with kubeconform strict, Prometheus rules with promtool, the compose file — and Terraform `fmt`/`validate`. If tests and validation pass, a matrix job builds each of the three service images with Buildx and GHA cache, tags them with the full commit SHA, scans with Trivy and fails on fixable HIGH/CRITICAL CVEs. Only on main does it log in to GHCR with the GITHUB_TOKEN and push, and then a `deploy-manifests` job pins the SHA into `k8s/overlays/prod` and commits it; Argo CD syncs that overlay. Concurrency cancels superseded runs; permissions are read-only except `packages: write` for the image job and `contents: write` for the pin job.
+On PRs and pushes to main touching `shopflow/` or `infra/`, three jobs run in parallel: tests with `./mvnw -B verify` on JDK 21 with Maven cache (31 tests incl. embedded Kafka and fake JWTs), config validation — every Kustomize overlay rendered and checked with kubeconform strict, Prometheus rules with promtool, the compose file — and Terraform `fmt`/`validate`. If tests and validation pass, a matrix job builds each of the three service images with Buildx and GHA cache, tags them with the full commit SHA, scans with Trivy and fails on fixable HIGH/CRITICAL CVEs. Only on main does it log in to GHCR with the GITHUB_TOKEN and push, and then a `deploy-manifests` job pins the SHA into `k8s/overlays/prod` and commits it; Argo CD syncs that overlay. Concurrency cancels superseded runs; permissions are read-only except `packages: write` for the image job and `contents: write` for the pin job.
 
 **Q2. CI vs continuous delivery vs continuous deployment?**
 CI: merge often, build and test automatically. Continuous delivery: every change produces a deployable artifact and deploying to prod is a manual decision. Continuous deployment: no manual gate. My project is at GitOps continuous **deployment** for prod (every main commit is pinned and auto-synced by Argo CD); adding a GitHub `environment: production` with required reviewers on the pin job would turn it into continuous delivery with an approval gate.
