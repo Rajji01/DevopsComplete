@@ -123,6 +123,7 @@ See [`../infra/terraform/aws/README.md`](../infra/terraform/aws/README.md): VPC 
 
 ## Learn with it
 
+- [`../docs/EASY-NOTES.md`](../docs/EASY-NOTES.md): every pattern explained simply: the problem, why, how (steps), where it lives here, how it improved the system.
 - [`../docs/ROADMAP.md`](../docs/ROADMAP.md): DevOps + Java backend mastery path built around this repo.
 - [`../docs/LABS.md`](../docs/LABS.md): hands-on labs. Break things on purpose, debug them, fix them.
 - [`../docs/SELF-WALK.md`](../docs/SELF-WALK.md): the review log, every bug found and why it mattered.

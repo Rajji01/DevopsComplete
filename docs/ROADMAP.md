@@ -12,6 +12,7 @@ How to use this repo:
 | `shopflow/` | The production-style project (3 services, Kafka, Redis, JWT, tracing); you'll read it, run it, break it and extend it |
 | `infra/terraform/aws/` | How prod runs on AWS: EKS, RDS, MSK, ElastiCache, Cognito, IRSA |
 | `docs/SELF-WALK.md` | The review log: every bug found in this repo, why it mattered, how it was fixed |
+| `docs/EASY-NOTES.md` | Read this first when a concept feels heavy: problem → why → how → where in ShopFlow → how prod improved |
 | `docs/LABS.md` | Hands-on break/fix labs (the most important part) |
 | `docs/interview-notes/` | Revision + interview answers for every topic |
 
