@@ -18,7 +18,7 @@ Last updated: 2026-10-17 (Walk 6). Branch: `claude/modest-bardeen-r4czhv`.
 | VM alternative | `infra/ansible/` | syntax-check + ansible-lint clean |
 | CI/CD | `.github/workflows/shopflow.yml`, `shopflow/Jenkinsfile`, `shopflow/argocd/` | lint → test → validate → build → scan → SBOM → push → sign → pin SHA |
 | Dev hygiene | `Makefile`, `.pre-commit-config.yaml`, `.yamllint.yaml`, `.hadolint.yaml`, `.gitleaks.toml` | `make lint`, `make validate` |
-| Learning docs | `docs/EASY-NOTES.md`, `docs/LABS.md`, `docs/ROADMAP.md`, `docs/SELF-WALK.md`, `docs/interview-notes/` | synced with this file at every walk |
+| Learning docs | `docs/EASY-NOTES.md`, `docs/LABS.md` (break/fix), `docs/PRACTICE-LABS.md` (build it yourself, with solutions), `docs/ROADMAP.md`, `docs/SELF-WALK.md`, `docs/interview-notes/` | synced with this file at every walk |
 
 ## 2. Approach matrix: basic ↔ advanced (both kept, on purpose)
 

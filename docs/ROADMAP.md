@@ -14,6 +14,7 @@ How to use this repo:
 | `docs/SELF-WALK.md` | The review log: every bug found in this repo, why it mattered, how it was fixed |
 | `docs/EASY-NOTES.md` | Read this first when a concept feels heavy: problem → why → how → where in ShopFlow → how prod improved |
 | `docs/LABS.md` | Hands-on break/fix labs (the most important part) |
+| `docs/PRACTICE-LABS.md` | Build-it-yourself tasks with full solutions: do one per phase after the labs |
 | `docs/interview-notes/` | Revision + interview answers for every topic |
 
 Rough timeline: **~18 weeks at 1.5–2 h/day**. Speed doesn't matter, the "Done when" checklists do.
@@ -52,7 +53,7 @@ Read ShopFlow code in this order. For each file, ask yourself *why* it is writte
 Learn alongside: Java 17/21 features, collections internals, concurrency, JVM memory/GC, Spring DI/beans, `@Transactional` pitfalls, JPA (N+1, locking), REST design, testing.
 
 Do:
-- Labs 1–4 in [`LABS.md`](LABS.md)
+- Labs 1–4 in [`LABS.md`](LABS.md), then Practice P1–P2 in [`PRACTICE-LABS.md`](PRACTICE-LABS.md)
 - Add `GET /api/v1/orders?status=CONFIRMED` filtering yourself, with a test
 - Write a `@DataJpaTest` for `ProductRepository.decrementStock`
 
@@ -91,6 +92,7 @@ Do (minikube):
 - `kubectl apply -k shopflow/k8s/overlays/dev`
 - Labs 5–11 and 15: readiness vs liveness, OOMKilled, CrashLoopBackOff, ImagePullBackOff, rollback, HPA, NetworkPolicy, graceful shutdown
 - Labs 30–32: canary a bad release with Argo Rollouts, let Kyverno reject a bad pod, restore Postgres from the backup CronJob
+- Practice P6–P10: a new service's manifests, an alert with runbook + test, a NetworkPolicy proof, Helm values layering, your own Kyverno policy
 - Write a Helm chart for order-service (compare with Kustomize: which do you prefer, and why?)
 
 Done when:
@@ -127,7 +129,7 @@ Learn: Kafka fundamentals, the dual-write problem and the transactional outbox, 
 Read, in order: `order-service/.../outbox/*`, `OrderService.saveWithEvent`, `notification-service/.../OrderEventListener`, `KafkaErrorConfig`, `order-service/.../security/*`, `ProductController` + `ReservationService` cache annotations.
 
 Do:
-- Labs 16–22
+- Labs 16–22, then Practice P3–P5
 - Read `payment-service` and `order-service/.../payment` and run Lab 26: this is saga choreography. Then extend it with a refund (see Phase 7).
 - Replace JSON events with Avro + a Schema Registry (Confluent or Apicurio) and break compatibility on purpose to see the registry reject it.
 
@@ -167,6 +169,7 @@ Read: `infra/terraform/aws/` file by file with its README, then `k8s/overlays/pr
 Do:
 - Lab 23, then `terraform plan -var-file=environments/dev.tfvars` against your own account and read every line of the plan
 - Lab 33: the same stack on one VM with Ansible, then argue when EKS is worth it (`infra/ansible/README.md`)
+- Practice P12–P13: a Terraform resource (no apply) and an Ansible role
 - Cheap first: a `terraform.tfvars` with `db_multi_az=false`, small instances, destroy the same day. Compare the bill estimate with the README's numbers.
 - Install External Secrets Operator + AWS Load Balancer Controller with Helm, annotate their ServiceAccounts with the IRSA role ARNs, and watch a Secret appear from Secrets Manager
 - Point Argo CD at `k8s/overlays/prod` and do one GitOps deploy end to end (push to main → CI pins the SHA → Argo syncs)
@@ -181,7 +184,7 @@ Notes: [`08-linux-networking-cloud-iac.md`](interview-notes/08-linux-networking-
 
 ## Phase 7: Advanced (week 16+)
 
-Outbox, Kafka saga (payment), JWT, cache, tracing, rate limiting, ArchUnit, Helm and k6 are already in the repo (read `docs/SELF-WALK.md` for why each exists). Extend it yourself; each item is a strong resume line:
+Practice P14 (latency-gated canary) and P15 (refund saga end to end) are the graduation projects. Outbox, Kafka saga (payment), JWT, cache, tracing, rate limiting, ArchUnit, Helm and k6 are already in the repo (read `docs/SELF-WALK.md` for why each exists). Extend it yourself; each item is a strong resume line:
 
 | Feature | What you learn |
 |---|---|

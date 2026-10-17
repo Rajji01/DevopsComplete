@@ -12,6 +12,7 @@ Goal: **mastery in DevOps + Java backend**, by building, shipping, running and d
 | [`docs/runbooks/`](docs/runbooks/README.md) | On-call runbooks for every alert + restore, rollback, post-mortem template |
 | [`docs/EASY-NOTES.md`](docs/EASY-NOTES.md) | **Start here if concepts feel heavy**: har pattern ka problem → kyu → kaise (steps) → ShopFlow mein kahan → prod kaise behtar hua, simple Hinglish mein |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | 18-week mastery roadmap built around this repo |
+| [`docs/PRACTICE-LABS.md`](docs/PRACTICE-LABS.md) | 15 build-it-yourself practice tasks on this project (easy Hinglish): task → why → diagram → steps → full solution → common mistakes → verify |
 | [`docs/LABS.md`](docs/LABS.md) | 33 hands-on break/fix labs (OOMKilled, CrashLoopBackOff, circuit breaker, zero-downtime deploy, kill Kafka, duplicate events, poison pill, JWT, cache, tracing, ...) |
 | [`docs/interview-notes/`](docs/interview-notes/) | Interview notes: project walkthrough, Java/Spring, microservices, Docker, Kubernetes, CI/CD, observability, Linux/networking, AWS production, Kafka, security/caching/performance, and a hard-questions file |
 
