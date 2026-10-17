@@ -1,6 +1,6 @@
 # STATE: single source of truth for this repo
 
-**Read this first.** It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
+**Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
 Last updated: 2026-10-17 (Walk 6). Branch: `claude/modest-bardeen-r4czhv`.
 
