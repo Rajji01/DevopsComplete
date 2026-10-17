@@ -2,6 +2,7 @@
 
 > Source of truth in this repo:
 > - **Production-style:** `shopflow/k8s/` — Kustomize `base/` + `overlays/dev`, `overlays/prod`
+> - **Advanced, side by side:** `shopflow/k8s/rollouts/` (Argo Rollouts canary + blue-green for the same two services, details in [06 §7](06-cicd-gitops.md)), `shopflow/k8s/policies/` (Kyverno ClusterPolicies + a Gatekeeper ConstraintTemplate, `tests/bad-pod.yaml`), `shopflow/k8s/base/postgres/backup-cronjob.yaml` (nightly `pg_dump` CronJob, deleted in the prod overlay). `docs/STATE.md` has the basic ↔ advanced matrix
 > - **Learning manifests:** `Devops/*.yaml`, `microservice01/*.yaml` (Pods, NodePort/LoadBalancer/ClusterIP, ConfigMaps, Secrets, emptyDir/hostPath/PV-PVC, Jobs, CronJob)
 > - **Cheatsheet:** `notes.txt` (minikube + kubectl)
 > - App side: `shopflow/*-service/src/main/resources/application.yml` (Actuator probes, graceful shutdown)
@@ -18,14 +19,16 @@ shopflow/k8s/
 │   ├── inventory-service/  {deployment, service, hpa, pdb, kustomization}.yaml
 │   ├── notification-service/ {deployment, service, hpa, pdb, kustomization}.yaml   # Kafka consumer, port 8083
 │   ├── payment-service/    {deployment, service, hpa, pdb, kustomization}.yaml   # Kafka consumer + producer, port 8084, DB payments
-│   ├── postgres/           {statefulset, service (headless), kustomization (configMapGenerator), init-db.sh}  # 4 logical DBs
+│   ├── postgres/           {statefulset, service (headless), kustomization (configMapGenerator), init-db.sh, backup-cronjob (+PVC postgres-backups)}  # 4 logical DBs
 │   ├── kafka/              {statefulset (KRaft, 1 node, 2Gi PVC), service (headless 9092/9093)}
 │   ├── redis/              {deployment (no volume, allkeys-lru), service}
 │   └── keycloak/           {deployment (realm from ConfigMap, startupProbe /realms/shopflow), service, shopflow-realm.json}
-└── overlays/
-    ├── dev/kustomization.yaml      # tag :dev, secretGenerator (shopflow-db incl. notifications + payments pwd, keycloak-admin), 1 replica, HPA 1-2
-    └── prod/kustomization.yaml     # GHCR images pinned by CI, HPA 3-10, TLS host shop.example.com, ExternalSecret;
-                                    # $patch: delete postgres/kafka/redis/keycloak (+ their NetworkPolicies) -> RDS/MSK/ElastiCache/Cognito;
+├── overlays/
+│   ├── dev/kustomization.yaml      # tag :dev, secretGenerator (shopflow-db incl. notifications + payments pwd, keycloak-admin), 1 replica, HPA 1-2
+│   └── prod/kustomization.yaml     # GHCR images pinned by CI, HPA 3-10, TLS host shop.example.com, ExternalSecret;
+│                                   # $patch: delete postgres/kafka/redis/keycloak (+ their NetworkPolicies, the backup CronJob + PVC) -> RDS/MSK/ElastiCache/Cognito;
+├── rollouts/                       # Argo Rollouts: order-service canary (10/25/50/100 + Prometheus analysis), inventory-service blue-green, AnalysisTemplate error-ratio, README
+└── policies/                       # kyverno/ (5 ClusterPolicies + README), gatekeeper/ (ConstraintTemplate + Constraint, Rego), tests/bad-pod.yaml
                                     # shopflow-endpoints replaced with managed endpoints; egress to VPC CIDR + 443 for Cognito JWKS;
                                     # service-accounts.yaml: SAs order/notification/payment-service with the kafka-clients IRSA role
 shopflow/helm/
@@ -125,7 +128,7 @@ Everything is **declarative** and **level-triggered**: controllers continuously 
 | **StatefulSet** | Stable identity (`postgres-0`), ordered start/stop, per-replica PVC | `shopflow/k8s/base/postgres/statefulset.yaml` |
 | **DaemonSet** | One Pod per node (log shippers, node-exporter, CNI) | Not in repo (Promtail/Fluent Bit would be one) |
 | **Job** | Run to completion | `Devops/job.yaml`, `Devops/job-backofflimit.yaml` |
-| **CronJob** | Jobs on a schedule | `Devops/cron-job.yaml` |
+| **CronJob** | Jobs on a schedule | `shopflow/k8s/base/postgres/backup-cronjob.yaml` (nightly `pg_dump`), `Devops/cron-job.yaml` |
 
 Never run bare Pods in prod — nothing recreates them if the node dies.
 
@@ -158,6 +161,19 @@ spec:
       restartPolicy: Never      # Jobs need Never or OnFailure (not Always)
 ```
 (Note: the inline comment in `job.yaml` / `job-backofflimit.yaml` says completions run "one after the other" — with `parallelism: 2` they actually run at the same time; `parallelism: 1` would make them sequential.)
+
+### The real CronJob: `postgres-backup` (`shopflow/k8s/base/postgres/backup-cronjob.yaml`)
+```yaml
+schedule: "15 2 * * *"            # 02:15 UTC = 07:45 IST, after the day's traffic
+concurrencyPolicy: Forbid         # a slow dump must not overlap with the next one
+successfulJobsHistoryLimit: 3 / failedJobsHistoryLimit: 3
+jobTemplate: backoffLimit: 2, activeDeadlineSeconds: 1800, restartPolicy: Never
+securityContext: runAsNonRoot, runAsUser: 70, fsGroup: 70     # the postgres UID in the alpine image
+container postgres:16-alpine: for db in orders inventory notifications payments: pg_dump -h postgres -U postgres -Fc "$db" > /backups/$db-$ts.dump
+                               find /backups -name '*.dump' -mtime +7 -delete   # 7-day retention, only reached if every dump succeeded (set -euo pipefail)
+PGPASSWORD from Secret shopflow-db / postgres-password; volume = PVC postgres-backups (2Gi, RWO)
+```
+Design points to say out loud: one `-Fc` (custom format, compressed, `pg_restore`-able per table) dump **per logical database**; `set -e` so a failed dump aborts *before* the retention cleanup deletes anything; `Forbid` + `activeDeadlineSeconds` so a hung dump cannot pile up; non-root with `fsGroup` so the PVC is writable; its own egress NetworkPolicy `postgres-backup-egress` (only `postgres:5432`) and it is in the allow-list of `postgres-ingress`. The prod overlay `$patch: delete`s the CronJob and the PVC together with the in-cluster Postgres, because RDS does automated snapshots + PITR (RPO 5 min vs up to 24 h here). The restore procedure — `kubectl run` a `postgres:16-alpine` pod mounting the PVC, `pg_restore --clean --if-exists`, then `rollout restart` the service — is `docs/runbooks/RestorePostgres.md`, which also has the RPO/RTO table (dev: RPO ≤ 24 h, RTO ~10 min; prod RDS: RPO 5 min, RTO 15–30 min) and the rule "practice this quarterly".
 
 `Devops/cron-job.yaml`:
 ```yaml
@@ -458,7 +474,9 @@ kubectl rollout pause deploy/order-service -n shopflow    # batch several change
 kubectl rollout resume deploy/order-service -n shopflow   # ...into one rollout
 kubectl annotate deploy/order-service -n shopflow kubernetes.io/change-cause="v1.2.3" --overwrite   # old manifests set this annotation
 ```
-In GitOps, rollback = `git revert` of the image-tag commit (cluster follows git); `kubectl rollout undo` would be reverted by Argo CD self-heal.
+In GitOps, rollback = `git revert` of the image-tag commit (cluster follows git); `kubectl rollout undo` would be reverted by Argo CD self-heal. All rollback paths per deploy method are in `docs/runbooks/Rollback.md`.
+
+**Beyond RollingUpdate — `shopflow/k8s/rollouts/`**: a RollingUpdate's only health signal is the readiness probe, and every pod gets the new version within a minute. The Argo Rollouts manifests keep the same Deployments (via `workloadRef`, `scaleDown: onsuccess`) and add a **canary** for order-service (`setWeight` 10 → 25 → 50 → 100 with 5/5/10-minute pauses, an `AnalysisTemplate` querying Prometheus for the canary pods' 5xx ratio `< 0.02`, `failureLimit: 3` → automatic abort) and **blue-green** for inventory-service (`inventory-service-preview` Service, `autoPromotionEnabled: false`, `prePromotionAnalysis`, `scaleDownDelaySeconds: 60` for instant rollback). Validated with kubeconform against the Argo CRD schemas in CI; needs the Rollouts controller in a cluster to actually run. Full walkthrough and the comparison table: [06 §7](06-cicd-gitops.md).
 
 ---
 
@@ -595,7 +613,32 @@ securityContext:
 | baseline | Blocks known privilege escalations (hostNetwork, privileged...) |
 | restricted | Hardened: non-root, drop ALL, seccomp, no priv-esc — **ShopFlow app pods comply** |
 
-Enforce with namespace labels: `pod-security.kubernetes.io/enforce: restricted`. (Postgres pod would need its own securityContext tweaks for restricted.) Policy engines: Kyverno, OPA Gatekeeper.
+Enforce with namespace labels: `pod-security.kubernetes.io/enforce: restricted`. (Postgres pod would need its own securityContext tweaks for restricted.) PSA covers only the pod-security fields; for everything else (tags, probes, resources, signatures) you need a policy engine.
+
+### Policy as code: `shopflow/k8s/policies/` (Kyverno and OPA Gatekeeper)
+
+Rules the API server enforces **at admission**, before a manifest is persisted, so a tired reviewer cannot let them through. Both engines run as validating (Kyverno also mutating) admission webhooks.
+
+| Policy (`kyverno/*.yaml`, all `validationFailureAction: Enforce`, `background: true`) | Rule | Why |
+|---|---|---|
+| `disallow-latest-tag` | image must match `*:*` and not `*:latest` | an untraceable image cannot be rolled back |
+| `require-probes` | `readinessProbe` and `livenessProbe` with `periodSeconds > 0`; **excludes** postgres/kafka/redis/keycloak and the `kube-system`/`argocd`/`monitoring` namespaces | a pod without readiness gets traffic before it can serve |
+| `require-resources` | cpu + memory **requests** and a **memory limit**; **no CPU limit required, on purpose** (CPU limits throttle the JVM — §8); excludes `kube-system` | no requests = scheduler blind, HPA blind, noisy neighbours |
+| `require-non-root` | `runAsNonRoot: true` + `allowPrivilegeEscalation: false` for pods labelled `part-of: shopflow`; excludes vendor images (postgres, kafka, keycloak) | container breakout from root = node compromise |
+| `verify-image-signature` | `verifyImages` for `ghcr.io/rajji01/shopflow-*` and ECR `shopflow/*` in namespace `shopflow`: **keyless** attestor with `subject: https://github.com/Rajji01/DevopsComplete/.github/workflows/shopflow.yml@refs/heads/main`, `issuer: https://token.actions.githubusercontent.com`, Rekor; `mutateDigest: true`; `webhookTimeoutSeconds: 30`, `background: false` | only images signed by *our* CI may run; the tag is rewritten to the verified digest so what was checked is what runs |
+
+`gatekeeper/` implements the same "no `:latest`" rule as a `ConstraintTemplate` in **Rego** (`violation[{"msg": msg}] { container := input.review.object.spec.containers[_]; endswith(container.image, ":latest") ... }`) plus a `K8sDisallowLatestTag` Constraint (`enforcementAction: deny`, Pods in `shopflow`), so the two engines can be compared on identical semantics:
+
+| | Kyverno | OPA Gatekeeper |
+|---|---|---|
+| Policy language | YAML patterns that look like the manifest (`image: "!*:latest"`) | Rego (a logic language) |
+| Mutate / generate | yes (`mutateDigest`, defaults, generate NetworkPolicies per namespace) | validate only (mutation is separate and limited) |
+| Image signatures | built-in `verifyImages` (cosign/notary) | needs an external data provider |
+| Offline test | `kyverno apply policy.yaml --resource manifests.yaml` | `gator test` |
+| Reporting | PolicyReports (`background: true` also audits existing resources) | audit controller writes violations to Constraint status |
+| Learning curve | low | medium (Rego); more expressive for cross-resource logic |
+
+**Tested like code**: `tests/bad-pod.yaml` (`nginx:latest`, no probes, no resources, root, labelled `part-of: shopflow`) violates every policy except the signature one. CI (`validate-manifests`) and `make validate` run `kyverno apply` on the rendered prod overlay (must pass — 12 pass locally) and on the bad pod (must fail — 4 failures; the step exits 1 if the output says `fail: 0`). The signature policy is skipped offline because it needs a registry and Rekor; the policy CRDs themselves are schema-checked with kubeconform + the datreeio CRD catalog. Rollout in a real cluster: start with `validationFailureAction: Audit`, read the PolicyReports for a week, fix or exclude legacy workloads, then flip to `Enforce` — `make policies` applies them. Neither engine runs in this repo's CI; the manifests are the design, the CLI tests are the proof.
 
 ---
 
@@ -611,7 +654,7 @@ spec: { hard: { requests.cpu: "4", requests.memory: 8Gi, limits.memory: 12Gi, po
 kind: LimitRange          # per-container defaults/min/max if a pod doesn't specify
 spec: { limits: [ { type: Container, defaultRequest: { cpu: 100m, memory: 128Mi }, default: { memory: 256Mi } } ] }
 ```
-If a quota on `requests.cpu` exists, pods **without** CPU requests are rejected — unless a LimitRange injects defaults.
+If a quota on `requests.cpu` exists, pods **without** CPU requests are rejected — unless a LimitRange injects defaults. ShopFlow has **no** ResourceQuota/LimitRange manifest (honest); what it has is the per-pod precondition for one — the Kyverno `require-resources` policy rejects any container without cpu/memory requests and a memory limit — so adding a namespace quota later would not start rejecting pods by surprise.
 
 ---
 
@@ -863,6 +906,15 @@ Burstable (memory request ≠ limit, no CPU limit). Under node memory pressure B
 **Q16. How do pods in different namespaces communicate?**
 DNS `service.namespace` (or FQDN `service.namespace.svc.cluster.local`), if NetworkPolicies allow it.
 
+**Q17. How do admission webhooks work, and what can go wrong?**
+After authn/authz the API server calls **mutating** webhooks first (they may patch the object: inject sidecars, defaults, rewrite a tag to a digest — Kyverno's `mutateDigest`), then runs schema validation, then **validating** webhooks (Kyverno `validate`, Gatekeeper, PSA) which can only accept or reject. Each webhook is a `(Mutating|Validating)WebhookConfiguration` with `rules` (which kinds/operations), a `namespaceSelector`, a `timeoutSeconds` (max 30; `verify-image-signature` sets `webhookTimeoutSeconds: 30` because a cosign/Rekor lookup is slow) and a **`failurePolicy`**: `Fail` means "if the webhook is down, reject every matching request" (secure, but a crashed policy engine can block all deployments — including its own fix), `Ignore` means "admit if the webhook is unreachable" (available, but a window for unsigned images). Production answer: `Fail` for the security policies, exclude `kube-system` and the engine's own namespace so the cluster can heal, run the engine with ≥ 2 replicas + PDB, and keep the policies' `background: true` so existing violations show up in reports even if they were admitted earlier.
+
+**Q18. Kyverno or Gatekeeper — which would you choose?**
+Both are in the repo for the same rule so I can answer from experience: Kyverno for a platform team that writes YAML all day — policies read like the manifests they check, it can mutate and generate, image-signature verification is built in, and `kyverno apply` makes the policies unit-testable in CI. Gatekeeper when the organisation already standardises on OPA/Rego (API gateways, Terraform checks with the same language), or for complex cross-resource logic. Either way: start in Audit, enforce with excludes, and test the policies with a deliberately bad manifest.
+
+**Q19. You run Postgres in the cluster in dev — how is it backed up and restored?**
+A `CronJob` (`k8s/base/postgres/backup-cronjob.yaml`) dumps each of the four databases nightly with `pg_dump -Fc` into a PVC, keeps 7 days, `concurrencyPolicy: Forbid`, non-root, its own egress NetworkPolicy. Restore is documented in `docs/runbooks/RestorePostgres.md`: a throw-away `postgres:16-alpine` pod mounting the PVC, `pg_restore --clean --if-exists`, rolling restart of the service, smoke test. In prod the CronJob is deleted by the overlay because RDS gives snapshots + 5-minute PITR; RPO/RTO for both are in the runbook, and the rule is to practise the restore quarterly.
+
 ---
 
 ## 22. Scenario questions
@@ -906,7 +958,8 @@ Change it in git (overlay / configMapGenerator) → PR → Argo CD sync; the has
 - Selector/label mismatch → Service with no endpoints.
 - Thinking Secrets are encrypted; committing them to git.
 - NetworkPolicies on a CNI that doesn't enforce them (false sense of security).
-- Running stateful DBs in K8s without backups/operator.
+- Running stateful DBs in K8s without backups/operator (ShopFlow dev: nightly `pg_dump` CronJob + a tested restore runbook; prod: RDS).
+- Policies applied straight in `Enforce` on a cluster with legacy workloads → every deploy blocked; go Audit → fix/exclude → Enforce.
 - Shell-form ENTRYPOINT → SIGTERM never reaches Java.
 - `kubectl edit` in prod when using GitOps.
 - Forgetting `-n` namespace and "losing" resources (`kubectl get po -A`).

@@ -1,9 +1,11 @@
 # 04 — Docker (Interview Notes)
 
 > Source of truth in this repo:
-> - `shopflow/Dockerfile` — one multi-stage Dockerfile for all four services (build arg `SERVICE`)
+> - `shopflow/Dockerfile` — one multi-stage Dockerfile for all four services (build arg `SERVICE`), alpine JRE runtime
+> - `shopflow/Dockerfile.distroless` — the same build with a `gcr.io/distroless/java21-debian12:nonroot` runtime (no shell); `make build-distroless SERVICE=order-service`
+> - `.hadolint.yaml` — Dockerfile linter config; both Dockerfiles are linted by the CI `lint` job, the Jenkins `Lint` stage and the pre-commit hook (both are hadolint-clean)
 > - `shopflow/.dockerignore`
-> - `shopflow/docker-compose.yml` — postgres + kafka (KRaft) + redis + keycloak + order/inventory/notification/payment services (8081–8084) + prometheus + grafana + tempo + loki + alloy
+> - `shopflow/docker-compose.yml` — postgres + kafka (KRaft) + redis + keycloak + order/inventory/notification/payment services (8081–8084) + prometheus + **alertmanager** (`v0.28.1`, :9093) + grafana + tempo + loki + alloy
 > - Older learning versions: `Devops/Dockerfile`, `microservice01/Dockerfile`, Docker commands in `notes.txt`
 >
 > Rule: when you talk about "my project", only quote what is in these files. For anything else say
@@ -22,7 +24,8 @@
 | Non-root | Fixed numeric UID `10001` so K8s `runAsNonRoot` can verify it | `USER 10001` |
 | JVM memory | Heap = % of container limit, crash on OOM | `JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"` |
 | Entrypoint | Exec form so `java` is PID 1 and receives SIGTERM | `ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]` |
-| Base image | `eclipse-temurin:21-jre-alpine` (JRE, not JDK) | runtime stage |
+| Base image | `eclipse-temurin:21-jre-alpine` (JRE, not JDK); distroless variant `gcr.io/distroless/java21-debian12:nonroot` (no shell, UID 65532) | runtime stage; `Dockerfile.distroless` |
+| Lint | hadolint with `.hadolint.yaml` (`failure-threshold: warning`, `DL3018` apk-pin ignored on purpose) | CI `lint` job, pre-commit |
 | Compose ordering | `depends_on: condition: service_healthy` + healthchecks | `docker-compose.yml` |
 | Tags | Immutable git-SHA tag in CI, `latest` only as convenience on main | `.github/workflows/shopflow.yml` (`docker/metadata-action`) |
 | Scan | Trivy, fail on fixable HIGH/CRITICAL | `.github/workflows/shopflow.yml` |
@@ -253,7 +256,7 @@ Why it matters:
 | `eclipse-temurin:21-jdk` | ~400 MB+ | yes | Has compiler — only for build stage |
 | `eclipse-temurin:21-jre` (Ubuntu) | ~250 MB | yes | glibc, familiar tools |
 | `eclipse-temurin:21-jre-alpine` | ~150–200 MB | yes (busybox) | **ShopFlow uses this**. musl libc, `wget` available (used by compose healthchecks) |
-| `gcr.io/distroless/java21-debian12` | ~100–200 MB | **no** | No shell/package manager → smallest attack surface, harder to debug (`kubectl debug` ephemeral containers) |
+| `gcr.io/distroless/java21-debian12:nonroot` | ~100–200 MB | **no** | **ShopFlow `Dockerfile.distroless`**: no shell/package manager/`/bin` → smallest attack surface, fewer CVEs for Trivy; runs as UID 65532. Trade-offs written in the file header: no `kubectl exec ... sh` (use `kubectl debug` with an ephemeral container), no `wget` for the compose healthcheck, and the `preStop` hook in `k8s/base` runs `sh -c sleep 5` — there is no `sh` and no `sleep` either, so you rely on Spring's graceful shutdown alone or keep alpine. That is why alpine stays the default |
 | Custom `jlink` runtime | 60–80 MB | depends | Only the JDK modules you need |
 
 Alpine caveat: musl vs glibc — rare issues with native libs (e.g., some Netty/gRPC native transports). For pure Java Spring apps it's fine.
@@ -272,7 +275,8 @@ USER 10001
 - Non-root numeric user, drop capabilities (`capabilities.drop: ["ALL"]` in K8s).
 - **No secrets** in `ENV`/`ARG`/layers. Deleting a file in a later layer does not remove it from the earlier layer. Use BuildKit `--mount=type=secret` for build-time secrets; inject runtime secrets via env from K8s Secrets (ShopFlow: `DB_PASSWORD` from `shopflow-db`).
 - Scan images: **Trivy** in CI (`aquasecurity/trivy-action`, `severity: HIGH,CRITICAL`, `ignore-unfixed: true`, `exit-code: "1"`). Alternatives: Grype, Snyk, Docker Scout, ECR scanning.
-- Sign images and generate an SBOM — **in the pipeline now**: `anchore/sbom-action` (Syft) writes a CycloneDX SBOM per image, and after the push on `main` `cosign sign --yes <image>@<digest>` signs the digest keyless with the workflow's OIDC token (see [06](06-cicd-gitops.md) §9). Next step: verify signatures at admission (Kyverno).
+- Sign images and generate an SBOM — **in the pipeline now**: `anchore/sbom-action` (Syft) writes a CycloneDX SBOM per image, and after the push on `main` `cosign sign --yes <image>@<digest>` signs the digest keyless with the workflow's OIDC token (see [06](06-cicd-gitops.md) §9). The admission half is written too: `k8s/policies/kyverno/verify-image-signature.yaml` only admits `shopflow-*` images signed by that workflow on `main` (see [05](05-kubernetes.md)).
+- Lint the Dockerfile: **hadolint** (`.hadolint.yaml`) in CI and pre-commit catches `apt-get` without cleanup, missing `--no-cache`, unpinned bases, shell-form `CMD`; `DL3018` (pin apk package versions) is ignored on purpose because the base tag already pins the image and apk pins break within weeks on alpine.
 
 ---
 
@@ -416,7 +420,7 @@ Key features to talk about:
      interval: 10s
      start_period: 40s     # JVM start-up grace; failures during this don't count
    ```
-   `wget` works because the Alpine base has busybox. On distroless there's no wget → you'd need a different approach.
+   `wget` works because the Alpine base has busybox. On distroless there's no wget → you'd need a different approach (a Java health class as the healthcheck command, or an external check). This is one reason `Dockerfile.distroless` is the alternative, not the default.
 4. **`build:` + `image:`** together: compose builds with `args: SERVICE: ...` and tags the result `shopflow/order-service:local`.
 5. Restart policy `unless-stopped` + `ExitOnOutOfMemoryError` → crash-and-restart behaviour similar to K8s.
 
@@ -513,7 +517,7 @@ Exit codes: `0` normal, `1` app error, `3` JVM exited due to `ExitOnOutOfMemoryE
 An image is an immutable, layered filesystem plus config, identified by a digest. A container is a running process created from that image, with its own writable copy-on-write layer, isolated by namespaces and limited by cgroups. Many containers can run from one image.
 
 **Q2. How did you reduce your image size?**
-Multi-stage build: Maven + JDK only in the build stage; the final image is `eclipse-temurin:21-jre-alpine` plus the extracted Spring Boot layers. No source, no `.m2`, no build tools. Plus `.dockerignore` keeps `target/`, `k8s/`, `monitoring/` out of the context. Next step could be distroless or a jlink'd runtime.
+Multi-stage build: Maven + JDK only in the build stage; the final image is `eclipse-temurin:21-jre-alpine` plus the extracted Spring Boot layers. No source, no `.m2`, no build tools. Plus `.dockerignore` keeps `target/`, `k8s/`, `monitoring/` out of the context. `Dockerfile.distroless` goes one step further (no shell at all); a jlink'd runtime would be the next.
 
 **Q3. Explain layered jars and why you used them.**
 I extract the fat jar with `-Djarmode=tools extract --layers --launcher` into dependencies, loader, snapshot-dependencies and application, and COPY them in that order. Dependencies rarely change, so their layer is cached and already present on nodes; a code change only ships the small `application` layer. Faster pushes, pulls and deployments.
@@ -549,7 +553,10 @@ Layer ordering, BuildKit cache mount for `.m2` locally, and in GitHub Actions `c
 Never ARG/ENV/COPY them. Use `RUN --mount=type=secret,id=...` so they're available only during that step and never stored in a layer. Runtime secrets come from the orchestrator (K8s Secret → env `DB_PASSWORD`).
 
 **Q14. How do you scan images?**
-Trivy in the pipeline on the locally loaded image before push; it fails on HIGH/CRITICAL CVEs that have a fix (`ignore-unfixed: true` avoids blocking on unfixable ones). Dependabot keeps the base image and Maven deps current.
+Trivy in the pipeline on the locally loaded image before push; it fails on HIGH/CRITICAL CVEs that have a fix (`ignore-unfixed: true` avoids blocking on unfixable ones). Dependabot keeps the base image and Maven deps current. Before the image even exists, hadolint lints the Dockerfile in pre-commit and CI.
+
+**Q15. Why do you have a distroless Dockerfile and why is it not the default?**
+`Dockerfile.distroless` keeps the same `build` and `extract` stages and swaps the runtime for `gcr.io/distroless/java21-debian12:nonroot`: no shell, no package manager, no `/bin`, UID 65532. Benefits: an attacker with code execution has no tools, and Trivy finds far fewer OS CVEs. Costs, which the file header lists: no `kubectl exec sh` (use `kubectl debug` with an ephemeral container), the compose `wget` healthcheck does not work, and the `preStop: sh -c sleep 5` hook from `k8s/base` cannot run because there is no `sh` or `sleep` — so I would have to rely on Spring's graceful shutdown alone. Both files are hadolint-clean; the exec-form `ENTRYPOINT` is mandatory on distroless because there is no shell to interpret a string. It is the "advanced" row in `docs/STATE.md`'s approach matrix; alpine stays the basic default until the debugging story is solved.
 
 ---
 

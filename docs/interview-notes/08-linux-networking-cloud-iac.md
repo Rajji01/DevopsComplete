@@ -1,7 +1,7 @@
 # 08 — Linux, Networking, AWS, Terraform, Ansible & Git (Interview Notes)
 
 > Repo context: ShopFlow (`shopflow/`) runs on Docker Compose and Kubernetes (`shopflow/k8s/`), images are pushed to GHCR by `.github/workflows/shopflow.yml`.
-> **Terraform for AWS now exists**: `infra/terraform/aws/` (`vpc.tf`, `eks.tf`, `rds.tf`, `msk.tf`, `elasticache.tf`, `cognito.tf`, `ecr.tf`, `irsa.tf`, `ci-oidc.tf`, `outputs.tf`), validated by the `terraform` job in CI, and the K8s prod overlay consumes its outputs through the `shopflow-endpoints` ConfigMap. The detailed AWS production story is in [09-aws-production.md](09-aws-production.md); this file keeps the fundamentals. There is still **no Ansible** in the repo — Part E is conceptual.
+> **Terraform for AWS now exists**: `infra/terraform/aws/` (`vpc.tf`, `eks.tf`, `rds.tf`, `msk.tf`, `elasticache.tf`, `cognito.tf`, `ecr.tf`, `irsa.tf`, `ci-oidc.tf`, `outputs.tf`), validated by the `terraform` job in CI, and the K8s prod overlay consumes its outputs through the `shopflow-endpoints` ConfigMap. The detailed AWS production story is in [09-aws-production.md](09-aws-production.md); this file keeps the fundamentals. Also in the repo now: `infra/terraform/aws/environments/{dev,prod}.tfvars` (per-environment sizing), `.tflint.hcl` (core rules, offline) + `.tflint.ci.hcl` (AWS ruleset, used by the CI `lint` job), and **Ansible** in `infra/ansible/` (`site.yml`, roles `docker` + `shopflow`, systemd unit for the compose stack, `inventory.example.ini`, `group_vars`, `.ansible-lint` production profile, README comparing VM+Compose with EKS) — Part E describes the real playbook. `ansible-lint` and `--syntax-check` pass locally and in CI; it has not been run against a real VM.
 
 ---
 
@@ -518,38 +518,60 @@ module "vpc" {
 - **Workspaces**: multiple state files for the same config (`terraform workspace new staging`). Fine for identical envs; many teams prefer **separate directories per env** (`envs/dev`, `envs/prod`) with different backends — clearer, different blast radius, different credentials. (Same idea as ShopFlow's Kustomize `overlays/dev` vs `overlays/prod`.)
 - **Drift**: real infra changed outside Terraform (someone edited an SG in the console). `terraform plan` shows it; `terraform plan -refresh-only` shows drift without proposing changes, `terraform apply -refresh-only` accepts it into state. Prevent with no console write access, scheduled drift-detection plans in CI.
 - `count` vs `for_each` (prefer `for_each` with maps/sets — removing an item doesn't shift indexes), `lifecycle` meta-arguments (`prevent_destroy`, `create_before_destroy`, `ignore_changes = [...]` — one per line inside the block; HCL blocks don't take commas), `depends_on`.
-- CI for Terraform: `fmt -check`, `validate`, `tflint`, `checkov`/`trivy config`, `plan` on PR (post as comment), `apply` on merge with approval — Atlantis or Terraform Cloud/HCP. Use OIDC for AWS creds.
+- **Environments in ShopFlow**: one root module, one `.tfvars` per environment in `environments/` — `dev.tfvars` (single-AZ RDS `db_multi_az=false`, `db.t4g.micro`, `t3.medium` nodes 1/2/3, `cache.t4g.micro`, `kafka.t3.small`, `dev.shop.example.com`; the file's own estimate ≈ **$150/month**, "destroy when not in use") and `prod.tfvars` (`t3.large` 3/3/6, `db.t4g.medium` Multi-AZ, `cache.t4g.small`, `kafka.m5.large`), applied with `terraform plan -var-file=environments/dev.tfvars` (`make tf-plan ENV=dev`). `variables.tf` defaults are already prod-sized, so `prod.tfvars` only makes them explicit; `environment` also drives `deletion_protection` and the Secrets Manager recovery window (`var.environment == "prod"`). State per environment would still need separate backend keys/workspaces — the tfvars only size things.
+- **tflint**: `.tflint.hcl` enables the core rules (`terraform_required_version`, `terraform_naming_convention`, `terraform_unused_declarations`, `terraform_deprecated_interpolation`) and works offline — `make lint`. `.tflint.ci.hcl` adds `plugin "aws" { version = "0.49.0" }` (invalid instance types, deprecated arguments, bad ARNs); the plugin download needs `GITHUB_TOKEN`, so only CI uses it (`tflint --init --config .tflint.ci.hcl`). `terraform validate` checks HCL against provider schemas; tflint checks *values* the provider would only reject at apply time.
+- CI for Terraform: `fmt -check`, `validate`, `tflint`, `checkov`/`trivy config`, `plan` on PR (post as comment), `apply` on merge with approval — Atlantis or Terraform Cloud/HCP. Use OIDC for AWS creds. ShopFlow has the first three (`terraform` job + `lint` job); `plan`/`apply` would need the OIDC role.
 
 Terraform vs others: CloudFormation (AWS-only, managed state), Pulumi (real languages), CDK; OpenTofu = open-source fork of Terraform.
 
 ---
 
-## PART E — ANSIBLE (brief)
+## PART E — ANSIBLE (`infra/ansible/`: ShopFlow on one VM, the pre-Kubernetes approach)
 
 - **Configuration management** over SSH, **agentless**, push-based, YAML playbooks, idempotent modules.
 - Inventory (hosts/groups) → playbook (plays → tasks → modules) → roles (reusable structure), variables, handlers (run on change, e.g. restart), Jinja2 templates, Ansible Vault for secrets.
-```yaml
-# site.yml — install Docker and run ShopFlow compose on a VM
-- hosts: app_servers
-  become: true
-  tasks:
-    - name: Install docker + compose v2 plugin (Ubuntu package names)
-      ansible.builtin.package: { name: [docker.io, docker-compose-v2], state: present }
-    - name: Ensure docker running
-      ansible.builtin.service: { name: docker, state: started, enabled: true }
-    - name: Copy compose stack
-      ansible.builtin.copy: { src: shopflow/, dest: /opt/shopflow/ }
-      notify: restart shopflow
-  handlers:
-    - name: restart shopflow
-      ansible.builtin.command: docker compose up -d --build
-      args: { chdir: /opt/shopflow }
+
+The repo's playbook (why: many teams run Docker Compose on EC2/VMs; the README's table compares it with EKS — fits 1–3 VMs, vertical scaling, systemd restarts but no node failover, ~$50–100/month vs ~$400+, Linux+Docker knowledge instead of Kubernetes):
 ```
+infra/ansible/
+├── ansible.cfg                 # inventory = inventory.ini, host_key_checking = True, stdout_callback = yaml
+├── inventory.example.ini       # [shopflow] shopflow-vm-1 ansible_host=203.0.113.10 ansible_user=ubuntu  (copy to inventory.ini)
+├── group_vars/shopflow.yml     # app_dir=/opt/shopflow, repo_url, repo_version=main, compose_profiles — non-secrets only
+├── site.yml                    # one play: hosts shopflow, become: true, roles: [docker, shopflow]
+├── roles/docker/tasks/main.yml # apt prerequisites → Docker GPG key (get_url) → apt_repository → docker-ce + compose plugin → systemd enable → add ansible_user to the docker group
+├── roles/shopflow/tasks/main.yml, handlers/main.yml, templates/shopflow.service.j2
+└── .ansible-lint               # profile: production
+```
+```yaml
+# roles/shopflow/tasks/main.yml (abridged)
+- name: Check out the repository
+  ansible.builtin.git: { repo: "{{ repo_url }}", dest: "{{ app_dir }}", version: "{{ repo_version }}", force: true }
+  notify: Restart shopflow                       # handler runs once, at the end, only if something changed
+- name: Install the systemd unit for the compose stack
+  ansible.builtin.template: { src: shopflow.service.j2, dest: /etc/systemd/system/shopflow.service, mode: "0644" }
+  notify: Restart shopflow
+- name: Build images and start the stack
+  ansible.builtin.systemd: { name: shopflow, daemon_reload: true, enabled: true, state: started }
+- name: Wait for order-service readiness
+  ansible.builtin.uri: { url: http://localhost:8081/actuator/health/readiness, status_code: 200 }
+  register: shopflow_readiness
+  retries: 30
+  delay: 10
+  until: shopflow_readiness.status == 200
+```
+The systemd unit (`shopflow.service.j2`): `Type=oneshot` + `RemainAfterExit=true`, `WorkingDirectory={{ app_dir }}/shopflow`, `ExecStart=docker compose up --build -d --remove-orphans`, `ExecStop=docker compose down`, `TimeoutStartSec=900`, `After=docker.service network-online.target` — so the stack survives reboots and `systemctl restart shopflow` is the deploy. Things to point at:
+- **Idempotency**: every task is a module with desired state (`apt state: present`, `systemd enabled/started`, `git version:`), so a second run reports `ok` and changes nothing; the handler `Restart shopflow` fires **only** when the checkout or the unit file changed (`notify` + `changed_when` semantics), not on every run.
+- **Dry run**: `ansible-playbook -i inventory.ini site.yml --check --diff` shows what would change (the README's first command). `--syntax-check` runs in CI.
+- **Rollback**: `ansible-playbook site.yml -e repo_version=<previous sha>` (`docs/runbooks/Rollback.md`, ~5 min because images rebuild).
+- **Secrets**: `group_vars/shopflow.yml` holds only non-secrets; real passwords go into `ansible-vault create group_vars/vault.yml` and are referenced as `{{ vault_db_password }}` (vault password via `--vault-password-file` or a CI secret).
+- **Lint**: `ansible-lint` with the `production` profile (FQCN module names, `name:` on every task, no `command` where a module exists, file modes set) — clean; runs in the CI `lint` job together with `ansible-playbook --syntax-check -i inventory.example.ini site.yml`. Not yet done: a run against a real VM (Molecule would test the roles in a container).
 ```bash
+cp inventory.example.ini inventory.ini             # put the VM's IP and SSH user in it
 ansible all -i inventory.ini -m ping
 ansible-playbook -i inventory.ini site.yml --check --diff
+ansible-playbook -i inventory.ini site.yml         # or: make ansible-deploy
 ```
-Terraform vs Ansible: Terraform **provisions** infrastructure (VPC, EKS, RDS) and tracks state; Ansible **configures** machines (packages, files, services). With Kubernetes + immutable images, Ansible is less needed for apps but common for VMs, on-prem, bootstrapping.
+Terraform vs Ansible: Terraform **provisions** infrastructure (VPC, EKS, RDS) and tracks state; Ansible **configures** machines (packages, files, services). With Kubernetes + immutable images, Ansible is less needed for apps but common for VMs, on-prem, bootstrapping. `docs/STATE.md` lists "Compose on one VM via Ansible" as the basic approach and "EKS via Terraform + Argo CD" as the advanced one — same images, same compose file.
 
 ---
 
@@ -623,7 +645,10 @@ Real infra differs from code due to manual changes. Detect with scheduled `terra
 Workspaces share code and backend config with separate state — fine for identical envs. For prod vs dev I prefer separate directories/backends: different credentials, explicit differences, smaller blast radius.
 
 **Q14. Terraform vs Ansible?**
-Terraform provisions infrastructure declaratively with state; Ansible configures servers procedurally-but-idempotently over SSH without state. Often used together.
+Terraform provisions infrastructure declaratively with state; Ansible configures servers procedurally-but-idempotently over SSH without state. Often used together. In ShopFlow they are the two deployment approaches: `infra/terraform/aws` builds EKS/RDS/MSK for the Kubernetes path, `infra/ansible` installs Docker on a VM and runs the same compose stack as a systemd unit — roles `docker` and `shopflow`, a handler that restarts the stack only when the checkout or unit file changed, `--check --diff` for dry runs, Vault for passwords, `ansible-lint` production profile in CI.
+
+**Q14b. How do you make a playbook idempotent, and how do you test it?**
+Use modules with desired state instead of shell commands (`apt state: present`, `systemd state: started enabled: true`, `git version:`, `template`), let the module report `changed` honestly, and put side effects (restart) in handlers triggered by `notify`, so they run once at the end and only after a change. Test: run it twice — the second run must show `changed=0`; `--check --diff` before a real run; `ansible-lint` to catch `command`/`shell` where a module exists and missing `name:`; Molecule for role tests in containers (not in the repo).
 
 **Q15. merge vs rebase; revert vs reset?**
 Merge preserves history with a merge commit; rebase rewrites my commits on top for linear history — never on shared branches. Revert adds an undo commit — safe on main and how GitOps rollbacks work; reset moves the branch pointer — local only.

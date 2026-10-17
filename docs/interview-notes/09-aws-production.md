@@ -27,7 +27,9 @@
 | Ingress | AWS Load Balancer Controller, `ingressClassName: alb`, internet-facing, `target-type: ip`, HTTPS 443 with ACM cert, health check `/actuator/health/readiness` (prod overlay); NetworkPolicy ingress from the VPC CIDR `10.0.0.0/16` on 8081/8082 so the ALB ENIs can reach the pods |
 | DNS / TLS | `dns.tf`: `aws_acm_certificate` (DNS validation) + `aws_route53_record` validation records + `aws_acm_certificate_validation`, created only when `hosted_zone_id` is set; output `acm_certificate_arn` goes into the Ingress annotation (overlay placeholder is `REPLACE-ME`) |
 | Pod identity in the overlay | `k8s/overlays/prod/service-accounts.yaml`: ServiceAccounts `order-service` / `notification-service` / `payment-service` annotated with `eks.amazonaws.com/role-arn` (kafka-clients role) + `serviceAccountName` patches on the three Kafka Deployments; `external-secrets-sa` in `external-secret.yaml` |
-| Cost | ~**$400–600/month** at these defaults (README) |
+| Cost | ~**$400–600/month** at these defaults (README); `environments/dev.tfvars` shrinks it to ≈ **$150/month** (single-AZ `db.t4g.micro`, 1–3 `t3.medium`, `cache.t4g.micro`) — `make tf-plan ENV=dev` |
+| Environments | `environments/dev.tfvars` vs `prod.tfvars` with the same root module; `environment` toggles `deletion_protection` and the secret recovery window (30 d prod / 0 dev) |
+| Lint | `.tflint.hcl` (core, offline, `make lint`) and `.tflint.ci.hcl` (+ AWS ruleset `0.49.0`) in the CI `lint` job; `terraform fmt`/`validate` in the `terraform` job |
 
 ---
 
@@ -249,7 +251,8 @@ Formula you can quote (HikariCP wiki): `pool_size ≈ cores × 2 + effective_spi
 
 - `backup_retention_period = 7`, window 20:00–21:00 UTC (01:30 IST, low traffic). Automated daily snapshot + **transaction logs every 5 minutes → PITR to any second in the last 7 days** (RPO ≈ 5 min).
 - `deletion_protection = true` and `skip_final_snapshot = false` in prod: `terraform destroy` fails until you flip the flag, and a final snapshot `shopflow-final` is taken.
-- Restore = **new instance** from snapshot/PITR, then repoint the `rds-endpoint` key in the ConfigMap (or swap DNS via a Route 53 CNAME in front of RDS — recommended so the overlay never changes).
+- Restore = **new instance** from snapshot/PITR, then repoint the `rds-endpoint` key in the ConfigMap (or swap DNS via a Route 53 CNAME in front of RDS — recommended so the overlay never changes). Step by step in `docs/runbooks/RestorePostgres.md`: `aws rds restore-db-instance-to-point-in-time --source-db-instance-identifier shopflow --target-db-instance-identifier shopflow-restore --restore-time <UTC>` → verify from a pod in the VPC → repoint (git + Argo CD sync) or rename instances → rolling restart + smoke test → reconcile Terraform state (`terraform import` / adjust `rds.tf`) → post-mortem.
+- **RDS PITR vs the dev CronJob**: in dev/minikube Postgres runs in the cluster and `k8s/base/postgres/backup-cronjob.yaml` takes a nightly `pg_dump -Fc` per database into a PVC (RPO up to 24 h, RTO ~10 min, 7-day retention). The prod overlay deletes that CronJob with the rest of the in-cluster Postgres: RDS gives RPO ≈ 5 min and RTO 15–30 min with zero scripts to maintain. That is the whole argument for a managed database in one table — the runbook has it.
 - Storage: gp3 50 GB → autoscale to 200 GB (`max_allocated_storage`); never let RDS hit storage-full (it goes read-only).
 
 ### 5.4 Performance Insights + Enhanced Monitoring
@@ -538,8 +541,8 @@ Rough `ap-south-1` on-demand numbers (verify in the calculator; prices drift):
 
 | Pillar | Evidence in ShopFlow | Honest gap |
 |---|---|---|
-| Operational excellence | Everything in Terraform + Kustomize + Argo CD (`selfHeal`, `prune`); `terraform validate` in CI; runbook below; alerts on symptoms | No `terraform plan` in PRs yet; no automated DB-init Job |
-| Security | Private subnets, SG-to-SG, no IAM users, IRSA/OIDC, encryption at rest (RDS, ElastiCache, MSK, ECR, S3 state) and in transit (TLS to RDS `sslmode=require`, Redis TLS, MSK TLS, ALB HTTPS), Cognito PKCE + short tokens, non-root read-only containers, NetworkPolicies, Trivy + ECR scan | Public EKS endpoint open to `0.0.0.0/0`; no WAF; no KMS CMKs (AWS-managed keys) |
+| Operational excellence | Everything in Terraform + Kustomize + Argo CD (`selfHeal`, `prune`); `terraform fmt/validate` + tflint (AWS ruleset) in CI; per-env tfvars; runbooks per alert + restore/rollback procedures (`docs/runbooks/`); SLO burn-rate alerts routed through Alertmanager; alerts on symptoms | No `terraform plan` in PRs yet; no automated DB-init Job; Rollouts/Kyverno/Alertmanager delivery only proven offline |
+| Security | Private subnets, SG-to-SG, no IAM users, IRSA/OIDC, encryption at rest (RDS, ElastiCache, MSK, ECR, S3 state) and in transit (TLS to RDS `sslmode=require`, Redis TLS, MSK TLS, ALB HTTPS), Cognito PKCE + short tokens, non-root read-only containers, NetworkPolicies, Trivy + ECR scan, gitleaks in CI, Kyverno policies incl. `verify-image-signature` (only images signed by this workflow on `main`, keyless, may run in `shopflow`) | Public EKS endpoint open to `0.0.0.0/0`; no WAF; no KMS CMKs (AWS-managed keys) |
 | Reliability | 3 AZs, NAT/AZ, RDS Multi-AZ, Redis auto-failover, Kafka RF3/ISR2, HPA 3–10, PDB, outbox + idempotent consumer + DLT, circuit breaker | Single region; no RDS Proxy; no chaos testing |
 | Performance efficiency | Graviton DB/cache, gp3, Redis cache, virtual threads, HPA on CPU, `log_min_duration_statement` | HPA only on CPU (add RPS/latency via KEDA/custom metrics) |
 | Cost optimisation | `default_tags`, lifecycle policy, log retention, dev flags, right-sized burstables | On-demand only; no budgets resource yet |
@@ -556,7 +559,7 @@ Rough `ap-south-1` on-demand numbers (verify in the calculator; prices drift):
 
 DR strategy ladder (AWS terminology): **Backup & restore** (hours, cheapest — ShopFlow today) → **Pilot light** (DB replica in region 2, no compute) → **Warm standby** (scaled-down full stack) → **Multi-site active/active** (Route 53 latency routing, Aurora Global Database / DynamoDB global tables, MSK replicated with MirrorMaker 2 or MSK Replicator). Each step costs more and complicates data consistency (see [12 — A5](12-hard-interview-questions.md)).
 
-Minimum DR hygiene to actually do: enable **AWS Backup** plan with cross-region copy for RDS, copy ECR images to a second region (replication rules), keep the Terraform state bucket replicated, test a restore quarterly (a backup you never restored is a hope, not a backup).
+Minimum DR hygiene to actually do: enable **AWS Backup** plan with cross-region copy for RDS, copy ECR images to a second region (replication rules), keep the Terraform state bucket replicated, test a restore quarterly (a backup you never restored is a hope, not a backup — `docs/runbooks/RestorePostgres.md` ends with exactly that rule and has the dev `pg_restore` and prod PITR procedures side by side).
 
 ---
 
@@ -690,6 +693,12 @@ Private connectivity to AWS services without NAT/IGW. Gateway endpoints (S3, Dyn
 
 **Q30. How do you restrict who can reach the EKS API?**
 `endpoint_public_access_cidrs` to office/VPN IPs or private-only with a bastion/SSM Session Manager; IAM via access entries; RBAC inside the cluster; CloudTrail + control-plane audit logs.
+
+**Q31. How does the image signature in CI get enforced on EKS?**
+CI signs each pushed digest keyless (`cosign sign`, the job's OIDC token → Fulcio certificate → Rekor). `k8s/policies/kyverno/verify-image-signature.yaml` is the enforcement: a Kyverno `verifyImages` rule for Pods in `shopflow` whose attestor is the GitHub OIDC issuer plus the exact subject `https://github.com/Rajji01/DevopsComplete/.github/workflows/shopflow.yml@refs/heads/main`, for both `ghcr.io/rajji01/shopflow-*` and `*.dkr.ecr.ap-south-1.amazonaws.com/shopflow/*`. `mutateDigest: true` rewrites the tag to the verified digest; `webhookTimeoutSeconds: 30` because the Rekor lookup is slow; `failureAction: Enforce`. Someone with ECR push rights but no access to the pipeline can push an image, but the cluster will not run it. Honest status: the policy is schema-validated in CI, but the only place it can actually be tested is a cluster running Kyverno with registry access — it is excluded from the offline `kyverno apply` step.
+
+**Q32. Dev vs prod Terraform — what differs and what does it cost?**
+Same root module, two var files: `environments/dev.tfvars` — `t3.medium` nodes min 1/desired 2/max 3, `db.t4g.micro` **single-AZ**, `cache.t4g.micro`, `kafka.t3.small`, `dev.shop.example.com`, ≈ $150/month per the file's own note and meant to be destroyed when idle; `environments/prod.tfvars` — `t3.large` 3/3/6, `db.t4g.medium` Multi-AZ, `cache.t4g.small`, `kafka.m5.large`, which is what §13's $400–600 (list ~$730) estimates. `environment = "dev"` also disables RDS `deletion_protection` and sets the Secrets Manager recovery window to 0 so `terraform destroy` is clean. NAT is still one per AZ in both (`single_nat_gateway = false` in `vpc.tf`) — flipping that is the next dev saving.
 
 ---
 

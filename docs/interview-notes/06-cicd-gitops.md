@@ -22,7 +22,7 @@
 | Concept | In ShopFlow | Where |
 |---|---|---|
 | Triggers | `push` to `main` + `pull_request`, filtered by `paths: ["shopflow/**", "infra/**", ".github/workflows/shopflow.yml", ".yamllint.yaml", ".hadolint.yaml", ".gitleaks.toml"]` | `shopflow.yml` |
-| Jobs | `lint`, `test`, `validate-manifests`, `terraform`, `loadtest-syntax` (parallel) → `image` (`needs: [test, validate-manifests]`) → `deploy-manifests` (`needs: [image]`, main only). `lint` is a required check via branch protection, not a `needs:` | `shopflow.yml` |
+| Jobs | `lint`, `test`, `validate-manifests`, `terraform`, `loadtest-syntax` (parallel) → `image` (`needs: [test, validate-manifests]`) → `deploy-manifests` (`needs: [image]`, main only). `image` does not `needs: lint` — lint gates merges as a required status check in branch protection (not configured in the repo), so a lint failure never blocks the image build feedback | `shopflow.yml` |
 | Lint (shift-left) | `yamllint -c .yamllint.yaml .`, `hadolint-action` on `Dockerfile` + `Dockerfile.distroless`, `gitleaks-action` (full history, `fetch-depth: 0`, allowlist in `.gitleaks.toml`), `setup-tflint` + `tflint --config .tflint.ci.hcl` (AWS ruleset 0.49.0), `ansible-lint` + `ansible-playbook --syntax-check` | `lint` job |
 | Policy tests | `kyverno apply` (CLI v1.19.1) on the rendered prod overlay must pass and on `k8s/policies/tests/bad-pod.yaml` must fail; signature policy skipped offline | `validate-manifests` job |
 | Alert tests | `promtool check rules` on alert + recording + SLO rules, `promtool test rules tests/alerts_test.yml` (6 scenarios), `amtool check-config alertmanager.yml` | `validate-manifests` job |
@@ -274,7 +274,7 @@ Jenkins terms to know: multibranch pipeline, shared libraries (`@Library`), `sta
 | Fits | CI/CD, microservices, SaaS | Versioned/boxed products, mobile, slow release trains |
 | Pain | Needs good tests + flags | Merge conflicts, slow feedback |
 
-ShopFlow pipeline is trunk-shaped: PRs get full CI (no push), `main` publishes images. GitHub Flow = trunk-based with PRs. Protect `main` with branch protection: required status checks (by their job `name:` — "Unit + integration tests", "Validate K8s + monitoring config", "Image order-service", "Image inventory-service"), required reviews, no force push.
+ShopFlow pipeline is trunk-shaped: PRs get full CI (no push), `main` publishes images. GitHub Flow = trunk-based with PRs. Protect `main` with branch protection: required status checks (by their job `name:` — "Lint (yaml, Dockerfile, secrets, Terraform, Ansible)", "Unit + integration tests", "Validate K8s + monitoring config", "Image order-service", "Image inventory-service"), required reviews, no force push.
 
 ---
 

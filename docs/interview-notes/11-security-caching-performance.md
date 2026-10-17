@@ -242,7 +242,9 @@ Spring Security adds defaults: `Cache-Control: no-store`, `X-Content-Type-Option
 - **Dependabot** (`.github/dependabot.yml`): weekly Maven (Spring grouped), Docker, GitHub Actions, Terraform updates.
 - Images: `eclipse-temurin:21-jre-alpine` (JRE only), pinned tags, non-root UID 10001; layered jar so a dependency CVE fix is a small layer.
 - **SBOM + signing (implemented in `shopflow.yml`, `image` job):** `anchore/sbom-action` writes a CycloneDX SBOM per image (`sbom-<service>.cdx.json` artifact) after the Trivy scan; after the push on `main`, `sigstore/cosign-installer` + `cosign sign --yes <image>@<digest>` signs the pushed digest **keyless** with the job's OIDC identity (`permissions: id-token: write`), so a Kyverno / sigstore policy-controller admission rule can refuse unsigned images.
-- Would add: the admission policy itself (Kyverno `verifyImages`), `trivy config`/`checkov` for Terraform and K8s YAML, secret scanning (gitleaks).
+- **Admission policy (written, cluster-only to enforce):** `k8s/policies/kyverno/verify-image-signature.yaml` — keyless attestor pinned to this workflow on `main`, `mutateDigest: true`; plus `disallow-latest-tag`, `require-probes`, `require-resources`, `require-non-root`, tested with `kyverno apply` in CI (see [05](05-kubernetes.md)).
+- **Secret scanning (done):** gitleaks over the full history in the CI `lint` job and as a pre-commit hook; `.gitleaks.toml` allowlists the documented dev literals and LABS token examples. Also yamllint, hadolint (both Dockerfiles), tflint with the AWS ruleset, ansible-lint.
+- Would add: `trivy config`/`checkov` for Terraform and K8s YAML, CodeQL for the Java code.
 
 ---
 
