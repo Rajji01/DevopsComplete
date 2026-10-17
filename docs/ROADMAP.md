@@ -90,6 +90,7 @@ Learn: architecture, Deployments/StatefulSets, Services and DNS, Ingress, probes
 Do (minikube):
 - `kubectl apply -k shopflow/k8s/overlays/dev`
 - Labs 5–11 and 15: readiness vs liveness, OOMKilled, CrashLoopBackOff, ImagePullBackOff, rollback, HPA, NetworkPolicy, graceful shutdown
+- Labs 30–32: canary a bad release with Argo Rollouts, let Kyverno reject a bad pod, restore Postgres from the backup CronJob
 - Write a Helm chart for order-service (compare with Kustomize: which do you prefer, and why?)
 
 Done when:
@@ -144,13 +145,14 @@ Notes: [`10-kafka-event-driven.md`](interview-notes/10-kafka-event-driven.md), [
 Learn: logs/metrics/traces, PromQL, Grafana, alerting (symptoms not causes), RED/USE, SLI/SLO/error budgets, incident response.
 
 Do:
-- Labs 4 and 13: watch `resilience4j_circuitbreaker_state` change, then write and fire your own alert
+- Labs 4, 13, 28 and 29: watch the breaker metric, write an alert, route it through Alertmanager, unit-test it with `promtool test rules`
 - Build a Grafana dashboard for order-service: request rate, error %, p99 latency, orders by status
 - Add OpenTelemetry tracing (Micrometer Tracing + OTLP to Jaeger) and follow one order across both services
 
 Done when:
 - [ ] You can write the PromQL for error rate and p99 latency from memory
-- [ ] You can define an SLO for `POST /api/v1/orders` and say what alert protects it
+- [ ] You can define an SLO for `POST /api/v1/orders` and explain the burn-rate alerts in `slo-rules.yml` (why 14.4×, why two windows)
+- [ ] You can walk an on-call engineer through a runbook you wrote
 
 Notes: [`07-observability-sre.md`](interview-notes/07-observability-sre.md)
 
@@ -163,7 +165,8 @@ Learn: AWS core (VPC, subnets, SG/NACL, EC2, ALB, EKS, ECR, RDS, ElastiCache, MS
 Read: `infra/terraform/aws/` file by file with its README, then `k8s/overlays/prod/` and see how every managed endpoint reaches the pods.
 
 Do:
-- Lab 23, then `terraform plan` against your own account and read every line of the plan
+- Lab 23, then `terraform plan -var-file=environments/dev.tfvars` against your own account and read every line of the plan
+- Lab 33: the same stack on one VM with Ansible, then argue when EKS is worth it (`infra/ansible/README.md`)
 - Cheap first: a `terraform.tfvars` with `db_multi_az=false`, small instances, destroy the same day. Compare the bill estimate with the README's numbers.
 - Install External Secrets Operator + AWS Load Balancer Controller with Helm, annotate their ServiceAccounts with the IRSA role ARNs, and watch a Secret appear from Secrets Manager
 - Point Argo CD at `k8s/overlays/prod` and do one GitOps deploy end to end (push to main → CI pins the SHA → Argo syncs)
@@ -189,7 +192,8 @@ Outbox, Kafka saga (payment), JWT, cache, tracing, rate limiting, ArchUnit, Helm
 | Run `loadtest/flash-sale.js` against compose, then against minikube; tune until thresholds pass with 1000 buyers | performance testing, proving no overselling under load |
 | MSK IAM auth in the services (`aws-msk-iam-auth`) | SASL, IRSA in a client library |
 | Karpenter instead of managed node groups; Spot for stateless pods | cost-aware autoscaling |
-| Chaos: kill a Kafka broker / RDS failover during a load test | resilience verification, RPO/RTO |
+| Chaos: kill a Kafka broker / RDS failover during the k6 load test, with the canary analysis watching | resilience verification, RPO/RTO |
+| Wire Alertmanager to a real Slack webhook + PagerDuty free tier; get paged by Lab 28 on your phone | the on-call experience |
 | Service mesh (Istio/Linkerd) for mTLS between services | zero trust, L7 policy |
 
 ---

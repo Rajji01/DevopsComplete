@@ -1,0 +1,22 @@
+# The gate between canary steps: fail the rollout if the canary's 5xx ratio is above 2%
+# for 3 consecutive measurements. The query only looks at canary pods (label injected by Rollouts).
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-ratio
+spec:
+  args:
+    - name: service
+  metrics:
+    - name: error-ratio
+      interval: 1m
+      count: 5
+      successCondition: result[0] < 0.02
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            sum(rate(http_server_requests_seconds_count{application="{{args.service}}", status=~"5..", uri!~"/actuator.*", rollouts_pod_template_hash!=""}[2m]))
+            /
+            sum(rate(http_server_requests_seconds_count{application="{{args.service}}", uri!~"/actuator.*", rollouts_pod_template_hash!=""}[2m]))

@@ -7,7 +7,10 @@ Setup used by the labs (run everything from `shopflow/`):
 | Labs | Environment |
 |---|---|
 | 1–4, 12–13, 16–22, 24–26 | Docker Compose: `docker compose up --build -d` |
-| 27 | just Maven |
+| 27, 29, 31 (offline part) | just Maven / promtool / kyverno CLI |
+| 28 | Docker Compose (Alertmanager) |
+| 30, 31, 32 | minikube + Argo Rollouts / Kyverno |
+| 33 | a VM + Ansible |
 | 5–11, 15 | minikube: see "Kubernetes" in [`../shopflow/README.md`](../shopflow/README.md) |
 | 14 | GitHub: a branch + pull request |
 | 23 | kubectl + Terraform (plan needs an AWS account) |
@@ -533,3 +536,101 @@ sleep 5; auth 'localhost:8081/api/v1/orders?size=1' | jq '.content[0].status'
 **Why:** architecture decisions are only real if something enforces them. A rule in the test suite is a reviewer that never gets tired, and new team members learn the rules from the failure message.
 
 **Challenge:** add a rule that `*Listener` classes (Kafka consumers) may only depend on `*Service` classes and their own event records, never on repositories directly. Then decide: should `PaymentEventListener` be allowed to use `ProcessedEventRepository`? Change the code or the rule, and justify it in the commit message.
+
+---
+
+# Part 3: operating it (DevOps depth)
+
+## Lab 28: Receive a page (Alertmanager routing)
+
+**Do**
+```sh
+docker compose up -d alertmanager
+open http://localhost:9093                                 # Status -> config, Alerts
+# fire a fake page straight into Alertmanager (no need to break anything)
+curl -s -XPOST localhost:9093/api/v2/alerts -H 'Content-Type: application/json' -d '[{"labels":{"alertname":"HighErrorRate","application":"order-service","severity":"page"},"annotations":{"summary":"test page","runbook":"docs/runbooks/HighErrorRate.md"}}]'
+curl -s localhost:9093/api/v2/alerts | jq '.[].labels'
+# now fire ServiceDown for the same service and watch HighErrorRate get INHIBITED
+curl -s -XPOST localhost:9093/api/v2/alerts -H 'Content-Type: application/json' -d '[{"labels":{"alertname":"ServiceDown","application":"order-service","severity":"page","instance":"order-service:8081"},"annotations":{"summary":"down"}}]'
+curl -s 'localhost:9093/api/v2/alerts?inhibited=true' | jq '.[] | {name: .labels.alertname, state: .status.state, inhibitedBy: .status.inhibitedBy}'
+```
+
+**Observe:** the first alert is routed to `pagerduty-oncall` **and** `slack-incidents` (`continue: true`); after `ServiceDown`, `HighErrorRate` shows `inhibitedBy` so the on-call gets one page, not three.
+
+**Why:** routing decides *who*, grouping decides *how many messages*, inhibition decides *which symptoms are redundant*. Without all three, on-call becomes noise and people mute it. (The Slack/PagerDuty secrets are placeholder files in `monitoring/secrets/`; a real setup mounts them from a secret manager.)
+
+**Challenge:** add a route that sends `slo=checkout-availability` alerts to a separate `#shopflow-slo` channel, and a silence (`amtool silence add alertname=HighP99Latency --duration 2h --comment "known: DB migration"`). When is a silence the right tool, and when is it hiding a problem?
+
+## Lab 29: Test an alert before it ever fires
+
+**Do**
+1. In `monitoring/alert-rules.yml`, change `HighErrorRate`'s threshold from `0.05` to `0.5`.
+2. `promtool test rules monitoring/tests/alerts_test.yml` → scenario 1 fails (10% errors no longer page).
+3. Revert, then write a new scenario in `tests/alerts_test.yml` for `KafkaConsumerLagHigh` (series `kafka_consumer_fetch_manager_records_lag_max{application="notification-service"}` at 2000 for 12 minutes → expect the alert; at 500 → expect none).
+
+**Why:** alert rules are code; the `InventoryCircuitOpen` bug (an alert that could never fire) lived for days. A unit test with synthetic series proves the arithmetic and the `for:` duration without waiting for an outage.
+
+**Challenge:** write a test for `CheckoutSLOBurnRateSlow` using the 6h and 30m windows. Why do multi-window alerts need **both** windows to be over the threshold?
+
+## Lab 30: Canary a bad release (Argo Rollouts)
+
+Needs minikube + the Argo Rollouts controller (`k8s/rollouts/README.md`) and Prometheus in the `monitoring` namespace.
+
+**Do**
+```sh
+kubectl apply -k k8s/rollouts
+kubectl argo rollouts get rollout order-service -n shopflow --watch       # terminal 1
+# terminal 2: deploy a "bad" version: same image, but break the DB password so the new pods 500 on every order
+kubectl argo rollouts set image order-service order-service=shopflow/order-service:dev -n shopflow
+kn patch rollout order-service --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"DB_PASSWORD","value":"wrong"}}]'
+# terminal 3: traffic, so the analysis has data
+hey -z 10m -q 5 -H "Authorization: Bearer $TOKEN" -m POST -H 'Content-Type: application/json' -d '{"sku":"AIRPODS-PRO","quantity":1}' http://shopflow.local/api/v1/orders
+```
+
+**Observe:** 10% of pods switch to the bad version; the `error-ratio` AnalysisRun measures the canary's 5xx ratio (> 2%) and after 3 failures the rollout **aborts**: the canary pods are removed and 90–100% of users never saw the error. Compare with Lab 9 where RollingUpdate would have replaced every pod.
+
+**Why:** readiness only asks "did it start?"; analysis asks "is it *correct* under real traffic?" Progressive delivery limits the blast radius to the canary weight.
+
+**Challenge:** promote the blue-green `inventory-service` rollout manually after hitting the preview Service (`inventory-service-preview:8082`). Then `kubectl argo rollouts undo` it and measure how long the rollback took vs `kubectl rollout undo` in Lab 9.
+
+## Lab 31: Admission control: the cluster says no (Kyverno)
+
+**Do**
+```sh
+# offline first (no cluster needed)
+kyverno apply k8s/policies/kyverno/ --resource k8s/policies/tests/bad-pod.yaml      # 4 failures
+kyverno apply k8s/policies/kyverno/ --resource <(kubectl kustomize k8s/overlays/prod) # all pass
+# then in minikube: install Kyverno (helm install kyverno kyverno/kyverno -n kyverno --create-namespace), apply the policies, and try the bad pod
+kubectl apply -f k8s/policies/kyverno/ && kn apply -f k8s/policies/tests/bad-pod.yaml
+```
+
+**Observe:** the API server rejects `bad-pod` with the policy messages (`':latest' cannot be rolled back...`, missing probes, missing resources, root). Nothing to review, nothing to forget.
+
+**Why:** code review is a *human* control; admission policy is a *system* control. Production needs both, and the system one never gets tired.
+
+**Challenge:** switch `require-probes` to `validationFailureAction: Audit`, apply the bad pod, and find the result in `kubectl get policyreport -A`. When would you run a policy in Audit for weeks before Enforce? (Answer: when existing workloads would break; audit → fix → enforce.)
+
+## Lab 32: Restore the database (and discover what you forgot)
+
+**Do:** follow [`runbooks/RestorePostgres.md`](runbooks/RestorePostgres.md) on minikube: trigger the backup job manually (`kn create job --from=cronjob/postgres-backup backup-now`), place an order, **drop the orders table** (`kn exec postgres-0 -- psql -U postgres -d orders -c 'drop table orders cascade'`), then restore from the dump.
+
+**Observe:** the order placed *after* the backup is gone (RPO = time since the last backup). Flyway's `flyway_schema_history` is restored with the data, so the service starts cleanly.
+
+**Why:** a backup you have never restored is a hope. The lab also shows the RPO/RTO trade-off: nightly dumps (24 h RPO) vs RDS PITR (5 min).
+
+**Challenge:** time the restore (RTO). Then design how you would restore only *one* order without wiping the rest (hint: restore into a scratch database, copy the row).
+
+## Lab 33: The pre-Kubernetes way (Ansible on a VM)
+
+**Do:** create a small Ubuntu VM (a local multipass/VirtualBox VM is fine), put its IP in `infra/ansible/inventory.ini`, then:
+```sh
+ansible-playbook -i infra/ansible/inventory.ini infra/ansible/site.yml --check   # dry run
+ansible-playbook -i infra/ansible/inventory.ini infra/ansible/site.yml
+ssh ubuntu@<vm> 'systemctl status shopflow; docker compose -f /opt/shopflow/shopflow/docker-compose.yml ps'
+```
+
+**Observe:** the whole stack runs on one VM as a systemd unit; a reboot brings it back. Now kill a container (`docker kill ...-order-service-1`): compose's `restart: unless-stopped` restarts it, but during the restart there is no second replica, so requests fail. That is the difference a scheduler makes.
+
+**Why:** many companies run exactly this. Knowing both lets you argue *when* Kubernetes is worth its complexity (`infra/ansible/README.md` table) instead of assuming it always is.
+
+**Challenge:** run the playbook twice. The second run should change nothing (idempotency). Which tasks reported `changed` anyway, and how would you fix them?

@@ -1,0 +1,33 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-non-root
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: run-as-non-root
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              selector:
+                matchLabels:
+                  app.kubernetes.io/part-of: shopflow
+      exclude:
+        any:
+          - resources:
+              selector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values: ["postgres", "kafka", "keycloak"]   # vendor images with their own users
+      validate:
+        message: "shopflow services run as a non-root user (Dockerfile UID 10001) with privilege escalation disabled"
+        pattern:
+          spec:
+            securityContext:
+              runAsNonRoot: true
+            containers:
+              - securityContext:
+                  allowPrivilegeEscalation: false

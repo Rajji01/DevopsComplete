@@ -556,3 +556,152 @@ Har dependency ke liye poochho: **slow ho to? down ho to? galat jawab de to?**
 | Controllers DB query karne lage | architecture sirf wiki mein | ArchUnit rules in the build |
 | Orders hamesha ke liye FAILED | "outcome unknown" ka koi owner nahi | reconciler job + idempotent release |
 | Redis down → reads fail | cache hard dependency | CacheErrorHandler fail-open |
+
+---
+
+## Part 7: DevOps depth (operate karna, sirf deploy nahi)
+
+### 20. Alert routing: alert tab tak bekaar hai jab tak kisi ko mile nahi
+
+**Problem:** Prometheus pe alert "firing" tha, 2 ghante tak. Kisi ko pata nahi chala kyunki koi Prometheus ka page khol ke nahi baitha tha.
+
+**Kyu:** Alert = *detection*. Routing = *delivery*. Dono alag kaam hain. Aur delivery mein bhi: kaun (page vs ticket), kitne messages (grouping), kaunse redundant (inhibition).
+
+**Kaise (steps):**
+1. Alertmanager Prometheus ke saath lagao (`alerting:` block).
+2. Har alert pe `severity` label: `page` = raat ko jagao (PagerDuty), `ticket` = subah dekho (Slack).
+3. `group_by: [alertname, application]`: 10 pods ka ek hi problem = 1 message.
+4. Inhibition: `ServiceDown` fire ho to usi service ka `HighErrorRate` chup rahe. Ek cause, ek page.
+5. Har alert pe `runbook:` annotation: message ke saath link aaye ki ab kya karna hai.
+6. Secrets (webhook, PagerDuty key) file se, git se kabhi nahi.
+
+**ShopFlow mein:** `monitoring/alertmanager.yml`, `docs/runbooks/`, Lab 28.
+
+**Ek line mein:** *Detection Prometheus ka kaam, delivery Alertmanager ka; page kam rakho, runbook saath bhejo.*
+
+---
+
+### 21. SLO aur burn-rate alerts: "kitna bura" ko number banao
+
+**Problem:** "Error rate 3% hai, page karein?" Har baar bahas. Koi kehta 1% bhi bura, koi 5% chalta hai.
+
+**Kyu:** SLO ek **promise** hai (99.5% checkout 1s ke andar sahi), aur error budget (0.5%) ek **allowance**. Alert tab ho jab budget *tezi se* khatam ho raha ho, na ki har blip pe.
+
+**Kaise (steps):**
+1. SLI define karo: good request = no 5xx **aur** < 1s. 429/4xx client ki galti, count nahi.
+2. Recording rules se `sli:checkout_error_ratio:rate{5m,30m,1h,6h}` pehle se compute karo.
+3. Burn rate = (error ratio) / (1 − SLO). 14.4× matlab 2 din mein mahine ka budget khatam.
+4. Multi-window: 1h **aur** 5m dono threshold ke upar → page (fast burn). 6h **aur** 30m → page (slow burn). Chhota window alert ko jaldi band karta hai jab problem fix ho jaye.
+5. Error budget policy likho: budget < 10% → feature freeze, sirf reliability.
+6. **Test** likho (`promtool test rules`): synthetic series se prove karo ki 10% errors page karte hain aur 2% nahi.
+
+**ShopFlow mein:** `monitoring/recording-rules.yml`, `slo-rules.yml`, `tests/alerts_test.yml`, `docs/runbooks/CheckoutSLOBurnRate.md`, Lab 29.
+
+**Ek line mein:** *SLO promise, budget allowance, burn rate speed; page sirf speed pe.*
+
+---
+
+### 22. Progressive delivery: canary aur blue-green (RollingUpdate ke saath, uski jagah nahi)
+
+**Problem:** Release theek se start hua (readiness pass), lekin har order pe 500 de raha tha. RollingUpdate ne 1 minute mein 100% pods badal diye. Sab users ko error.
+
+**Kyu:** Readiness poochhta hai "start hua?", production poochhta hai "**sahi** hai?". Doosre ka jawab sirf real traffic de sakta hai, aur woh thoda traffic pe lena chahiye.
+
+**Kaise (teen approaches, saath-saath):**
+| | RollingUpdate (basic) | Canary (advanced) | Blue-green (advanced) |
+|---|---|---|---|
+| Naya version traffic | sab, dheere | 10% → 25% → 50% → 100% | 0%, phir ek saath 100% |
+| Aage badhne ka decision | readiness | Prometheus error ratio < 2% (AnalysisTemplate) | insaan/test promote kare |
+| Rollback | `rollout undo` (~1 min) | auto abort, seconds | Service flip, seconds |
+| Cost | +1 pod | kuch canary pods | 2× pods preview ke time |
+
+ShopFlow: `k8s/base` = RollingUpdate (default), `k8s/rollouts` = Argo Rollouts canary (order-service) aur blue-green (inventory). `workloadRef` se Deployment ka hi pod template reuse hota hai, copy nahi.
+
+**ShopFlow mein:** `k8s/rollouts/`, `docs/runbooks/Rollback.md`, Lab 30.
+
+**Ek line mein:** *Pehle thoda traffic do, metric dekho, phir sab; galat ho to blast radius chhota rahe.*
+
+---
+
+### 23. Policy as code: cluster khud "no" bole
+
+**Problem:** Review mein kisi ne `image: nginx:latest` aur bina probes wala pod approve kar diya. Prod mein gaya. Rollback possible nahi kyunki `latest` ka matlab kya tha pata nahi.
+
+**Kyu:** Review human control hai; thak jaata hai. Admission policy system control hai; har manifest API server mein ghusne se pehle check hota hai.
+
+**Kaise:**
+1. Kyverno `ClusterPolicy` (YAML): no `:latest`, probes zaroori, requests/memory limit zaroori, non-root, aur **image signature** (cosign, CI ki OIDC identity) verify.
+2. Pehle `Audit` mode (report), existing workloads fix karo, phir `Enforce`.
+3. Offline test: `kyverno apply policies/ --resource <rendered manifests>`: prod overlay pass, `bad-pod.yaml` fail. Ye CI mein chalta hai.
+4. Purana approach bhi rakha: OPA Gatekeeper (Rego) same "no latest" rule ke liye. Dono interview mein poochte hain.
+
+**ShopFlow mein:** `k8s/policies/kyverno/`, `k8s/policies/gatekeeper/`, Lab 31.
+
+**Ek line mein:** *Jo rule insaan bhool sakta hai, use API server ko yaad rakhne do.*
+
+---
+
+### 24. Backup jo restore ho (RPO / RTO)
+
+**Problem:** "Backup hai?" "Haan, nightly." "Kabhi restore kiya?" "...nahi."
+
+**Kyu:** Backup ka test restore hai. Aur do numbers decide karte hain design: **RPO** (kitna data kho sakte ho: last backup se ab tak) aur **RTO** (kitni der mein wapas).
+
+**Kaise:**
+- Basic: CronJob `pg_dump -Fc` nightly, PVC pe, 7 din retention. RPO 24h, RTO ~10 min.
+- Advanced: RDS automated snapshots + PITR. RPO 5 min, RTO 15–30 min, zero ops.
+- Runbook likho, **quarterly practice karo**, time note karo.
+- Restore ke baad Terraform state drift hota hai (naya instance) → import/adjust.
+
+**ShopFlow mein:** `k8s/base/postgres/backup-cronjob.yaml`, `docs/runbooks/RestorePostgres.md`, Lab 32.
+
+**Ek line mein:** *RPO = kitna kho sakte ho, RTO = kitni der; restore practice hi backup hai.*
+
+---
+
+### 25. Runbooks aur post-mortems
+
+**Problem:** Page aaya 3 AM. Engineer ne 40 minute Slack history padhi ki pichhli baar kya kiya tha.
+
+**Kaise:** Har alert ka ek page: *matlab → pehle ye commands → likely causes table → fix → verify → kab escalate*. Alert annotation mein link. Incident ke baad 48h mein blameless post-mortem: timeline, root cause (system ka, insaan ka nahi), action items (prevent / detect faster / mitigate faster).
+
+**ShopFlow mein:** `docs/runbooks/` (har alert + restore + rollback + template).
+
+**Ek line mein:** *Runbook = aadhi neend mein bhi follow hone wala document; post-mortem = system ko dosh, insaan ko nahi.*
+
+---
+
+### 26. Shift-left: lint sab kuch, commit se pehle
+
+**Problem:** CI 12 minute baad bola "YAML mein tab hai". Ya worse: ek password git history mein chala gaya, 6 mahine baad mila.
+
+**Kaise:** `yamllint` (sab YAML), `hadolint` (Dockerfiles), `gitleaks` (secrets, poori history), `tflint` (Terraform), `ansible-lint`; `.pre-commit-config.yaml` se laptop pe commit se pehle, aur CI mein `lint` job sabse pehle (sasta, fail fast). False positives allowlist karo (`.gitleaks.toml`), warna log tool band kar dete hain.
+
+**ShopFlow mein:** root ke dotfiles, `make lint`, CI `lint` job.
+
+**Ek line mein:** *Jo check 2 second mein laptop pe ho sakta hai, use CI ke 12 minute tak mat chhodo.*
+
+---
+
+### 27. Ek VM pe Compose (Ansible): Kubernetes hamesha jawab nahi hai
+
+**Problem (ulta):** 3 services, 200 users/day, aur team EKS ka bill aur complexity dhoh rahi hai.
+
+**Kaise:** Ansible playbook: Docker install, repo checkout, compose stack systemd unit ke roop mein. `--check` dry run, idempotent runs. Trade-offs table `infra/ansible/README.md` mein: zero-downtime deploy mushkil, node failover nahi, lekin $50 aur Linux-only knowledge.
+
+**Ek line mein:** *Tool problem ke size ka ho; dono approach jaante ho tabhi sahi chun paoge.*
+
+---
+
+### Part 7 quick map
+
+| Symptom | Cause | Pattern |
+|---|---|---|
+| Alert firing tha, kisi ko pata nahi | routing nahi | Alertmanager + severity + runbook link |
+| Ek outage, 9 pages | grouping/inhibition nahi | group_by + inhibit_rules |
+| "Page karein ya nahi" pe bahas | SLO nahi | SLI/SLO + burn-rate alerts |
+| Alert kabhi fire nahi hota | rule kabhi test nahi hua | `promtool test rules` |
+| Bad release 100% users tak | RollingUpdate only | canary + analysis / blue-green |
+| `:latest` prod mein ghus gaya | sirf review | Kyverno/Gatekeeper admission policy |
+| Backup hai par restore kabhi nahi kiya | RPO/RTO socha nahi | CronJob/PITR + restore runbook + practice |
+| CI late bolta hai YAML galat hai | shift-left nahi | pre-commit + lint job |

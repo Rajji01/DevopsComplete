@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+# Variant of ./Dockerfile with a distroless runtime: no shell, no package manager, no /bin.
+#   + smallest attack surface (an attacker who gets code execution has no tools)
+#   + fewer CVEs for Trivy to find
+#   - no `kubectl exec ... sh` for debugging: use `kubectl debug` with an ephemeral container instead
+#   - the preStop hook in k8s/base runs `sh -c sleep 5`: with distroless use ["sleep", "5"]? No sleep
+#     binary either -> rely on Spring's graceful shutdown alone, or keep the alpine image for now.
+# Build: docker build -f Dockerfile.distroless --build-arg SERVICE=order-service -t shopflow/order-service:distroless .
+ARG SERVICE
+
+FROM maven:3.9-eclipse-temurin-21 AS build
+ARG SERVICE
+WORKDIR /src
+COPY . .
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -B -q -pl ${SERVICE} -am package -DskipTests
+
+FROM eclipse-temurin:21-jre-alpine AS extract
+ARG SERVICE
+WORKDIR /extract
+COPY --from=build /src/${SERVICE}/target/app.jar app.jar
+RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination out
+
+# nonroot variant runs as UID 65532; no shell, so ENTRYPOINT must be exec form (it is)
+FROM gcr.io/distroless/java21-debian12:nonroot
+WORKDIR /app
+COPY --from=extract /extract/out/dependencies/ ./
+COPY --from=extract /extract/out/spring-boot-loader/ ./
+COPY --from=extract /extract/out/snapshot-dependencies/ ./
+COPY --from=extract /extract/out/application/ ./
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]

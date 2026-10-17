@@ -1,0 +1,109 @@
+rule_files:
+  - ../alert-rules.yml
+  - ../recording-rules.yml
+  - ../slo-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # 1. HighErrorRate: 10% of order-service requests are 5xx for 6 minutes -> fires; inventory is clean -> silent
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="201"}'
+        values: '0+90x20'
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="503"}'
+        values: '0+10x20'
+      - series: 'http_server_requests_seconds_count{application="inventory-service", uri="/api/v1/products/{sku}", method="GET", status="200"}'
+        values: '0+100x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              application: order-service
+            exp_annotations:
+              summary: "order-service: more than 5% of requests fail with 5xx"
+              runbook: docs/runbooks/HighErrorRate.md
+
+  # 2. a 2% error rate must NOT page
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="201"}'
+        values: '0+98x20'
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="503"}'
+        values: '0+2x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HighErrorRate
+        exp_alerts: []
+
+  # 3. circuit breaker rejecting calls for 3 minutes -> InventoryCircuitOpen
+  - interval: 1m
+    input_series:
+      - series: 'resilience4j_circuitbreaker_not_permitted_calls_total{application="order-service", name="inventory"}'
+        values: '0+5x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: InventoryCircuitOpen
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              application: order-service
+            exp_annotations:
+              summary: "order-service stopped calling inventory-service (circuit breaker open)"
+              runbook: docs/runbooks/InventoryCircuitOpen.md
+
+  # 4. outbox backlog: 150 unpublished for 6 minutes -> page; 50 -> nothing
+  - interval: 1m
+    input_series:
+      - series: 'outbox_unpublished{application="order-service"}'
+        values: '150x10'
+      - series: 'outbox_unpublished{application="payment-service"}'
+        values: '50x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: OutboxBacklogGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              application: order-service
+            exp_annotations:
+              summary: "order-service: more than 100 order events waiting in the outbox"
+              runbook: docs/runbooks/OutboxBacklogGrowing.md
+
+  # 5. SLO fast burn: 10% bad checkouts (all 5xx) -> both 1h and 5m windows exceed 7.2% -> page after 2m
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="201"}'
+        values: '0+90x90'
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="503"}'
+        values: '0+10x90'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="1.0"}'
+        values: '0+90x90'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="+Inf"}'
+        values: '0+90x90'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: CheckoutSLOBurnRateFast
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              slo: checkout-availability
+            exp_annotations:
+              summary: "checkout is burning the monthly error budget 14x too fast (1h window)"
+              runbook: docs/runbooks/CheckoutSLOBurnRate.md
+
+  # 6. SLO: 1% slow (>1s) but no 5xx is below 7.2% -> no page
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="201"}'
+        values: '0+100x90'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="1.0"}'
+        values: '0+99x90'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="+Inf"}'
+        values: '0+100x90'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: CheckoutSLOBurnRateFast
+        exp_alerts: []

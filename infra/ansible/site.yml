@@ -1,0 +1,6 @@
+- name: Provision a ShopFlow VM
+  hosts: shopflow
+  become: true
+  roles:
+    - docker
+    - shopflow

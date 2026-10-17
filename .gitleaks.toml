@@ -1,0 +1,15 @@
+# gitleaks: secret scanning for commits and the working tree. Allowlisted entries are not secrets:
+# documentation showing how to obtain a token, and throwaway dev credentials that are documented as such.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "known non-secrets"
+paths = [
+  '''docs/LABS\.md''',                      # TOKEN=$(token alice) shell examples trip the generic-api-key rule
+  '''shopflow/k8s/base/keycloak/shopflow-realm\.json''',   # dev users alice/alice, bob/bob
+]
+regexes = [
+  '''TOKEN=\$\(token ''',
+  '''(orders|inventory|notifications|payments)-db-password=(orders|inventory|notifications|payments)''',  # dev overlay literals
+]

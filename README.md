@@ -4,12 +4,15 @@ Goal: **mastery in DevOps + Java backend**, by building, shipping, running and d
 
 | Start here | What it is |
 |---|---|
-| [`shopflow/`](shopflow/README.md) | Production-style microservices: order, inventory, payment and notification services (Spring Boot 3.5, Java 21, PostgreSQL, Kafka saga with transactional outbox, Redis, OAuth2/JWT, Resilience4j, OpenTelemetry, ArchUnit), Docker Compose stack, Kubernetes (Kustomize + Helm, HPA, PDB, NetworkPolicies), CI/CD with Trivy, SBOM and cosign, k6 load test, Jenkinsfile, Argo CD |
+| [`shopflow/`](shopflow/README.md) | Production-style microservices: order, inventory, payment and notification services (Spring Boot 3.5, Java 21, PostgreSQL, Kafka saga with transactional outbox, Redis, OAuth2/JWT, Resilience4j, OpenTelemetry, ArchUnit), Docker Compose stack, Kubernetes (Kustomize + Helm + Argo Rollouts canary/blue-green, Kyverno/Gatekeeper policies, HPA, PDB, NetworkPolicies, backups), Prometheus with SLO burn-rate alerts + unit tests + Alertmanager routing + Grafana dashboard, CI/CD with lint, Trivy, SBOM and cosign, k6 load test, Jenkinsfile, Argo CD; `make help` lists every approach |
+| [`infra/ansible/`](infra/ansible/README.md) | The pre-Kubernetes approach: the same stack on one VM with Ansible + systemd, with a when-to-use comparison |
 | [`infra/terraform/aws/`](infra/terraform/aws/README.md) | Production on AWS: VPC, EKS (IRSA), ECR, RDS Multi-AZ, ElastiCache, MSK, Cognito, Secrets Manager, GitHub OIDC |
 | [`docs/SELF-WALK.md`](docs/SELF-WALK.md) | Review log: every bug found in this repo, why it mattered, how it was fixed, what is still open |
+| [`docs/STATE.md`](docs/STATE.md) | **Single source of truth**: what exists, basic ↔ advanced approach matrix, what is verified and how, open items |
+| [`docs/runbooks/`](docs/runbooks/README.md) | On-call runbooks for every alert + restore, rollback, post-mortem template |
 | [`docs/EASY-NOTES.md`](docs/EASY-NOTES.md) | **Start here if concepts feel heavy**: har pattern ka problem → kyu → kaise (steps) → ShopFlow mein kahan → prod kaise behtar hua, simple Hinglish mein |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | 18-week mastery roadmap built around this repo |
-| [`docs/LABS.md`](docs/LABS.md) | 27 hands-on break/fix labs (OOMKilled, CrashLoopBackOff, circuit breaker, zero-downtime deploy, kill Kafka, duplicate events, poison pill, JWT, cache, tracing, ...) |
+| [`docs/LABS.md`](docs/LABS.md) | 33 hands-on break/fix labs (OOMKilled, CrashLoopBackOff, circuit breaker, zero-downtime deploy, kill Kafka, duplicate events, poison pill, JWT, cache, tracing, ...) |
 | [`docs/interview-notes/`](docs/interview-notes/) | Interview notes: project walkthrough, Java/Spring, microservices, Docker, Kubernetes, CI/CD, observability, Linux/networking, AWS production, Kafka, security/caching/performance, and a hard-questions file |
 
 ## Basics (first learning project)

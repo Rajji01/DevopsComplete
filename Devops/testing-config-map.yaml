@@ -1,5 +1,5 @@
-#after applying this yaml see the pods logs there you can see the properties also
-#kubectl logs config-map-55f584d675-k6q77 -c config-map-env
+# after applying this yaml see the pods logs there you can see the properties also
+# kubectl logs config-map-55f584d675-k6q77 -c config-map-env
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -25,7 +25,6 @@ data:
             root   /usr/share/nginx/html;
             index  index.html index.htm;
         }
-
 
         # redirect server error pages to the static page /50x.html
         #

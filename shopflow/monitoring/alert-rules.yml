@@ -11,6 +11,7 @@ groups:
           severity: page
         annotations:
           summary: "{{ $labels.application }}: more than 5% of requests fail with 5xx"
+          runbook: docs/runbooks/HighErrorRate.md
 
       - alert: HighP99Latency
         expr: |
@@ -21,6 +22,7 @@ groups:
           severity: ticket
         annotations:
           summary: "{{ $labels.application }}: p99 latency above 1s"
+          runbook: docs/runbooks/HighP99Latency.md
 
       - alert: InventoryCircuitOpen
         # the breaker cycles open -> half_open every 10s, so the 'state' gauge flaps; the counter of
@@ -31,6 +33,7 @@ groups:
           severity: page
         annotations:
           summary: "order-service stopped calling inventory-service (circuit breaker open)"
+          runbook: docs/runbooks/InventoryCircuitOpen.md
 
       - alert: ServiceDown
         expr: up{job="shopflow"} == 0
@@ -39,6 +42,7 @@ groups:
           severity: page
         annotations:
           summary: "{{ $labels.instance }} is not being scraped"
+          runbook: docs/runbooks/ServiceDown.md
 
       - alert: OutboxBacklogGrowing
         # events written but not yet published to Kafka: broker down, or the relay is stuck
@@ -48,6 +52,7 @@ groups:
           severity: page
         annotations:
           summary: "{{ $labels.application }}: more than 100 order events waiting in the outbox"
+          runbook: docs/runbooks/OutboxBacklogGrowing.md
 
       - alert: KafkaConsumerLagHigh
         # notification-service is falling behind the producers
@@ -58,6 +63,7 @@ groups:
           severity: ticket
         annotations:
           summary: "{{ $labels.application }}: Kafka consumer lag above 1000 records"
+          runbook: docs/runbooks/KafkaConsumerLagHigh.md
 
       - alert: PaymentFailureRateHigh
         # declined cards are normal; most of them failing in 10 minutes means the gateway or our pricing is broken
@@ -68,3 +74,4 @@ groups:
           severity: page
         annotations:
           summary: "more than half of all payments are failing"
+          runbook: docs/runbooks/PaymentFailureRateHigh.md

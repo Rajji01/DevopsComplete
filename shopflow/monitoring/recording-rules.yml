@@ -1,0 +1,49 @@
+# Recording rules: pre-compute the RED numbers every dashboard and alert needs, so Grafana panels
+# are cheap and every alert uses the same definition of "error rate". Naming: level:metric:operations.
+groups:
+  - name: shopflow-red
+    interval: 15s
+    rules:
+      - record: service:http_requests:rate5m
+        expr: sum by (application) (rate(http_server_requests_seconds_count{uri!~"/actuator.*"}[5m]))
+      - record: service:http_errors:rate5m
+        expr: sum by (application) (rate(http_server_requests_seconds_count{uri!~"/actuator.*", status=~"5.."}[5m]))
+      - record: service:http_error_ratio:rate5m
+        expr: service:http_errors:rate5m / service:http_requests:rate5m
+      - record: service:http_latency_p99:5m
+        expr: histogram_quantile(0.99, sum by (application, le) (rate(http_server_requests_seconds_bucket{uri!~"/actuator.*"}[5m])))
+
+  # SLI for the checkout SLO: POST /api/v1/orders that did not fail server-side (5xx) and answered in < 1s.
+  # 429 (rate limited) and 4xx are the client's problem and do not count against the SLO.
+  - name: shopflow-sli
+    interval: 15s
+    rules:
+      - record: sli:checkout_requests:rate5m
+        expr: sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST"}[5m]))
+      - record: sli:checkout_bad:rate5m
+        expr: |
+          sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status=~"5.."}[5m]))
+          + (
+              sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status!~"5.."}[5m]))
+            - sum(rate(http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status!~"5..", le="1.0"}[5m]))
+          )
+      - record: sli:checkout_error_ratio:rate5m
+        expr: sli:checkout_bad:rate5m / sli:checkout_requests:rate5m
+      - record: sli:checkout_error_ratio:rate30m
+        expr: |
+          (sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status=~"5.."}[30m]))
+          + (sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status!~"5.."}[30m]))
+             - sum(rate(http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status!~"5..", le="1.0"}[30m]))))
+          / sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST"}[30m]))
+      - record: sli:checkout_error_ratio:rate1h
+        expr: |
+          (sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status=~"5.."}[1h]))
+          + (sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status!~"5.."}[1h]))
+             - sum(rate(http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status!~"5..", le="1.0"}[1h]))))
+          / sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST"}[1h]))
+      - record: sli:checkout_error_ratio:rate6h
+        expr: |
+          (sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status=~"5.."}[6h]))
+          + (sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status!~"5.."}[6h]))
+             - sum(rate(http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status!~"5..", le="1.0"}[6h]))))
+          / sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST"}[6h]))

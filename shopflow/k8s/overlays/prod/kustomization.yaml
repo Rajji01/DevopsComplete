@@ -32,7 +32,8 @@ configMapGenerator:
   - name: shopflow-endpoints
     behavior: replace
     literals:
-      - kafka-bootstrap-servers=b-1.shopflow.xxxxxx.c2.kafka.ap-south-1.amazonaws.com:9098,b-2.shopflow.xxxxxx.c2.kafka.ap-south-1.amazonaws.com:9098   # :9098 = SASL/IAM listener (terraform output kafka_bootstrap_servers_iam)
+      # :9098 = SASL/IAM listener (terraform output kafka_bootstrap_servers_iam)
+      - kafka-bootstrap-servers=b-1.shopflow.xxxxxx.c2.kafka.ap-south-1.amazonaws.com:9098,b-2.shopflow.xxxxxx.c2.kafka.ap-south-1.amazonaws.com:9098
       - redis-host=shopflow-cache.xxxxxx.0001.aps1.cache.amazonaws.com
       - jwt-issuer-uri=https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_XXXXXXXXX
       - otlp-endpoint=http://otel-collector.monitoring:4318/v1/traces   # ADOT collector -> AWS X-Ray / Grafana Tempo
@@ -51,6 +52,18 @@ patches:
       kind: Service
       metadata:
         name: postgres
+  - patch: |-
+      $patch: delete
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: postgres-backup
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: postgres-backups
   - patch: |-
       $patch: delete
       apiVersion: apps/v1

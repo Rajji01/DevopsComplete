@@ -124,10 +124,36 @@ Walk 5 lessons:
 - Test assertions on a **shared MeterRegistry** must compare deltas; absolute counts break the moment a second test runs.
 - Running several shell edits in parallel with a shared working directory corrupted nothing but failed all of them: use absolute paths, or run sequentially.
 
+## Walk 6: DevOps end to end, depth (Oct 17, 2026)
+
+Scope: stop adding features for a moment and ask the platform questions. *Who gets paged, and what do they do? What stops a bad manifest? How is a release rolled out and rolled back? Where is the backup, has anyone restored it? What does a team without Kubernetes do?* Rule for this walk: **every advanced approach is added next to the basic one, never instead of it**, with a comparison (see `docs/STATE.md` §2).
+
+| Found / added | Why it mattered | Where |
+|---|---|---|
+| Baseline lint of the whole repo: 25 YAML findings (legacy manifests), 7 gitleaks hits (all `TOKEN=$(token …)` examples), Dockerfile infos | A repo that was never linted has a floor of small rot; the secret scanner needs an allowlist or it cries wolf | `.yamllint.yaml`, `.hadolint.yaml`, `.gitleaks.toml`, `.pre-commit-config.yaml`, `make lint` |
+| Alerts had no routing: they only existed on the Prometheus page | An alert nobody receives is a dashboard | `monitoring/alertmanager.yml` (page → PagerDuty + Slack, ticket → Slack, inhibition), Alertmanager in compose |
+| Alerts had no tests | The `InventoryCircuitOpen` bug from Walk 2 would have been caught by a unit test | `monitoring/tests/alerts_test.yml`, `promtool test rules` in `make validate` and CI |
+| No SLO, so "is this bad enough?" was opinion | SLI/SLO + multi-window burn-rate alerts turn it into arithmetic (14.4× over 1h = page) | `monitoring/recording-rules.yml`, `slo-rules.yml` |
+| Alerts had no runbooks | 3 AM is not the time to think | `docs/runbooks/*` + `runbook:` annotation on every alert |
+| Only RollingUpdate | A bad release reached 100% of pods in a minute | Argo Rollouts canary (Prometheus-gated) and blue-green next to the Deployments |
+| Nothing enforced the rules the manifests follow | `:latest`, missing probes, root containers would pass review eventually | Kyverno policies (+ Gatekeeper equivalent), tested offline with `kyverno apply` on the prod overlay and a bad pod |
+| No backup for the in-cluster Postgres | A dev DB people rely on with no restore path | nightly `pg_dump` CronJob + restore runbook; prod = RDS PITR |
+| No answer for "we don't have Kubernetes" | Many teams run Compose on VMs | Ansible playbook + systemd unit, lint-clean |
+| One Dockerfile, shell inside | Shell is attack surface | `Dockerfile.distroless` next to it, trade-offs in the header |
+| Terraform had one set of values | dev costs prod money | `environments/dev.tfvars` (single-AZ, small) and `prod.tfvars` |
+| 20 ways to run things, none written down | Every approach needs an entry point | `Makefile` (`make help`) and `docs/STATE.md` |
+
+Walk 6 lessons:
+- **Validation can be deep without a cluster**: promtool unit tests, amtool, kubeconform with CRD schemas, `kyverno apply`, ansible-lint, tflint. "I can't run it" is rarely "I can't check it".
+- A new annotation on an alert (`runbook:`) broke the alert unit tests: the tests pin the exact annotations. Good: that is what they are for.
+- yamllint on Helm templates is noise (they are Go templates), on everything else it found real rot.
+- Keeping the basic approach next to the advanced one costs a README table and saves the next learner from thinking the advanced one is the only one.
+
 ### Honest status (what is NOT verified)
 
 - Docker images, the compose stack and the minikube deploy have **not been run** in this environment (no Docker daemon). CI builds the images; the compose/minikube labs are the user's job.
 - The Helm chart was written but `helm lint`/`helm template` could not run here (download blocked); CI runs both and validates the rendered manifests with kubeconform.
+- Argo Rollouts, Kyverno (incl. signature verification), Alertmanager routing to real PagerDuty/Slack, the backup CronJob and the Ansible playbook are schema/lint-validated here, not executed against a live cluster/VM. `docs/STATE.md` §3 is the authoritative list.
 - The k6 script was syntax-checked only (CI runs `k6 inspect`); it has not been run against a live stack.
 - cosign signing and the SBOM step run only on `main` in GitHub Actions; neither has executed yet.
 - Terraform was `fmt`-checked only. `terraform init/validate` runs in CI (the registry was unreachable here) and **nothing has been applied** to a real AWS account; module argument names follow terraform-aws-modules v6 (vpc) / v21 (eks) / v5 (iam) and may need small adjustments on first `plan`.

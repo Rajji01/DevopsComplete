@@ -3,6 +3,7 @@ kind: Kustomization
 resources:
   - statefulset.yaml
   - service.yaml
+  - backup-cronjob.yaml
 configMapGenerator:
   - name: postgres-init
     files:

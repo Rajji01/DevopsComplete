@@ -1,0 +1,14 @@
+# Deliberately violates every policy except signature verification. Used by `kyverno apply` in CI:
+# the run must report failures for this file and none for the rendered prod overlay.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-pod
+  namespace: shopflow
+  labels:
+    app.kubernetes.io/name: bad
+    app.kubernetes.io/part-of: shopflow
+spec:
+  containers:
+    - name: app
+      image: nginx:latest

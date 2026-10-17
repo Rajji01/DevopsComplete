@@ -1,0 +1,30 @@
+# Closes the loop with CI: images are signed keyless by the GitHub Actions workflow (cosign, OIDC).
+# A pod whose image is not signed by THAT workflow identity is rejected. Prod namespace only.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signature
+spec:
+  validationFailureAction: Enforce
+  webhookTimeoutSeconds: 30
+  background: false
+  rules:
+    - name: shopflow-images-signed-by-ci
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["shopflow"]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/rajji01/shopflow-*"
+            - "*.dkr.ecr.ap-south-1.amazonaws.com/shopflow/*"
+          failureAction: Enforce
+          attestors:
+            - entries:
+                - keyless:
+                    subject: "https://github.com/Rajji01/DevopsComplete/.github/workflows/shopflow.yml@refs/heads/main"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          mutateDigest: true   # rewrite the tag to the verified digest, so what was checked is what runs

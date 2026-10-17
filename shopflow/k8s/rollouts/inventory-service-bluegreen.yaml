@@ -1,0 +1,40 @@
+# Blue-green: the new version ("green") runs behind a preview Service; smoke tests hit it; a human
+# (or automation) promotes it and the active Service flips in one step. Rollback = flip back.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: inventory-service
+spec:
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inventory-service
+  workloadRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inventory-service
+    scaleDown: onsuccess
+  strategy:
+    blueGreen:
+      activeService: inventory-service          # existing ClusterIP Service from k8s/base
+      previewService: inventory-service-preview
+      autoPromotionEnabled: false               # someone runs the smoke test against the preview first
+      scaleDownDelaySeconds: 60                 # keep blue for a minute after promotion: instant rollback window
+      prePromotionAnalysis:
+        templates:
+          - templateName: error-ratio
+        args:
+          - name: service
+            value: inventory-service
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-service-preview
+spec:
+  selector:
+    app.kubernetes.io/name: inventory-service   # Rollouts adds the pod-template-hash selector itself
+  ports:
+    - name: http
+      port: 8082
+      targetPort: http

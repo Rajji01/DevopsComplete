@@ -5,8 +5,8 @@ metadata:
 spec:
   replicas: 1
   revisionHistoryLimit: 5
-  strategy :
-    type : RollingUpdate
+  strategy:
+    type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 1
       maxSurge: 1

@@ -1,0 +1,35 @@
+# SLO: 99.5% of checkout requests succeed (no 5xx) within 1s, over 30 days.
+# Error budget = 0.5%. Multi-window, multi-burn-rate alerts (Google SRE workbook, ch. 5):
+#   burn rate 14.4 over 1h  -> 2% of the monthly budget gone in an hour  -> page
+#   burn rate 6    over 6h  -> 5% of the budget gone in six hours        -> page
+#   burn rate 1    over 3d  -> on track to exhaust the budget            -> ticket
+# The short window (1/12 of the long one) makes the alert stop quickly once the problem is fixed.
+# Threshold = burn_rate * (1 - SLO) = burn_rate * 0.005.
+groups:
+  - name: shopflow-slo-checkout
+    rules:
+      - alert: CheckoutSLOBurnRateFast
+        expr: |
+          sli:checkout_error_ratio:rate1h > (14.4 * 0.005)
+          and
+          sli:checkout_error_ratio:rate5m > (14.4 * 0.005)
+        for: 2m
+        labels:
+          severity: page
+          slo: checkout-availability
+        annotations:
+          summary: "checkout is burning the monthly error budget 14x too fast (1h window)"
+          runbook: docs/runbooks/CheckoutSLOBurnRate.md
+
+      - alert: CheckoutSLOBurnRateSlow
+        expr: |
+          sli:checkout_error_ratio:rate6h > (6 * 0.005)
+          and
+          sli:checkout_error_ratio:rate30m > (6 * 0.005)
+        for: 15m
+        labels:
+          severity: page
+          slo: checkout-availability
+        annotations:
+          summary: "checkout is burning the monthly error budget 6x too fast (6h window)"
+          runbook: docs/runbooks/CheckoutSLOBurnRate.md

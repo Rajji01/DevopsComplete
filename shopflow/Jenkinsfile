@@ -22,6 +22,15 @@ pipeline {
     }
 
     stages {
+        stage('Lint') {
+            steps {
+                sh '''
+                  pip install -q yamllint && yamllint -c .yamllint.yaml .
+                  hadolint --config .hadolint.yaml shopflow/Dockerfile shopflow/Dockerfile.distroless
+                  gitleaks git --no-banner --redact -c .gitleaks.toml .
+                '''
+            }
+        }
         stage('Test') {
             steps {
                 dir('shopflow') {

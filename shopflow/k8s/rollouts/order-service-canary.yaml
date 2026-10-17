@@ -1,0 +1,36 @@
+# Canary: the new version takes 10% of pods, analysis runs, then 25%, 50%, 100%.
+# Everything else (env, probes, securityContext) is identical to k8s/base/order-service/deployment.yaml
+# via workloadRef: the Rollout reuses the Deployment's pod template instead of copying it.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: order-service
+spec:
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: order-service
+  workloadRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: order-service
+    scaleDown: onsuccess        # the Deployment is scaled to 0 once the Rollout owns the pods
+  strategy:
+    canary:
+      maxSurge: 1
+      maxUnavailable: 0
+      analysis:
+        templates:
+          - templateName: error-ratio
+        args:
+          - name: service
+            value: order-service
+        startingStep: 1          # analysis begins after the first 10% step
+      steps:
+        - setWeight: 10
+        - pause: {duration: 5m}
+        - setWeight: 25
+        - pause: {duration: 5m}
+        - setWeight: 50
+        - pause: {duration: 10m}
+        - setWeight: 100

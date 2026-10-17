@@ -15,8 +15,8 @@ FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 
 # run as non-root user
-RUN addgroup -S spring && adduser -S spring -G spring
-USER spring
+RUN addgroup -S -g 10001 spring && adduser -S -u 10001 -G spring spring
+USER 10001
 
 COPY --from=build /build/app.jar app.jar
 

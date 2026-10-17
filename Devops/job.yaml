@@ -4,7 +4,7 @@ metadata:
   name: db-backup-job
 spec:
   ttlSecondsAfterFinished: 10
-  completions: 2 #number of pods/job will be executed one after the other
+  completions: 2 # number of pods/job will be executed one after the other
   parallelism: 2
   template:
     spec:

@@ -16,8 +16,8 @@ spec:
           emptyDir: {}
         - name: thumbnails
           emptyDir: {}
-          #here container one and two have shared volumes for container one it is /foo/bar.txt
-          #and for container two it si inside the /hello/bar.txt
+          # here container one and two have shared volumes for container one it is /foo/bar.txt
+          # and for container two it si inside the /hello/bar.txt
           # and this bar.txt is shared means one can see the others changes
       containers:
         - name: one

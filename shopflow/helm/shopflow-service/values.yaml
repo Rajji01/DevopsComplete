@@ -6,13 +6,17 @@ image:
   tag: dev
   pullPolicy: IfNotPresent
 port: 8081
-replicas: null            # null = let the HPA own the count (same reasoning as the Kustomize base)
+# null = let the HPA own the count (same reasoning as the Kustomize base)
+replicas: null
 serviceAccount:
   create: false
   name: ""                # prod: ServiceAccount annotated with an IRSA role
   annotations: {}
-env: []                   # - name: INVENTORY_URL
-                          #   value: http://inventory-service:8082
+env: []
+# example:
+# env:
+#   - name: INVENTORY_URL
+#     value: http://inventory-service:8082
 envFrom: []
 profiles: ""              # e.g. "aws" -> SPRING_PROFILES_ACTIVE
 db:

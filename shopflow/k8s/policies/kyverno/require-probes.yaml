@@ -1,0 +1,34 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-probes
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: readiness-and-liveness
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+      exclude:
+        any:
+          - resources:
+              # one-off jobs and the dev-only infra pods are not long-running services
+              selector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values: ["postgres", "kafka", "redis", "keycloak"]
+          - resources:
+              kinds: ["Pod"]
+              namespaces: ["kube-system", "argocd", "monitoring"]
+      validate:
+        message: "every service container needs readinessProbe and livenessProbe (traffic only when ready; restart when stuck)"
+        pattern:
+          spec:
+            containers:
+              - readinessProbe:
+                  periodSeconds: ">0"
+                livenessProbe:
+                  periodSeconds: ">0"

@@ -85,9 +85,17 @@ Problem it solves: **many customers buy the same limited-stock product at the sa
 | Prod on AWS managed services: RDS, MSK, ElastiCache, Cognito, Secrets Manager via External Secrets, ALB | `k8s/overlays/prod/`, `infra/terraform/aws/` |
 | CI: test → validate (manifests, Helm, alerts, Terraform, k6) → build → Trivy → SBOM → push → cosign sign → pin SHA into prod overlay | `.github/workflows/shopflow.yml`, `Jenkinsfile` |
 | GitOps: Argo CD syncs the prod overlay; CI never runs kubectl | `argocd/` |
-| Alerts on error rate, p99, open breaker, down targets, outbox backlog, consumer lag | `monitoring/alert-rules.yml` |
+| Alerts on error rate, p99, open breaker, down targets, outbox backlog, consumer lag, payment failures; **SLO burn-rate alerts**; **unit-tested** with `promtool test rules` | `monitoring/alert-rules.yml`, `slo-rules.yml`, `tests/` |
+| Alertmanager routing (page → PagerDuty + Slack, ticket → Slack), inhibition, runbook links | `monitoring/alertmanager.yml`, `../docs/runbooks/` |
+| Recording rules (RED, SLI) + provisioned Grafana dashboard | `monitoring/recording-rules.yml`, `monitoring/grafana/dashboards/` |
+| Progressive delivery next to RollingUpdate: canary with Prometheus analysis, blue-green | `k8s/rollouts/` |
+| Admission policies: Kyverno (+ Gatekeeper equivalent), tested offline | `k8s/policies/` |
+| Nightly Postgres backup CronJob (dev) with restore runbook; RDS PITR in prod | `k8s/base/postgres/backup-cronjob.yaml` |
+| Lint everything: yamllint, hadolint, gitleaks, tflint, ansible-lint; pre-commit hooks | repo root dotfiles, `Makefile` |
 
 ## Run it
+
+`make help` (repo root) lists every command below and the alternatives (Helm, Rollouts, Ansible, Terraform).
 
 ### 1. Tests only (needs JDK 21)
 ```sh
@@ -138,6 +146,8 @@ See [`../infra/terraform/aws/README.md`](../infra/terraform/aws/README.md): VPC 
 
 ## Learn with it
 
+- [`../docs/STATE.md`](../docs/STATE.md): what exists, basic ↔ advanced approach matrix, verification status. Start here.
+- [`../docs/runbooks/`](../docs/runbooks/README.md): what to do when an alert fires.
 - [`../docs/EASY-NOTES.md`](../docs/EASY-NOTES.md): every pattern explained simply: the problem, why, how (steps), where it lives here, how it improved the system.
 - [`../docs/ROADMAP.md`](../docs/ROADMAP.md): DevOps + Java backend mastery path built around this repo.
 - [`../docs/LABS.md`](../docs/LABS.md): hands-on labs. Break things on purpose, debug them, fix them.

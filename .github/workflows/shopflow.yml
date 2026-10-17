@@ -7,9 +7,9 @@ name: shopflow
 on:
   push:
     branches: [main]
-    paths: ["shopflow/**", "infra/**", ".github/workflows/shopflow.yml"]
+    paths: ["shopflow/**", "infra/**", ".github/workflows/shopflow.yml", ".yamllint.yaml", ".hadolint.yaml", ".gitleaks.toml"]
   pull_request:
-    paths: ["shopflow/**", "infra/**", ".github/workflows/shopflow.yml"]
+    paths: ["shopflow/**", "infra/**", ".github/workflows/shopflow.yml", ".yamllint.yaml", ".hadolint.yaml", ".gitleaks.toml"]
 
 # a newer push to the same branch cancels the older run
 concurrency:
@@ -24,6 +24,44 @@ defaults:
     working-directory: shopflow
 
 jobs:
+  lint:
+    name: Lint (yaml, Dockerfile, secrets, Terraform, Ansible)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0            # gitleaks scans the whole history
+      - run: pip install yamllint ansible-lint
+      - run: yamllint -c .yamllint.yaml .
+      - uses: hadolint/hadolint-action@v3.5.0
+        with:
+          dockerfile: shopflow/Dockerfile
+          config: .hadolint.yaml
+      - uses: hadolint/hadolint-action@v3.5.0
+        with:
+          dockerfile: shopflow/Dockerfile.distroless
+          config: .hadolint.yaml
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+      - uses: terraform-linters/setup-tflint@v6
+      - name: tflint (core + AWS ruleset)
+        working-directory: infra/terraform/aws
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # plugin download
+        run: |
+          tflint --init --config .tflint.ci.hcl
+          tflint --config .tflint.ci.hcl --format compact
+      - name: ansible-lint + syntax check
+        working-directory: infra/ansible
+        run: |
+          ansible-lint
+          ansible-playbook --syntax-check -i inventory.example.ini site.yml
+
   test:
     name: Unit + integration tests
     runs-on: ubuntu-latest
@@ -61,9 +99,25 @@ jobs:
             kustomize build "$overlay" | kubeconform -strict -summary -ignore-missing-schemas -
             echo "::endgroup::"
           done
-      - name: Alert rules (promtool)
+      - name: Argo Rollouts + Kyverno manifests (CRD schemas from the datreeio catalog)
         run: |
-          docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v3.5.0 check rules /m/alert-rules.yml
+          CRDS='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          kustomize build k8s/rollouts | kubeconform -strict -summary -schema-location default -schema-location "$CRDS" -
+          kubeconform -strict -summary -schema-location default -schema-location "$CRDS" k8s/policies/kyverno/*.yaml
+      - name: "Kyverno policies: prod overlay passes, bad pod fails"
+        run: |
+          curl -sSL https://github.com/kyverno/kyverno/releases/download/v1.19.1/kyverno-cli_v1.19.1_linux_x86_64.tar.gz | tar xz kyverno
+          POLICIES=$(ls k8s/policies/kyverno/*.yaml | grep -v verify-image-signature)   # signature check needs a registry
+          kustomize build k8s/overlays/prod > /tmp/prod.yaml
+          ./kyverno apply $POLICIES --resource /tmp/prod.yaml
+          if ./kyverno apply $POLICIES --resource k8s/policies/tests/bad-pod.yaml | grep -q 'fail: 0'; then
+            echo "bad-pod.yaml should have been rejected"; exit 1; fi
+      - name: "Prometheus rules: syntax + unit tests; Alertmanager config"
+        run: |
+          docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v3.5.0 \
+            check rules /m/alert-rules.yml /m/recording-rules.yml /m/slo-rules.yml
+          docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v3.5.0 test rules /m/tests/alerts_test.yml
+          docker run --rm -v "$PWD/monitoring:/m" --entrypoint amtool prom/alertmanager:v0.28.1 check-config /m/alertmanager.yml
       - name: docker compose config
         run: docker compose config --quiet
       - name: Helm chart lint + template | kubeconform

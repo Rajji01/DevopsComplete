@@ -1,0 +1,4 @@
+app_dir: /opt/shopflow
+repo_url: https://github.com/Rajji01/DevopsComplete.git
+repo_version: main
+compose_profiles: ""        # e.g. "" for the full stack

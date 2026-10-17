@@ -1,0 +1,5 @@
+# hadolint: Dockerfile best practices. DL3018 (pin apk versions) is ignored on purpose: the base
+# image is already pinned by tag/digest and apk pins rot within weeks on alpine.
+ignored:
+  - DL3018
+failure-threshold: warning

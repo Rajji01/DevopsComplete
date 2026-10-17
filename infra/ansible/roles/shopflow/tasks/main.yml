@@ -1,0 +1,30 @@
+- name: Check out the repository
+  ansible.builtin.git:
+    repo: "{{ repo_url }}"
+    dest: "{{ app_dir }}"
+    version: "{{ repo_version }}"
+    force: true
+  notify: Restart shopflow
+
+- name: Install the systemd unit for the compose stack
+  ansible.builtin.template:
+    src: shopflow.service.j2
+    dest: /etc/systemd/system/shopflow.service
+    mode: "0644"
+  notify: Restart shopflow
+
+- name: Build images and start the stack
+  ansible.builtin.systemd:
+    name: shopflow
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Wait for order-service readiness
+  ansible.builtin.uri:
+    url: http://localhost:8081/actuator/health/readiness
+    status_code: 200
+  register: shopflow_readiness
+  retries: 30
+  delay: 10
+  until: shopflow_readiness.status == 200
