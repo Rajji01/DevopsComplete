@@ -62,7 +62,9 @@ outbox:
 orders:
   reconcile:
     delay: 60s
-    grace: 2m                   # FAILED for longer than this -> release + CANCELLED
+    grace: 2m                   # FAILED/PENDING older than this -> release + CANCELLED
+  stuck:
+    grace: 10m                  # CONFIRMED/REFUND_PENDING older than this -> alert only (payment may be in flight)
 
 resilience4j:
   ratelimiter:

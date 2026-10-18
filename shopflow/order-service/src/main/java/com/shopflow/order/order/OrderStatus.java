@@ -7,6 +7,10 @@ public enum OrderStatus {
     CONFIRMED,
     /** payment captured: the order is final */
     PAID,
+    /** customer asked to cancel a PAID order; waiting for payment-service to refund */
+    REFUND_PENDING,
+    /** money returned and stock released: a PAID order's terminal cancelled state */
+    REFUNDED,
     /** inventory said no (out of stock / unknown SKU) */
     REJECTED,
     /** inventory-service unreachable; outcome unknown, safe to cancel (release is idempotent) */

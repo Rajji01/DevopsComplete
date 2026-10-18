@@ -16,4 +16,7 @@ public interface PaymentGateway {
     }
 
     Result charge(String orderRef, BigDecimal amount);
+
+    /** Return a captured amount to the customer. Refunds rarely fail; when they do it is a manual case. */
+    Result refund(String orderRef, BigDecimal amount);
 }

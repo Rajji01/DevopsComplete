@@ -72,6 +72,21 @@ tests:
               summary: "order-service: more than 100 order events waiting in the outbox"
               runbook: docs/runbooks/OutboxBacklogGrowing.md
 
+  # 4b. OrdersStuckConfirmed: gauge at 3 for 16 minutes -> ticket; 0 -> silent
+  - interval: 1m
+    input_series:
+      - series: 'orders_stuck_confirmed{application="order-service"}'
+        values: '3x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: OrdersStuckConfirmed
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: "orders stuck in CONFIRMED/REFUND_PENDING past the grace period (payment/refund event missing)"
+              runbook: docs/runbooks/OrdersStuckConfirmed.md
+
   # 5. SLO fast burn: 10% bad checkouts (all 5xx) -> both 1h and 5m windows exceed 7.2% -> page after 2m
   - interval: 1m
     input_series:

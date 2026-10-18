@@ -63,6 +63,10 @@ class PaymentServiceApplicationTests {
                  "status":"CONFIRMED","occurredAt":"2026-10-04T10:00:00Z"}""".formatted(eventId, orderRef, sku, quantity);
     }
 
+    private static String orderEvent(String type, String orderRef, String sku, int quantity) {
+        return orderConfirmed(java.util.UUID.randomUUID(), orderRef, sku, quantity).replace("OrderConfirmed", type).replace("CONFIRMED", type);
+    }
+
     private String awaitPaymentEvent(String orderRef) {
         var found = new String[1];
         await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
@@ -121,4 +125,30 @@ class PaymentServiceApplicationTests {
         await().pollDelay(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(3)).untilAsserted(() ->
                 assertThat(payments.findAll()).noneMatch(p -> p.getOrderRef().equals(orderRef)));
     }
+
+    @Test
+    void refundOnOrderRefundPendingAfterCapture() {
+        String orderRef = UUID.randomUUID().toString();
+        // first capture, so a CAPTURED payment row exists
+        kafkaTemplate.send("orders.events", orderRef, orderConfirmed(UUID.randomUUID(), orderRef, "AIRPODS-PRO", 1));
+        assertThat(awaitPaymentEvent(orderRef)).contains("\"type\":\"PaymentCaptured\"");
+
+        // customer cancelled a PAID order -> order-service emitted OrderRefundPending
+        kafkaTemplate.send("orders.events", orderRef, orderEvent("OrderRefundPending", orderRef, "AIRPODS-PRO", 1));
+        assertThat(awaitPaymentEvent(orderRef)).contains("\"type\":\"PaymentRefunded\"").contains("\"amount\":24900.00");
+
+        assertThat(payments.findByOrderRef(orderRef)).get()
+                .extracting(p -> p.getStatus()).isEqualTo(Payment.Status.REFUNDED);
+        assertThat(meterRegistry.counter("payments", "status", "REFUNDED").count()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void refundIsIgnoredWhenThereIsNoCapturedPayment() {
+        String orderRef = UUID.randomUUID().toString();
+        // OrderRefundPending for an order payment-service never charged (e.g. it was REJECTED): no-op
+        kafkaTemplate.send("orders.events", orderRef, orderEvent("OrderRefundPending", orderRef, "PS5-SLIM", 1));
+        await().pollDelay(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(3)).untilAsserted(() ->
+                assertThat(payments.findByOrderRef(orderRef)).isEmpty());
+    }
+
 }

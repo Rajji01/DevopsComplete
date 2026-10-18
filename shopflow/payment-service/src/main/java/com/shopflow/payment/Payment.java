@@ -19,7 +19,7 @@ import jakarta.persistence.Table;
 @Table(name = "payment")
 public class Payment {
 
-    public enum Status { CAPTURED, FAILED }
+    public enum Status { CAPTURED, FAILED, REFUNDED }
 
     @Id
     @Column(name = "event_id")
@@ -59,6 +59,10 @@ public class Payment {
 
     public BigDecimal getAmount() {
         return amount;
+    }
+
+    void markRefunded() {
+        this.status = Status.REFUNDED;
     }
 
     public Status getStatus() {

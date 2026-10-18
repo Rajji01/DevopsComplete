@@ -110,8 +110,24 @@ public class Order {
         status = OrderStatus.PAID;
     }
 
+    void requestRefund() {
+        status = OrderStatus.REFUND_PENDING;
+    }
+
+    void markRefunded() {
+        status = OrderStatus.REFUNDED;
+    }
+
     boolean isConfirmed() {
         return status == OrderStatus.CONFIRMED;
+    }
+
+    boolean isPaid() {
+        return status == OrderStatus.PAID;
+    }
+
+    boolean isRefundPending() {
+        return status == OrderStatus.REFUND_PENDING;
     }
 
     boolean isCancellable() {

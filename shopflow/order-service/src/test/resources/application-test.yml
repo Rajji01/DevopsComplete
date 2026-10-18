@@ -23,7 +23,9 @@ outbox:
 
 orders:
   reconcile:
-    delay: 1h                   # tests call reconcileFailedOrders() directly
+    delay: 1h                   # tests call reconcileFailedOrders()/countStuckConfirmed() directly
+    grace: 0s
+  stuck:
     grace: 0s
 
 resilience4j:

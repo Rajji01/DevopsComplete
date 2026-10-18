@@ -13,11 +13,17 @@ public record OrderEvent(UUID eventId, String type, String orderRef, String sku,
     public static final String TOPIC = "orders.events";
 
     public static OrderEvent from(Order order) {
-        return new OrderEvent(UUID.randomUUID(), "Order" + capitalize(order.getStatus().name()),
+        return new OrderEvent(UUID.randomUUID(), "Order" + pascal(order.getStatus().name()),
                 order.getOrderRef(), order.getSku(), order.getQuantity(), order.getStatus(), Instant.now());
     }
 
-    private static String capitalize(String s) {
-        return s.charAt(0) + s.substring(1).toLowerCase();
+    // CONFIRMED -> Confirmed, REFUND_PENDING -> RefundPending. The event type is part of the contract
+    // consumers switch on, so underscores must not leak into it (would give "Refund_pending").
+    private static String pascal(String status) {
+        StringBuilder sb = new StringBuilder();
+        for (String part : status.split("_")) {
+            sb.append(part.charAt(0)).append(part.substring(1).toLowerCase());
+        }
+        return sb.toString();
     }
 }

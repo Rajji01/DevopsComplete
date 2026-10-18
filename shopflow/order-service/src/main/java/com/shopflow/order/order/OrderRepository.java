@@ -19,4 +19,6 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
 
     // reconciliation: orders whose inventory outcome is unknown and old enough to give up on
     List<Order> findTop100ByStatusInAndUpdatedAtBefore(List<OrderStatus> statuses, Instant before);
+
+    long countByStatusInAndUpdatedAtBefore(List<OrderStatus> statuses, Instant before);
 }

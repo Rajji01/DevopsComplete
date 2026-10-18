@@ -44,14 +44,18 @@ public class OrderConfirmedListener {
     @Transactional
     public void onOrderEvent(String payload) throws Exception {
         OrderEvent event = objectMapper.readValue(payload, OrderEvent.class);
-        if (!"OrderConfirmed".equals(event.type())) {
-            return; // other order events are not ours to act on
+        switch (event.type()) {
+            case "OrderConfirmed" -> charge(event);
+            case "OrderRefundPending" -> refund(event);
+            default -> { /* OrderRejected, OrderCancelled, OrderPaid, OrderRefunded: not ours */ }
         }
+    }
+
+    private void charge(OrderEvent event) {
         if (payments.existsById(event.eventId())) {
             meterRegistry.counter("payments.duplicates").increment();
             return; // redelivery: already charged (or declined) for this exact event
         }
-
         BigDecimal amount = priceList.priceOf(event.sku()).multiply(BigDecimal.valueOf(event.quantity()));
         var result = gateway.charge(event.orderRef(), amount);
 
@@ -66,5 +70,23 @@ public class OrderConfirmedListener {
 
         meterRegistry.counter("payments", "status", payment.getStatus().name()).increment();
         log.info("payment for order {}: {} {}", event.orderRef(), payment.getStatus(), amount);
+    }
+
+    /**
+     * Idempotency here is by STATE, not by eventId: the payment row already exists (keyed by the
+     * original OrderConfirmed event), so we look it up by orderRef and only refund a CAPTURED one.
+     * A redelivered OrderRefundPending finds it already REFUNDED and does nothing.
+     */
+    private void refund(OrderEvent event) {
+        payments.findByOrderRef(event.orderRef())
+                .filter(p -> p.getStatus() == Payment.Status.CAPTURED)
+                .ifPresent(payment -> {
+                    gateway.refund(payment.getOrderRef(), payment.getAmount());
+                    payment.markRefunded();
+                    outbox.publish(PaymentEvent.TOPIC, "Payment", payment.getOrderRef(),
+                            "PaymentRefunded", PaymentEvent.refunded(payment.getOrderRef(), payment.getAmount()));
+                    meterRegistry.counter("payments", "status", "REFUNDED").increment();
+                    log.info("refunded order {} amount {}", payment.getOrderRef(), payment.getAmount());
+                });
     }
 }

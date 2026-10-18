@@ -21,4 +21,9 @@ public class FakePaymentGateway implements PaymentGateway {
                 ? Result.declined("card limit exceeded (" + amount + " > " + limit + ")")
                 : Result.ok();
     }
+
+    @Override
+    public Result refund(String orderRef, BigDecimal amount) {
+        return Result.ok();   // the fake processor always accepts refunds
+    }
 }

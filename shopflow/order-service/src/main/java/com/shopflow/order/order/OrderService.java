@@ -97,9 +97,21 @@ public class OrderService {
                 : orderRepository.findByCustomerId(caller.customerId(), pageable);
     }
 
-    /** Compensation step of the saga: give the reserved stock back. */
+    /**
+     * Cancel. Three shapes depending on how far the saga got:
+     *  - CONFIRMED / FAILED: no money has moved, so release stock now and CANCELLED immediately.
+     *  - PAID: money has moved, so we cannot cancel synchronously. Move to REFUND_PENDING and emit
+     *    OrderRefundRequested; payment-service refunds and replies, then onPaymentRefunded finishes it.
+     *  - anything else (PENDING, already cancelled/refunding): not cancellable.
+     */
     public Order cancel(long id, Caller caller) {
         Order order = get(id, caller);
+        if (order.isPaid()) {
+            order.requestRefund();
+            Order saved = saveWithEvent(order);   // event type OrderRefundPending -> payment-service refunds
+            log.info("order {} REFUND_PENDING (refund requested)", order.getOrderRef());
+            return saved;
+        }
         if (!order.isCancellable()) {
             throw new OrderNotCancellableException(id, order.getStatus());
         }
@@ -127,6 +139,16 @@ public class OrderService {
         });
     }
 
+    /** Saga close for a refund: money is back, so release the stock and mark REFUNDED. Status-guarded. */
+    public void onPaymentRefunded(String orderRef) {
+        orderRepository.findByOrderRef(orderRef).filter(Order::isRefundPending).ifPresent(order -> {
+            inventoryClient.release(orderRef);   // the item returns to available stock; release is idempotent
+            order.markRefunded();
+            saveWithEvent(order);
+            log.info("order {} REFUNDED (money returned, stock released)", orderRef);
+        });
+    }
+
     /**
      * FAILED = we never learned whether inventory reserved the stock (timeout, breaker open);
      * PENDING for a long time = the pod crashed mid-request. Both are "outcome unknown".
@@ -135,7 +157,9 @@ public class OrderService {
      * Runs on a schedule (OrderReconciler); returns how many orders it settled.
      */
     public int reconcileFailedOrders(Duration grace) {
-        // PENDING this old means the pod died between "save PENDING" and "save outcome": same limbo
+        // PENDING this old means the pod died between "save PENDING" and "save outcome": same limbo.
+        // FAILED = inventory outcome unknown. Both are safe to cancel (no money moved; release is a no-op
+        // if nothing was reserved). CONFIRMED is NOT here on purpose: see countStuckConfirmed().
         var stale = orderRepository.findTop100ByStatusInAndUpdatedAtBefore(
                 List.of(OrderStatus.FAILED, OrderStatus.PENDING), Instant.now().minus(grace));
         int settled = 0;
@@ -145,13 +169,24 @@ public class OrderService {
                 order.cancel();
                 saveWithEvent(order);
                 settled++;
-                log.info("reconciled FAILED order {} -> CANCELLED", order.getOrderRef());
+                log.info("reconciled {} order {} -> CANCELLED", order.getStatus(), order.getOrderRef());
             } catch (RestClientException | CallNotPermittedException e) {
-                log.warn("inventory still unavailable, order {} stays FAILED: {}", order.getOrderRef(), e.getMessage());
+                log.warn("inventory still unavailable, order {} stays {}: {}", order.getOrderRef(), order.getStatus(), e.getMessage());
                 break; // inventory is down; no point hammering it for the rest of the batch
             }
         }
         return settled;
+    }
+
+    /**
+     * CONFIRMED orders older than the grace period are a DIFFERENT kind of limbo: payment-service may
+     * still be about to reply (its pod restarting, consumer lag), so auto-cancelling could cancel an
+     * order that was in fact paid. We must NOT guess. Instead expose how many are stuck as a gauge; an
+     * alert (OrdersStuckConfirmed) pages a human to look. Same idea for REFUND_PENDING stuck too long.
+     */
+    public long countStuckConfirmed(Duration grace) {
+        return orderRepository.countByStatusInAndUpdatedAtBefore(
+                List.of(OrderStatus.CONFIRMED, OrderStatus.REFUND_PENDING), Instant.now().minus(grace));
     }
 
     /**

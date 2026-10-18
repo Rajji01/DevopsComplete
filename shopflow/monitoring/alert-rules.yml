@@ -65,6 +65,17 @@ groups:
           summary: "{{ $labels.application }}: Kafka consumer lag above 1000 records"
           runbook: docs/runbooks/KafkaConsumerLagHigh.md
 
+      - alert: OrdersStuckConfirmed
+        # CONFIRMED/REFUND_PENDING orders whose payment/refund event never arrived. We do NOT auto-cancel
+        # these (payment may be in flight), so a human must look: payment-service down? consumer lag?
+        expr: max(orders_stuck_confirmed) > 0
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "orders stuck in CONFIRMED/REFUND_PENDING past the grace period (payment/refund event missing)"
+          runbook: docs/runbooks/OrdersStuckConfirmed.md
+
       - alert: PaymentFailureRateHigh
         # declined cards are normal; most of them failing in 10 minutes means the gateway or our pricing is broken
         expr: |

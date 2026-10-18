@@ -13,6 +13,7 @@ One page per alert: **what it means → what to check first (commands) → likel
 | OutboxBacklogGrowing | page | [OutboxBacklogGrowing.md](OutboxBacklogGrowing.md) |
 | KafkaConsumerLagHigh | ticket | [KafkaConsumerLagHigh.md](KafkaConsumerLagHigh.md) |
 | PaymentFailureRateHigh | page | [PaymentFailureRateHigh.md](PaymentFailureRateHigh.md) |
+| OrdersStuckConfirmed | ticket | [OrdersStuckConfirmed.md](OrdersStuckConfirmed.md) |
 | CheckoutSLOBurnRateFast / Slow | page | [CheckoutSLOBurnRate.md](CheckoutSLOBurnRate.md) |
 | (procedure) Restore PostgreSQL from backup | — | [RestorePostgres.md](RestorePostgres.md) |
 | (procedure) Roll back a deploy | — | [Rollback.md](Rollback.md) |

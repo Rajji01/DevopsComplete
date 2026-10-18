@@ -359,6 +359,45 @@ class OrderServiceApplicationTests {
     }
 
     @Test
+    void refundSagaMovesPaidOrderThroughRefundPendingToRefunded() throws Exception {
+        stubReserve(201);
+        inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*")).willReturn(aResponse().withStatus(204)));
+        String body = mockMvc.perform(createOrder("AIRPODS-PRO", 1)).andReturn().getResponse().getContentAsString();
+        Number id = JsonPath.read(body, "$.id");
+        String orderRef = JsonPath.read(body, "$.orderRef");
+
+        // CONFIRMED -> PAID
+        kafkaTemplate.send("payments.events", orderRef, paymentEvent("PaymentCaptured", orderRef, null));
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                mockMvc.perform(get("/api/v1/orders/" + id).with(customer())).andExpect(jsonPath("$.status").value("PAID")));
+
+        // customer cancels a PAID order -> REFUND_PENDING, no stock released yet (money must come back first)
+        mockMvc.perform(MockMvcRequestBuilders.delete("/api/v1/orders/" + id).with(customer()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REFUND_PENDING"));
+        inventory.verify(0, deleteRequestedFor(urlPathMatching("/api/v1/reservations/.*")));
+
+        // payment-service refunds -> REFUNDED + stock released
+        kafkaTemplate.send("payments.events", orderRef, paymentEvent("PaymentRefunded", orderRef, null));
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                mockMvc.perform(get("/api/v1/orders/" + id).with(customer())).andExpect(jsonPath("$.status").value("REFUNDED")));
+        inventory.verify(deleteRequestedFor(urlEqualTo("/api/v1/reservations/" + orderRef)));
+    }
+
+    @Test
+    void confirmedOrdersAreCountedAsStuckButNeverAutoCancelled() throws Exception {
+        stubReserve(201);
+        String body = mockMvc.perform(createOrder("PIXEL-9", 1)).andReturn().getResponse().getContentAsString();
+        Number id = JsonPath.read(body, "$.id");
+
+        // grace ZERO: a just-created CONFIRMED order already counts as stuck...
+        assertThat(orderService.countStuckConfirmed(Duration.ZERO)).isGreaterThanOrEqualTo(1);
+        // ...but the FAILED/PENDING reconciler must NOT have touched it: still CONFIRMED, not CANCELLED
+        orderService.reconcileFailedOrders(Duration.ZERO);
+        mockMvc.perform(get("/api/v1/orders/" + id).with(customer())).andExpect(jsonPath("$.status").value("CONFIRMED"));
+    }
+
+    @Test
     void publishesOrderEventThroughTheOutbox() throws Exception {
         stubReserve(201);
         String body = mockMvc.perform(createOrder("AIRPODS-PRO", 3))
