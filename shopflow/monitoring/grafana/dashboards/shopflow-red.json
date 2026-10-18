@@ -306,6 +306,47 @@
           "legendFormat": "{{application}} pending"
         }
       ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Orders stuck (CONFIRMED/REFUND_PENDING past grace)",
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(orders_stuck_confirmed)",
+          "legendFormat": "stuck"
+        }
+      ]
     }
   ]
 }
