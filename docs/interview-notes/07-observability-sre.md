@@ -2,10 +2,10 @@
 
 > Source of truth in this repo:
 > - `shopflow/monitoring/prometheus.yml` — scrape config (job `shopflow`, path `/actuator/prometheus`, 15s, three targets)
-> - `shopflow/monitoring/alert-rules.yml` — `HighErrorRate`, `HighP99Latency`, `InventoryCircuitOpen`, `ServiceDown`, `OutboxBacklogGrowing`, `KafkaConsumerLagHigh`, `PaymentFailureRateHigh` — every alert has a `runbook:` annotation
+> - `shopflow/monitoring/alert-rules.yml` — `HighErrorRate`, `HighP99Latency`, `InventoryCircuitOpen`, `ServiceDown`, `OutboxBacklogGrowing`, `KafkaConsumerLagHigh`, `PaymentFailureRateHigh`, `OrdersStuckConfirmed` (8 rules) — every alert has a `runbook:` annotation
 > - `shopflow/monitoring/recording-rules.yml` — RED per service (`service:http_requests:rate5m`, `service:http_errors:rate5m`, `service:http_error_ratio:rate5m`, `service:http_latency_p99:5m`) + the checkout SLI (`sli:checkout_*`) over 5m/30m/1h/6h
 > - `shopflow/monitoring/slo-rules.yml` — SLO 99.5 % / 30 d for `POST /api/v1/orders`; multi-window multi-burn-rate alerts `CheckoutSLOBurnRateFast` (14.4× over 1h & 5m) and `CheckoutSLOBurnRateSlow` (6× over 6h & 30m)
-> - `shopflow/monitoring/tests/alerts_test.yml` — 6 `promtool test rules` scenarios (incl. negative cases), run in CI and `make validate`
+> - `shopflow/monitoring/tests/alerts_test.yml` — 7 `promtool test rules` scenarios (incl. negative cases), run in CI and `make validate`
 > - `shopflow/monitoring/alertmanager.yml` — routing (`page` → PagerDuty + Slack `#shopflow-incidents`, `ticket` → Slack `#shopflow-alerts`), grouping, inhibition; secrets as files under `monitoring/secrets/` (dummy locally); `prom/alertmanager:v0.28.1` in compose, `prometheus.yml` has the `alerting:` block
 > - `shopflow/monitoring/grafana/dashboards/shopflow-red.json` — provisioned dashboard "ShopFlow – RED + saga" (provider in `grafana/provisioning/dashboards/dashboards.yml`)
 > - `docs/runbooks/` — one page per alert + `RestorePostgres.md`, `Rollback.md`, `postmortem-template.md`, README with the incident flow
@@ -14,7 +14,7 @@
 > - `shopflow/docker-compose.yml` — runs Prometheus `v3.5.0`, Grafana `12.1.1`, Tempo `2.8.1`, Loki `3.5.3`, Alloy `v1.10.0` locally
 > - `shopflow/pom.xml` — `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp` for every service; `*/application.yml` — Actuator, Micrometer, `management.tracing.*`, `management.otlp.tracing.endpoint`
 > - `shopflow/k8s/base/*-service/deployment.yaml` — `prometheus.io/*` annotations, `LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs`, `OTLP_ENDPOINT` from the `shopflow-endpoints` ConfigMap
-> - Custom metrics in code: `orders` counter with tag `status` (`OrderService`), `inventory.reservations.rejected` counter (`ReservationService`), `outbox.unpublished` gauge (`OutboxRelay`), `notifications.sent` / `notifications.duplicates` counters (`OrderEventListener`)
+> - Custom metrics in code: `orders` counter with tag `status` (`OrderService`), `inventory.reservations.rejected` counter (`ReservationService`), `outbox.unpublished` gauge (`OutboxRelay`), `notifications.sent` / `notifications.duplicates` counters (`OrderEventListener`), `orders.stuck.confirmed` gauge (`OrderReconciler`, an `AtomicLong` refreshed each run)
 >
 > Not in the repo (say so honestly): exemplars, a Watchdog/dead-man's-switch alert, the 3-day "ticket" burn-rate window, real PagerDuty/Slack credentials (the files in `monitoring/secrets/` are placeholders, so delivery is only exercised with real secrets). Rule syntax, unit tests and the Alertmanager config are verified locally and in CI with `promtool`/`amtool`. Tracing and the Loki stack are covered in depth in [11-security-caching-performance.md](11-security-caching-performance.md) Part D.
 
@@ -29,11 +29,11 @@
 | Common tag | `management.metrics.tags.application: ${spring.application.name}` |
 | Histograms | `management.metrics.distribution.percentiles-histogram.http.server.requests: true` → `_bucket` series for `histogram_quantile` |
 | Scrape | `scrape_interval: 15s`, targets `order-service:8081`, `inventory-service:8082`, `notification-service:8083`, `payment-service:8084` |
-| Alert severities | `page` (HighErrorRate, InventoryCircuitOpen, ServiceDown, OutboxBacklogGrowing, PaymentFailureRateHigh, CheckoutSLOBurnRateFast/Slow) / `ticket` (HighP99Latency, KafkaConsumerLagHigh) — 9 rules, each with a `runbook:` annotation |
+| Alert severities | `page` (HighErrorRate, InventoryCircuitOpen, ServiceDown, OutboxBacklogGrowing, PaymentFailureRateHigh, CheckoutSLOBurnRateFast/Slow) / `ticket` (HighP99Latency, KafkaConsumerLagHigh, OrdersStuckConfirmed) — 10 rules (8 in alert-rules.yml + 2 SLO), each with a `runbook:` annotation |
 | Recording rules | `level:metric:operation` naming, 15 s interval: `service:http_error_ratio:rate5m`, `service:http_latency_p99:5m`, `sli:checkout_error_ratio:rate{5m,30m,1h,6h}` |
 | SLO | 99.5 % of `POST /api/v1/orders` with no 5xx **and** < 1 s, 30 d; budget 0.5 % ≈ 3.6 h of total failure/month; 4xx/429 excluded |
 | Burn-rate alerts | fast: ratio > 14.4 × 0.005 = **0.072** over 1h **and** 5m, `for: 2m`; slow: > 6 × 0.005 = **0.03** over 6h **and** 30m, `for: 15m`; both `severity: page` |
-| Alert tests | `promtool test rules monitoring/tests/alerts_test.yml` — 6 scenarios: HighErrorRate fires at 10 %, silent at 2 %; breaker; outbox 150 vs 50; SLO fast burn at 10 % 5xx; silent at 1 % slow-only |
+| Alert tests | `promtool test rules monitoring/tests/alerts_test.yml` — 7 scenarios: HighErrorRate fires at 10 %, silent at 2 %; breaker; outbox 150 vs 50; `orders_stuck_confirmed` 3 → ticket; SLO fast burn at 10 % 5xx; silent at 1 % slow-only |
 | Alertmanager | `group_by: [alertname, application]`, `group_wait 30s`, `group_interval 5m`, `repeat_interval 4h` (ticket 24h); `page` → `pagerduty-oncall` with `continue: true` → `slack-incidents`; `ticket` → `slack-alerts`; inhibition `ServiceDown` → symptoms, `Fast` → `Slow` |
 | Dashboard | `shopflow-red.json`: requests/s, error ratio, p99 (from recording rules), checkout SLI vs 0.5 % budget line, orders/payments by status, outbox backlog, consumer lag, breaker rejections |
 | Logs | ECS JSON on stdout (`LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs` in K8s **and** compose) → Alloy → Loki; fields `trace.id`/`span.id` link to Tempo |
@@ -213,6 +213,15 @@ for: 10m
 ```
 `payments_total{status}` is the counter payment-service increments per outcome (`meterRegistry.counter("payments", "status", CAPTURED|FAILED)` in `OrderConfirmedListener`). A *ratio*, not an absolute count: declined cards are normal business, so "5 failures" means nothing, but more than half of all payments failing for 10 minutes means the gateway is down, our pricing is wrong or the `card-limit` config is broken — and every one of those orders is being cancelled and its stock released (`onPaymentFailed`), which is user-visible. `rate(...[10m])` on both sides so the ratio is over the same window; a tiny denominator at night makes the ratio noisy — add `and sum(rate(payments_total[10m])) > 0.01` if that happens. Companion signals: `payments_duplicates_total` (redeliveries), `kafka_consumer_fetch_manager_records_lag_max` for group `payment-service`, `outbox_unpublished` on payment-service.
 
+### Rule 8 — `OrdersStuckConfirmed` (ticket)
+```promql
+max(orders_stuck_confirmed) > 0
+for: 15m
+```
+`orders_stuck_confirmed` is a gauge registered by `OrderReconciler` via `meterRegistry.gauge("orders.stuck.confirmed", atomicLong)`. The reconciler's 60s scheduled run calls `OrderService.countStuckConfirmed(10m)` (a `count(*)` over CONFIRMED + REFUND_PENDING older than `orders.stuck.grace`) and `.set(...)`s the `AtomicLong`. The point of the `AtomicLong` is that **Prometheus scrapes read a cached number, not a DB query** — the count runs once a minute on our schedule, decoupled from however often Prometheus scrapes, so a scrape is cheap and can never hammer the orders DB. `max(...)` because every order-service pod reports the same table count (shared DB); summing would multiply by pod count.
+
+Why **ticket, not page**, and why an alert rather than an auto-fix: unlike FAILED/PENDING (no money moved → the reconciler cancels them safely), a stuck CONFIRMED order may already be **paid** with its `PaymentCaptured` merely delayed (payment-service restarting, consumer lag). Auto-cancelling would release stock and strand a paid order, so the code deliberately does **not** cancel these — it surfaces them and a human decides. It is a ticket because nothing is actively failing for users in that moment and the first move is to investigate, not to mitigate blind; the runbook (`docs/runbooks/OrdersStuckConfirmed.md`) walks it: payment-service health → consumer-group lag on both groups → payment row state → only a genuinely orphaned order gets a manual, per-order cancel (never a blanket script). Unit-tested in `alerts_test.yml` (scenario 4b: gauge held at 3 for 16 min → fires; 0 → silent).
+
 ### More useful queries (for Grafana)
 ```promql
 # RPS per service
@@ -255,7 +264,7 @@ CI (`validate-manifests` job) and `make validate` run three things in the offici
         - exp_labels: { severity: page, application: order-service }
           exp_annotations: { summary: "order-service: more than 5% of requests fail with 5xx", runbook: docs/runbooks/HighErrorRate.md }
 ```
-   The six scenarios: (1) 10 % 5xx → `HighErrorRate` fires for order-service only (inventory with 0 errors stays silent); (2) 2 % 5xx → `exp_alerts: []`; (3) breaker rejecting calls for 3 min → `InventoryCircuitOpen`; (4) `outbox_unpublished` 150 → page, 50 → nothing; (5) 10 % 5xx for 90 min → `CheckoutSLOBurnRateFast` at `eval_time: 70m` (the 1h window must fill first); (6) 1 % slow (> 1 s) but no 5xx → below 7.2 %, no page. The negative cases matter as much as the positive ones: they prove the threshold and the `for:` are doing something. This is what would have caught the `spring_kafka_listener_*` bug above.
+   The seven scenarios: (1) 10 % 5xx → `HighErrorRate` fires for order-service only (inventory with 0 errors stays silent); (2) 2 % 5xx → `exp_alerts: []`; (3) breaker rejecting calls for 3 min → `InventoryCircuitOpen`; (4) `outbox_unpublished` 150 → page, 50 → nothing; (4b) `orders_stuck_confirmed` held at 3 for 16 min → `OrdersStuckConfirmed` (ticket), 0 → silent; (5) 10 % 5xx for 90 min → `CheckoutSLOBurnRateFast` at `eval_time: 70m` (the 1h window must fill first); (6) 1 % slow (> 1 s) but no 5xx → below 7.2 %, no page. The negative cases matter as much as the positive ones: they prove the threshold and the `for:` are doing something. This is what would have caught the `spring_kafka_listener_*` bug above.
 3. `amtool check-config alertmanager.yml` — routes, receivers, inhibition rules, Go templates.
 
 ---
@@ -281,7 +290,7 @@ CI (`validate-manifests` job) and `make validate` run three things in the offici
 | Every page actionable | If the response is "ignore it", delete/demote the alert | — |
 | `for:` duration | Avoid flapping on blips | 1m–10m |
 | Runbooks | Each alert links to "what to check / how to mitigate" | Every rule has `annotations.runbook: docs/runbooks/<Alert>.md`; the Slack/PagerDuty templates print it (`{{ .CommonAnnotations.runbook }}`). Each runbook: meaning → first commands → likely causes → fix → verify → escalate |
-| Avoid alert fatigue | Too many pages → people ignore real ones | 9 rules, 7 pages; inhibition stops duplicates (one cause, one page) |
+| Avoid alert fatigue | Too many pages → people ignore real ones | 10 rules, 7 pages (3 tickets); inhibition stops duplicates (one cause, one page) |
 
 Routing by severity happens in **Alertmanager** — `monitoring/alertmanager.yml`, run as `prom/alertmanager:v0.28.1` in compose (Lab 28):
 ```yaml
@@ -535,7 +544,7 @@ SLO: 99.5 % of checkout requests (`POST /api/v1/orders`) succeed — no 5xx and 
 `alertmanager.yml`: alerts are grouped by `alertname` + `application` (one notification per problem, not per pod; `group_wait: 30s`), then routed by the `severity` label — `page` matches a PagerDuty route with `continue: true` so it also hits the Slack incidents route; `ticket` only goes to `#shopflow-alerts`, repeated daily instead of every 4 h. Inhibition is automatic and cause-driven: while `ServiceDown` fires for a service, its error-rate, latency, breaker and SLO alerts are muted (`equal: [application]`), and the fast SLO burn mutes the slow one. A silence is manual and time-boxed (maintenance window, `amtool silence add alertname=... --duration 2h`), lives in Alertmanager's state, not in the config. Secrets are file references, so the config is in git and `amtool check-config` validates it in CI.
 
 **Q15. How do you know an alert works before it fires in production?**
-`promtool test rules` with synthetic series (`monitoring/tests/alerts_test.yml`): six scenarios that assert exact labels and annotations, including negative ones (2 % errors must not page; 1 % slow-only traffic must not trip the SLO page). It runs in CI and `make validate`, so a label typo or an impossible threshold fails the PR. I added it after an alert referenced a metric name that did not exist and `promtool check rules` happily accepted it.
+`promtool test rules` with synthetic series (`monitoring/tests/alerts_test.yml`): seven scenarios that assert exact labels and annotations, including negative ones (2 % errors must not page; 1 % slow-only traffic must not trip the SLO page). It runs in CI and `make validate`, so a label typo or an impossible threshold fails the PR. I added it after an alert referenced a metric name that did not exist and `promtool check rules` happily accepted it.
 
 **Q16. Why recording rules?**
 Pre-computing `service:http_error_ratio:rate5m` and `service:http_latency_p99:5m` every 15 s means the dashboard, the alerts and the canary analysis all share one definition of "error ratio", Grafana panels are one series instead of a `histogram_quantile` over all buckets on every refresh, and 1h/6h SLI windows become affordable. The naming convention `level:metric:operation` tells you what it is without opening the file.

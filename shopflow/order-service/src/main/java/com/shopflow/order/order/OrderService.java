@@ -101,7 +101,7 @@ public class OrderService {
      * Cancel. Three shapes depending on how far the saga got:
      *  - CONFIRMED / FAILED: no money has moved, so release stock now and CANCELLED immediately.
      *  - PAID: money has moved, so we cannot cancel synchronously. Move to REFUND_PENDING and emit
-     *    OrderRefundRequested; payment-service refunds and replies, then onPaymentRefunded finishes it.
+     *    OrderRefundPending; payment-service refunds and replies, then onPaymentRefunded finishes it.
      *  - anything else (PENDING, already cancelled/refunding): not cancellable.
      */
     public Order cancel(long id, Caller caller) {

@@ -11,7 +11,7 @@
 | Retry with exponential backoff | **In ShopFlow** — `resilience4j.retry.instances.inventory` (no jitter) |
 | Circuit breaker | **In ShopFlow** — `resilience4j.circuitbreaker.instances.inventory` |
 | Idempotency | **In ShopFlow** — `Idempotency-Key` header + `orderRef` |
-| Saga / compensation | **In ShopFlow** — step 1 reserve is **orchestrated** by `OrderService` (sync REST); step 2 payment and step 3 are **choreographed**: payment-service reacts to `OrderConfirmed`, order-service reacts to `PaymentCaptured` (→ PAID) / `PaymentFailed` (→ release + CANCELLED); client cancel = release; `OrderReconciler` = saga timeout for FAILED/PENDING |
+| Saga / compensation | **In ShopFlow** — step 1 reserve is **orchestrated** by `OrderService` (sync REST); step 2 payment and step 3 are **choreographed**: payment-service reacts to `OrderConfirmed`, order-service reacts to `PaymentCaptured` (→ PAID) / `PaymentFailed` (→ release + CANCELLED); cancelling a CONFIRMED/FAILED order = release; cancelling a **PAID** order = a **refund saga** (REFUND_PENDING → `OrderRefundPending` → payment refunds → `PaymentRefunded` → release + REFUNDED); `OrderReconciler` = saga timeout for FAILED/PENDING, and a gauge/alert (not auto-cancel) for stuck CONFIRMED/REFUND_PENDING |
 | Health probes / graceful shutdown | **In ShopFlow** — Actuator probes, `server.shutdown: graceful` |
 | Metrics + alerts | **In ShopFlow** — Prometheus + custom counters; `shopflow/monitoring/alert-rules.yml` (error rate, p99, breaker open, target down, outbox backlog, consumer lag) |
 | Externalised config (12-factor) | **In ShopFlow** — `DB_URL`, `DB_PASSWORD`, `INVENTORY_URL`, `DB_POOL_SIZE`, `KAFKA_BOOTSTRAP_SERVERS`, `JWT_ISSUER_URI`, `REDIS_HOST`, `OTLP_ENDPOINT` env vars, set by K8s Deployments + ConfigMap `shopflow-endpoints` + Secret `shopflow-db` |
@@ -179,11 +179,22 @@ step 3 (choreography) order-service, @KafkaListener(topics="payments.events", gr
                                      → PaymentFailed   → onPaymentFailed   → inventory.release(orderRef) + CANCELLED("payment failed: …")
               both only if the order is still CONFIRMED (status guard = idempotent)
 
-compensation: PaymentFailed → release (above) ; client cancel: CONFIRMED|FAILED → release → CANCELLED
-timeout:      OrderReconciler every 60s: FAILED|PENDING older than 2m → release → CANCELLED
+refund saga (cancel a PAID order — reverse compensation)
+              order-service cancel: PAID → REFUND_PENDING + outbox OrderRefundPending → orders.events
+              payment-service (same listener, switch on type): OrderRefundPending → look up payment by orderRef,
+                  refund it ONLY if CAPTURED (idempotent by STATE) → Payment.REFUNDED + outbox PaymentRefunded
+              order-service PaymentEventListener: PaymentRefunded → onPaymentRefunded → release + REFUNDED (money back FIRST, stock after)
+
+compensation: PaymentFailed → release (above) ; client cancel: CONFIRMED|FAILED → release → CANCELLED ; client cancel of PAID → refund saga above
+timeout:      OrderReconciler every 60s: FAILED|PENDING older than 2m → release → CANCELLED (no money moved → safe)
+              CONFIRMED|REFUND_PENDING older than 10m → NOT cancelled, only counted into orders_stuck_confirmed gauge → OrdersStuckConfirmed alert (money may be in flight → a human decides)
 ```
 
 Compensation path end to end: card declined → `payment(FAILED)` + `PaymentFailed` committed together → relay → `payments.events` → order-service releases the reservation (idempotent `DELETE /reservations/{orderRef}`, retry + breaker) → CANCELLED + `OrderCancelled` → notification-service tells the customer. If `release` throws, the listener's transaction rolls back and the record is retried with backoff (then `payments.events.DLT`), so the compensation is retried until it succeeds. Tests: `paymentFailedReleasesStockAndCancelsTheOrder`, `paymentCapturedMarksTheOrderPaid`, payment-service `declinesAboveTheCardLimitAndPublishesFailure`, `redeliveredEventChargesOnlyOnce`.
+
+**Reverse compensation — the refund saga.** Cancelling a PAID order runs the saga *backwards*: order-service does not release stock synchronously (the money has moved), it moves the order to REFUND_PENDING and emits `OrderRefundPending`; payment-service refunds and emits `PaymentRefunded`; order-service then releases stock and marks REFUNDED. Money comes back *before* stock is freed, so a refund that never confirms never leaks stock. Two things worth naming in an interview:
+- **Idempotent by state, not by eventId.** The forward charge dedupes on `eventId` (the `payment` PK / `processed_event` table). The refund cannot: it is a *second* action on a payment that already exists, so a fresh `OrderRefundPending` eventId would pass an eventId check every time. Instead payment-service looks the payment up by `orderRef` and refunds **only a `CAPTURED` one**; a redelivered `OrderRefundPending` finds it already `REFUNDED` and does nothing. State *is* the idempotency key. (Both `onPaymentRefunded` in order-service and `refund()` in payment-service are status-guarded.) Tests: `refundSagaMovesPaidOrderThroughRefundPendingToRefunded`, `refundOnOrderRefundPendingAfterCapture`, `refundIsIgnoredWhenThereIsNoCapturedPayment`.
+- **Not every limbo auto-resolves.** FAILED/PENDING is limbo with no money moved → the reconciler cancels it. CONFIRMED/REFUND_PENDING is limbo where money might have moved → auto-cancelling could strand a paid order, so those are only *counted* (`orders_stuck_confirmed` gauge) and alerted on (`OrdersStuckConfirmed`, ticket) for a human to investigate. A saga's timeout path must match whether the compensation is safe to run blind.
 
 **Q: Why not choreograph the reservation too?**
 The customer needs the stock answer inside the HTTP request; payment can be async because a CONFIRMED order is already a valid intermediate state to show. Moving reserve to events (`OrderPlaced` → inventory → `StockReserved`/`StockRejected`) is the documented next step; the cost is a PENDING state the client must poll.
@@ -248,7 +259,7 @@ Relay options:
 Delivery is **at-least-once** (crash after send, before marking) → consumers dedupe by **event id** (not `orderRef`: one order emits several events). The mirror pattern on the consumer side is the **inbox** — ShopFlow's `processed_event` table in notification-service and order-service (`V5`, for `payments.events`); payment-service instead uses the incoming `eventId` as the `payment` primary key (no separate table). Both inbox tables are pruned daily by `ProcessedEventCleanup` (7d, longer than the topic retention), so they do not grow forever.
 
 **Q: What does the outbox fix in ShopFlow, and what is still open?**
-Fixed: "order saved but notification lost" (and the reverse) — the event is durable the moment the order commits; a Kafka outage only grows the backlog, users still get 201. A timeout leaves a FAILED order with unknown stock — that is now settled by `OrderReconciler` (after a 2-minute grace: idempotent `release` + CANCELLED + `OrderCancelled` event). A crash between "save PENDING" and "reserve" used to leave a stuck PENDING order; the reconciler now sweeps PENDING older than the grace period too. Still open: an order stays CONFIRMED (stock reserved) for as long as payment-service is down — there is no timeout from CONFIRMED yet. Extending the outbox to an `OrderPlaced` event consumed by inventory (already idempotent by `orderRef`) would close that too.
+Fixed: "order saved but notification lost" (and the reverse) — the event is durable the moment the order commits; a Kafka outage only grows the backlog, users still get 201. A timeout leaves a FAILED order with unknown stock — that is now settled by `OrderReconciler` (after a 2-minute grace: idempotent `release` + CANCELLED + `OrderCancelled` event). A crash between "save PENDING" and "reserve" used to leave a stuck PENDING order; the reconciler now sweeps PENDING older than the grace period too. An order that stays CONFIRMED (stock reserved) while payment-service is down is *not* auto-cancelled — that limbo might be paid — but it is no longer invisible: `countStuckConfirmed` feeds an `orders_stuck_confirmed` gauge and the `OrdersStuckConfirmed` alert so a human is told. Still open: a genuinely orphaned CONFIRMED order still needs manual resolution (or a longer-horizon orchestrated timeout); extending the outbox to an `OrderPlaced` event consumed by inventory (already idempotent by `orderRef`) would decouple the reservation step too.
 
 ---
 

@@ -739,9 +739,9 @@ DELETE /orders/42 (PAID) ─▶ order: REFUND_PENDING + outbox RefundRequested �
 
 **Steps (checklist; solution ke liye Walk 5 ka payment flow template hai)**
 1. `OrderStatus`: `REFUND_PENDING`, `REFUNDED`. `Order.requestRefund()`, `markRefunded()`. `isCancellable()` ab PAID ko bhi allow kare → lekin cancel ki jagah refund path.
-2. `OrderService.cancel`: agar PAID → `requestRefund()` + `saveWithEvent` (event type `OrderRefundRequested`); stock release **nahi** (already sold? Business decide kare: yahan release karo, kyunki item wapas aata hai).
-3. payment-service `OrderConfirmedListener` → rename `OrderEventListener`, `OrderRefundRequested` handle: `PaymentGateway.refund(orderRef, amount)` (interface mein naya method, fake: hamesha approve), `payment` row status `REFUNDED`, event `PaymentRefunded`.
-4. order-service `PaymentEventListener`: `PaymentRefunded` → `markRefunded()`.
+2. `OrderService.cancel`: agar PAID → `requestRefund()` → status `REFUND_PENDING`, event type `OrderRefundPending`; stock release **nahi** abhi (paisa pehle wapas aaye).
+3. payment-service `OrderConfirmedListener` ka switch `OrderRefundPending` handle kare: `PaymentGateway.refund(orderRef, amount)` (interface mein naya method, fake: hamesha approve), `CAPTURED` payment ko `REFUNDED`, event `PaymentRefunded`.
+4. order-service `PaymentEventListener`: `PaymentRefunded` → `onPaymentRefunded()` (stock release + `REFUNDED`).
 5. Tests: order-service (PAID → DELETE → REFUND_PENDING; `PaymentRefunded` → REFUNDED), payment-service (refund event → `PaymentRefunded` on payments.events).
 6. Alert `RefundFailureRateHigh` + runbook + promtool test; `docs/STATE.md` open-items se hatao; notes 01/10 update.
 
