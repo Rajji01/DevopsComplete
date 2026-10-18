@@ -2,23 +2,38 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-10-17 (Walk 6). Branch: `claude/modest-bardeen-r4czhv`.
+Last updated: 2026-10-18 (Walk 7). Branch: `claude/modest-bardeen-r4czhv`.
 
 ## 1. What is in the repo
 
 | Area | Path | Status |
 |---|---|---|
 | Learning project v0 | `Devops/`, `microservice01/`, `notes.txt` | kept as the "before" picture; manifests lint-clean and kubeconform-valid |
-| ShopFlow services | `shopflow/{order,inventory,notification,payment}-service`, `shopflow-outbox` | 46 tests green: inventory 11, order 29, notification 2, payment 4 |
+| ShopFlow services | `shopflow/{order,inventory,notification,payment}-service`, `shopflow-outbox` | 50 tests green: inventory 11, order 31, notification 2, payment 6 |
 | Local stack | `shopflow/docker-compose.yml` | Postgres, Kafka, Redis, Keycloak, 4 services, Prometheus, **Alertmanager**, Tempo, Loki, Alloy, Grafana (dashboards provisioned) |
 | Kubernetes | `shopflow/k8s/` (Kustomize), `shopflow/helm/` (Helm), `shopflow/k8s/rollouts/` (Argo Rollouts), `shopflow/k8s/policies/` (Kyverno, Gatekeeper) | all rendered + schema-validated |
-| Monitoring | `shopflow/monitoring/` | alert rules (7 + 2 SLO), recording rules, **unit-tested** alerts, Alertmanager routing, Grafana dashboard |
+| Monitoring | `shopflow/monitoring/` | alert rules (8 + 2 SLO), recording rules, **unit-tested** alerts, Alertmanager routing, Grafana dashboard |
 | Runbooks | `docs/runbooks/` | one per alert + restore, rollback, post-mortem template |
 | AWS | `infra/terraform/aws/` (+ `environments/{dev,prod}.tfvars`) | fmt + tflint core clean; validate/plan only in CI / your account |
 | VM alternative | `infra/ansible/` | syntax-check + ansible-lint clean |
 | CI/CD | `.github/workflows/shopflow.yml`, `shopflow/Jenkinsfile`, `shopflow/argocd/` | lint → test → validate → build → scan → SBOM → push → sign → pin SHA |
 | Dev hygiene | `Makefile`, `.pre-commit-config.yaml`, `.yamllint.yaml`, `.hadolint.yaml`, `.gitleaks.toml` | `make lint`, `make validate` |
 | Learning docs | `docs/EASY-NOTES.md`, `docs/LABS.md` (break/fix), `docs/PRACTICE-LABS.md` (build it yourself, with solutions), `docs/ROADMAP.md`, `docs/SELF-WALK.md`, `docs/interview-notes/` | synced with this file at every walk |
+
+### Order state machine (after Walk 7)
+
+```
+PENDING ──reserve ok──▶ CONFIRMED ──PaymentCaptured──▶ PAID ──cancel──▶ REFUND_PENDING ──PaymentRefunded──▶ REFUNDED
+   │                        │                                                  (release stock)
+   │ reserve 409/404        │ PaymentFailed (release stock)
+   ▼                        ▼
+REJECTED                 CANCELLED ◀── cancel (CONFIRMED: release stock)
+   ▲
+inventory unreachable ──▶ FAILED ──reconciler (grace)──▶ CANCELLED
+PENDING too long ────────────────reconciler (grace)────▶ CANCELLED
+CONFIRMED/REFUND_PENDING too long ──▶ (NOT auto-cancelled) ──▶ gauge orders_stuck_confirmed + OrdersStuckConfirmed alert
+```
+Rule: a state where **no money has moved** (PENDING, FAILED) is safe to auto-cancel; a state where it **might have** (CONFIRMED, REFUND_PENDING) is only alerted on.
 
 ## 2. Approach matrix: basic ↔ advanced (both kept, on purpose)
 
@@ -43,7 +58,7 @@ Last updated: 2026-10-17 (Walk 6). Branch: `claude/modest-bardeen-r4czhv`.
 
 | Verified here, every walk | How |
 |---|---|
-| Java code | `mvn verify` (46 tests) |
+| Java code | `mvn verify` (50 tests) |
 | All YAML / Dockerfiles / secrets / Terraform / Ansible | yamllint, hadolint, gitleaks, tflint (core), ansible-lint + syntax-check |
 | Kubernetes manifests (dev, prod, rollouts, policies) | kustomize build → kubeconform (`-strict`, CRD schemas from the datreeio catalog) |
 | Policies | `kyverno apply` on the rendered prod overlay (pass) and on `k8s/policies/tests/bad-pod.yaml` (fail) |
@@ -59,12 +74,12 @@ Last updated: 2026-10-17 (Walk 6). Branch: `claude/modest-bardeen-r4czhv`.
 | Ansible against a real VM | user |
 
 ## 4. Open items (next walks)
-- Refund flow: cancelling a `PAID` order (`RefundRequested` → payment-service → `REFUNDED`).
-- `CONFIRMED` orders whose payment never arrives: timeout + reconciliation.
 - Shared (Redis/gateway) rate limit instead of per-pod.
 - Schema Registry (Avro/Protobuf) for event contracts; Testcontainers for PostgreSQL-only SQL.
 - Kyverno signature policy is written but needs a real signed image to test end to end.
 - Chaos experiments (kill a broker / RDS failover) under the k6 load test.
+- Refund gateway failures (real processor) — the fake one always succeeds; a `RefundFailed` path + alert is unmodelled.
+- Orchestrated saga timeout for genuinely orphaned CONFIRMED orders (currently alert-only, human decides).
 
 ## 5. How to keep this file true
 1. Every walk: update sections 1–4 **in the same commit** as the change.

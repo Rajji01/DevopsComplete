@@ -318,6 +318,40 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 
 ---
 
+### 11d. Refund: cancel aur refund alag cheez hai
+
+**Problem:** Customer ne `PAID` order cancel kiya. Purana code `cancel()` seedha stock release karke `CANCELLED` kar deta — lekin paisa customer ka kata pada hai! Refund ke bina cancel = chori.
+
+**Kyu:** Jab paisa move ho chuka hai, cancel synchronous nahi ho sakta. Pehle paisa wapas (payment-service), **phir** stock wapas, **phir** order REFUNDED. Ye saga ki ek aur leg hai, ek `DELETE` call nahi.
+
+**Kaise (steps):**
+1. `PAID` order pe cancel → `REFUND_PENDING` + event `OrderRefundPending`. Stock abhi release **nahi** (paisa pehle aaye).
+2. payment-service event sunta hai, us order ka `CAPTURED` payment dhundhta hai, gateway se refund karta hai, `REFUNDED` mark + `PaymentRefunded` event. Idempotency **state se**: agar already REFUNDED to kuch nahi (naya eventId nahi chahiye, payment row pehle se hai).
+3. order-service `PaymentRefunded` sunta hai → ab stock release (idempotent) + `REFUNDED`.
+4. Har step status-guarded: sirf `REFUND_PENDING` order REFUNDED banta hai, sirf `CAPTURED` payment refund hota hai. Redelivery safe.
+
+**ShopFlow mein:** `OrderService.cancel/onPaymentRefunded`, `payment-service OrderConfirmedListener.refund`, Practice P15.
+
+**Ek line mein:** *Refund = ulti saga: pehle paisa wapas, phir stock, phir REFUNDED; cancel nahi.*
+
+---
+
+### 11e. Har limbo auto-cancel nahi hota (CONFIRMED timeout)
+
+**Problem:** Order `CONFIRMED` hai par 20 minute se `PAID` nahi hua. Man kiya reconciler se auto-cancel kar do (jaise FAILED/PENDING). **Khatarnak:** shayad payment-service ne card charge kar diya ho aur `PaymentCaptured` event bas late/stuck ho. Auto-cancel karoge to paid order ka stock release + customer confused.
+
+**Kyu:** Walk 4 ka rule "har limbo ka owner ho" ka matlab ye **nahi** ki har limbo auto-cancel ho. Owner kabhi insaan hota hai, jab safe action ke liye jaankari order row mein nahi hai (card charge hua ya nahi?).
+
+**Kaise:**
+- **No money moved** (PENDING, FAILED) → reconciler safe cancel (release idempotent no-op).
+- **Money might have moved** (CONFIRMED, REFUND_PENDING) → auto-cancel **mat karo**. Ek gauge `orders_stuck_confirmed` (reconciler har minute refresh), ek alert `OrdersStuckConfirmed` (ticket), ek runbook: payment-service down? lag? DLT? Insaan decide kare.
+
+**ShopFlow mein:** `OrderService.countStuckConfirmed`, `OrderReconciler` gauge, `OrdersStuckConfirmed` alert, `docs/runbooks/OrdersStuckConfirmed.md`.
+
+**Ek line mein:** *Jahan safe action ka jawab data mein nahi, wahan auto-fix nahi — alert karo, insaan ko socho do.*
+
+---
+
 ### 12. Cache-aside (reads sasta karo, galat data mat do)
 
 **Problem:** `GET /products/{sku}` flash sale mein 10,000 req/s. Har request Postgres query. DB CPU 100%, writes bhi slow.
@@ -552,6 +586,8 @@ Har dependency ke liye poochho: **slow ho to? down ho to? galat jawab de to?**
 | Secret leak | git mein literal | Secrets Manager + ESO + IRSA |
 | Koi bhi user kisi ka bhi order dekh/cancel kar raha | role check hai, ownership check nahi (IDOR) | owner column + service-layer check, 404 |
 | Card decline hua par stock atka raha | compensation step nahi | saga: PaymentFailed → release + CANCELLED |
+| PAID order cancel pe paisa wapas nahi | cancel ko refund samajhna | refund saga: PaymentRefunded → release + REFUNDED |
+| CONFIRMED order ko auto-cancel kiya, paisa kata tha | har limbo auto-cancel samajhna | gauge + alert, insaan decide kare |
 | Doosri API ka token chal gaya | sirf issuer check, audience nahi | aud/azp/client_id validation |
 | Controllers DB query karne lage | architecture sirf wiki mein | ArchUnit rules in the build |
 | Orders hamesha ke liye FAILED | "outcome unknown" ka koi owner nahi | reconciler job + idempotent release |

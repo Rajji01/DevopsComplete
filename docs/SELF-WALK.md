@@ -83,7 +83,7 @@ Walk 3 findings from the AWS review (fixed in the same session):
 Walk 3 findings from the notes review (fixed in the same session):
 - **Redis cache would have crashed on the first put**: `RedisCacheManager` defaults to JDK serialization and `ProductResponse` is a plain record. Tests passed only because they use the `simple` cache. Fix: JSON values via `RedisCacheManagerBuilderCustomizer` + a round-trip test. Lesson: a config switch that tests never flip (`CACHE_TYPE=redis`) is untested code.
 - `KafkaConsumerLagHigh` alerted on a metric name that does not exist (`spring_kafka_listener_records_lag_max`); the real one is Micrometer's `kafka_consumer_fetch_manager_records_lag_max`, now asserted in a notification-service test so the alert's dependency is pinned.
-- Still open: the rate limiter is per pod (shared limit needs Redis/gateway), `@EnableMethodSecurity` is on but no `@PreAuthorize` is used yet, cancelling a PAID order would need a refund flow (not modelled).
+- Still open: the rate limiter is per pod (shared limit needs Redis/gateway); `@EnableMethodSecurity` is on but no `@PreAuthorize` is used yet; the refund gateway is faked (always succeeds, so no `RefundFailed` path); genuinely orphaned CONFIRMED orders are alert-only (no orchestrated timeout). See `docs/STATE.md` §4.
 
 ## Walk 4: security and "limbo" review (Oct 4, 2026)
 
@@ -148,6 +148,21 @@ Walk 6 lessons:
 - A new annotation on an alert (`runbook:`) broke the alert unit tests: the tests pin the exact annotations. Good: that is what they are for.
 - yamllint on Helm templates is noise (they are Go templates), on everything else it found real rot.
 - Keeping the basic approach next to the advanced one costs a README table and saves the next learner from thinking the advanced one is the only one.
+
+## Walk 7: refund saga, and a limbo that must NOT auto-resolve (Oct 18, 2026)
+
+Scope: the two oldest open items. Both are about money and about the saga's unhappy paths.
+
+| Added | Why it mattered | Where |
+|---|---|---|
+| Refund flow: `PAID` cancel → `REFUND_PENDING` → payment-service refunds → `PaymentRefunded` → `REFUNDED` + stock released | A paid order could not be cancelled at all. A refund is not a cancel: money has to come back **first**, then stock, so it is another saga leg, not a synchronous delete | `OrderService.cancel/onPaymentRefunded`, `payment-service` refund branch |
+| Refund idempotency **by state, not eventId** | The payment row already exists (keyed by the OrderConfirmed event). A redelivered `OrderRefundPending` finds the payment already `REFUNDED` and does nothing — no new key needed | `OrderConfirmedListener.refund` |
+| `OrdersStuckConfirmed` gauge + alert **instead of** auto-cancelling CONFIRMED | This is the walk's real lesson. FAILED/PENDING = no money moved = reconciler cancels them safely. CONFIRMED = payment may be in flight, so auto-cancel could strand a paid order. The honest fix is to **not guess**: count them and page a human | `OrderReconciler`, `OrdersStuckConfirmed` alert + runbook |
+
+Walk 7 lessons:
+- **"Every limbo needs an owner" (Walk 4) does not mean "every limbo gets auto-cancelled."** The owner of a CONFIRMED-stuck order is a human with a runbook, because the safe action depends on information the order row does not have (did payment-service charge the card?).
+- A refund reuses the saga machinery but reverses it: same outbox, same idempotent-consumer pattern, opposite direction. Recognising that kept it to ~40 lines instead of a new subsystem.
+- The event **type** is a contract: deriving it from the enum name silently produced `OrderRefund_pending` until the `pascal()` fix. A consumer `switch` on a string is only as good as the string.
 
 ### Honest status (what is NOT verified)
 

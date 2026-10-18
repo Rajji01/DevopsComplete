@@ -720,6 +720,8 @@ spec:
 
 ### P15 🔴 Poora feature end-to-end: "Order refund"
 
+> **Note (Walk 7):** ye feature ab repo mein **ban chuka hai** (`git show a3c3a93`). Isliye ise do tarah se use karo: (a) pehle khud likho bina solution dekhe, phir apna version actual commit se diff karo; ya (b) agla feature isi pattern pe banao — refund **gateway failure** (`RefundFailed` → order wapas `PAID` + alert), ya `RefundRequested` ko sirf `support` role allow karna. Neeche ka plan dono ke liye template hai.
+
 **Task:** `PAID` order ko cancel karne pe refund: `DELETE /orders/{id}` on PAID → `RefundRequested` event → payment-service refund (fake gateway) → `PaymentRefunded` → order `REFUNDED`. Tests, migration, docs, alert (`RefundFailureRateHigh`), runbook row, STATE.md update: sab.
 
 **Kyu:** Ye ek asli "feature ticket" hai jo backend + events + ops sab touch karta hai. Isko akele kar liya to tum junior nahi rahe.
