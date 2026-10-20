@@ -6,7 +6,10 @@ name: shopflow
 
 on:
   push:
-    branches: [main]
+    # master is this repo's default branch; main is kept for a future release flow. The gating jobs
+    # (test, validate, build, scan) run on both; the publish/deploy steps stay guarded by
+    # `github.ref == 'refs/heads/main'` below, so a master push verifies but never pushes/signs/deploys.
+    branches: [master, main]
     paths: ["shopflow/**", "infra/**", ".github/workflows/shopflow.yml", ".yamllint.yaml", ".hadolint.yaml", ".gitleaks.toml"]
   pull_request:
     paths: ["shopflow/**", "infra/**", ".github/workflows/shopflow.yml", ".yamllint.yaml", ".hadolint.yaml", ".gitleaks.toml"]
