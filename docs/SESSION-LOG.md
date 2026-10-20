@@ -15,8 +15,12 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 **Verify status (honest):**
 - Wrapper fix: **locally verified** (`./mvnw -version` → Maven 3.9.9).
-- Java change (SLO + test): **locally run NAHI** — JDK 21 nahi (sirf 17/8), Docker daemon band. Finding #3 ki wajah se **ab ye push khud master pe shopflow CI (Temurin 21) trigger karega**, jo is Java change ko verify karega. Red aaye to fix-forward.
+- Java change (SLO + test): **CI (Temurin 21) pe VERIFIED** ✅ — run `39421250786` ka `Unit + integration tests` job PASS. (Local pe JDK 21/Docker na hone se yahin nahi chala.)
 - Lesson: `cmd | tail` exit code `tail` ka deta hai — pehla "baseline green" false tha. Hamesha asli status dekho.
+
+**CI pe pata chala (master pe pehli baar chalne se) — 3 pre-existing failures, triage pending:**
+- `k6 inspect` (loadtest-syntax job), `tflint` AWS ruleset (lint job), `helm lint/template | kubeconform` (validate-manifests job).
+- Mere changes se NAHI (tests + terraform + kustomize/kyverno/promtool sab pass). Sources clean dikhte hain → tool/plugin/schema-download ya version drift lagta hai. **Precise fix ke liye run `39421250786` ke job logs chahiye.** STATE.md §4 mein triage item daala.
 
 **Pending / next:** STATE.md §4 — naya open item add kiya (SLI slow-4xx refinement) + baaki pichhle items.
 

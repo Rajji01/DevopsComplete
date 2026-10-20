@@ -81,6 +81,7 @@ Rule: a state where **no money has moved** (PENDING, FAILED) is safe to auto-can
 - Refund gateway failures (real processor) — the fake one always succeeds; a `RefundFailed` path + alert is unmodelled.
 - Orchestrated saga timeout for genuinely orphaned CONFIRMED orders (currently alert-only, human decides).
 - SLO SLI (Walk 8): the latency term counts *any* slow non-5xx (incl. 4xx/429) as "bad"; a stricter SLI would only count slow 2xx. Minor — left for a walk that can run `promtool` + a live Prometheus to retune and re-pin the alert tests.
+- **CI triage (Walk 8, surfaced when CI first ran on `master`):** three tooling jobs fail — `k6 inspect` (loadtest-syntax), `tflint` AWS ruleset (lint), `helm lint/template | kubeconform` (validate-manifests). Pre-existing (not from this walk; tests + terraform + kustomize/kyverno/promtool all pass). Need the job logs from run `39421250786` to fix precisely; sources read clean, likely tool/plugin/schema-download or version drift.
 
 ## 5. How to keep this file true
 1. Every walk: update sections 1–4 **in the same commit** as the change.
