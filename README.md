@@ -4,6 +4,8 @@ Goal: **mastery in DevOps + Java backend**, by building, shipping, running and d
 
 | Start here | What it is |
 |---|---|
+| [`docs/INDEX.md`](docs/INDEX.md) | **Entry point / map**: every file's role, reading chain, full project tree, how to track work |
+| [`docs/SUMMARY.md`](docs/SUMMARY.md) | 30-second snapshot: what the project is and where it stands right now |
 | [`docs/START-HERE.md`](docs/START-HERE.md) | **Read first**: the whole map on one page, a one-day reading plan, code reading order, "where is X" cheat sheet |
 | [`shopflow/`](shopflow/README.md) | Production-style microservices: order, inventory, payment and notification services (Spring Boot 3.5, Java 21, PostgreSQL, Kafka saga with transactional outbox, Redis, OAuth2/JWT, Resilience4j, OpenTelemetry, ArchUnit), Docker Compose stack, Kubernetes (Kustomize + Helm + Argo Rollouts canary/blue-green, Kyverno/Gatekeeper policies, HPA, PDB, NetworkPolicies, backups), Prometheus with SLO burn-rate alerts + unit tests + Alertmanager routing + Grafana dashboard, CI/CD with lint, Trivy, SBOM and cosign, k6 load test, Jenkinsfile, Argo CD; `make help` lists every approach |
 | [`infra/ansible/`](infra/ansible/README.md) | The pre-Kubernetes approach: the same stack on one VM with Ansible + systemd, with a when-to-use comparison |
