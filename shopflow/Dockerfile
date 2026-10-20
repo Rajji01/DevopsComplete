@@ -16,14 +16,14 @@ RUN --mount=type=cache,target=/root/.m2 \
 # ---------- 2. split the fat jar into layers ----------
 # dependencies change rarely, our code changes often -> separate image layers,
 # so a code-only change pushes/pulls a few KB instead of ~60 MB
-FROM eclipse-temurin:21-jre-alpine AS extract
+FROM eclipse-temurin:25-jre-alpine AS extract
 ARG SERVICE
 WORKDIR /extract
 COPY --from=build /src/${SERVICE}/target/app.jar app.jar
 RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination out
 
 # ---------- 3. runtime ----------
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:25-jre-alpine
 WORKDIR /app
 # fixed numeric non-root UID so K8s runAsNonRoot can verify it
 RUN addgroup -S -g 10001 app && adduser -S -u 10001 -G app app

@@ -15,7 +15,7 @@ COPY . .
 RUN --mount=type=cache,target=/root/.m2 \
     mvn -B -q -pl ${SERVICE} -am package -DskipTests
 
-FROM eclipse-temurin:21-jre-alpine AS extract
+FROM eclipse-temurin:25-jre-alpine AS extract
 ARG SERVICE
 WORKDIR /extract
 COPY --from=build /src/${SERVICE}/target/app.jar app.jar
