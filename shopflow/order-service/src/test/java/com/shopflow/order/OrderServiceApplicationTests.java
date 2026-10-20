@@ -83,6 +83,9 @@ class OrderServiceApplicationTests {
     private MockMvc mockMvc;
 
     @Autowired
+    private io.micrometer.core.instrument.MeterRegistry meterRegistry;
+
+    @Autowired
     private CircuitBreakerRegistry circuitBreakerRegistry;
 
     @Autowired
@@ -116,6 +119,26 @@ class OrderServiceApplicationTests {
 
     private static void stubReserve(int status) {
         inventory.stubFor(post(urlEqualTo("/api/v1/reservations")).willReturn(aResponse().withStatus(status)));
+    }
+
+    /**
+     * The checkout SLO recording rule (sli:checkout_bad) counts "fast enough" checkouts via
+     * http_server_requests_seconds_bucket{le="1.0"}. That bucket exists only because we declare 1s as
+     * an explicit SLO boundary (management.metrics.distribution.slo). If it is ever dropped, the
+     * burn-rate PromQL collapses to an empty vector and the SLO alerts silently stop firing in prod.
+     * The alert rules unit test injects the bucket itself, so only this test guards the real config.
+     */
+    @Test
+    void httpServerRequestsHistogramHasTheOneSecondSloBucket() throws Exception {
+        stubReserve(201);
+        mockMvc.perform(createOrder("IPHONE-15", 1)).andExpect(status().isCreated());
+
+        var timer = meterRegistry.find("http.server.requests").timer();
+        assertThat(timer).as("http.server.requests timer recorded").isNotNull();
+        boolean hasOneSecondBucket = java.util.Arrays.stream(timer.takeSnapshot().histogramCounts())
+                .anyMatch(c -> Math.abs(c.bucket(java.util.concurrent.TimeUnit.SECONDS) - 1.0) < 1e-9);
+        assertThat(hasOneSecondBucket)
+                .as("checkout SLO needs an http_server_requests bucket at le=1.0").isTrue();
     }
 
     @Test

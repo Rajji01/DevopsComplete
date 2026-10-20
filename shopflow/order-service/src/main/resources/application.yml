@@ -125,6 +125,12 @@ management:
     distribution:
       percentiles-histogram:
         http.server.requests: true
+      slo:
+        # explicit 1s SLO boundary -> guarantees an http_server_requests_seconds_bucket{le="1.0"}.
+        # The checkout SLO recording rule (sli:checkout_bad) subtracts that bucket; without this an
+        # upgrade/retune of the default histogram buckets can drop le=1.0, and the burn-rate alerts
+        # then evaluate to an empty vector (no data) in production. Pinned by a test.
+        http.server.requests: 1s
 
 springdoc:
   swagger-ui:

@@ -180,3 +180,22 @@ Walk 7 lessons:
 - Schema evolution for events is "ignore unknown fields" only; a Schema Registry (Avro/Protobuf) is the production answer.
 - No Testcontainers: tests run on H2 and an embedded Kafka, so PostgreSQL-only SQL (partial indexes, `SKIP LOCKED` semantics) is not exercised.
 - Secrets in the dev overlay are literals in git (fine for minikube, never for anything shared).
+
+## Walk 8: the alert that could never fire, and the build that could never start (Oct 20, 2026)
+
+Scope: re-read the observability and build plumbing adversarially — "does this alert actually have data in production?" and "does a clean checkout even build?". Two findings, both the "green that is actually red" kind.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **The checkout SLO burn-rate alerts can never fire in production.** `sli:checkout_bad` subtracts `http_server_requests_seconds_bucket{le="1.0"}`, but `percentiles-histogram: true` does **not** guarantee a bucket at exactly `le=1.0`. If it is absent, PromQL evaluates `5xx + (total − <empty>)` to an **empty vector** → `sli:checkout_error_ratio` is no-data → `CheckoutSLOBurnRateFast/Slow` stay silent through any outage. The alert **unit test injects the `le=1.0` series itself**, so `promtool test rules` is green while prod is blind | The SLO is the headline deliverable of Walk 6; an SLO you cannot alert on is a slide, not an SLO | Declared an explicit 1s SLO boundary (`management.metrics.distribution.slo.http.server.requests: 1s`) in order-service, which guarantees the `le=1.0` bucket. New test `httpServerRequestsHistogramHasTheOneSecondSloBucket` pins it against the **real** Micrometer config (the rules test can't) |
+| **`./mvnw` 404s on a clean checkout**, so `make test` and the CI `test` job (`./mvnw -B verify`) cannot even start. `shopflow/.mvn/wrapper/maven-wrapper.properties` had a botched version bump: `.../apache-maven/3.9.11/apache-maven-3.9.2-bin.zip` — directory `3.9.11`, filename `3.9.2`, a path that does not exist on Maven Central | A build that only works because of a stale cached distribution on one laptop is a time bomb for CI and every new contributor | Corrected to a consistent, real release: `3.9.9/apache-maven-3.9.9-bin.zip`. Verified `./mvnw -version` now resolves and runs |
+
+Walk 8 lessons:
+- **A passing rules test is not a working alert.** `promtool test rules` proves the PromQL given the series you feed it; it cannot prove those series exist in production. Where an alert depends on a specific metric/bucket, pin that dependency with a test against the real exporter config (as the notification-service test already does for the Kafka-lag gauge).
+- **`cmd | tail` hides exit codes.** The first "baseline green" here was a lie: `./mvnw … | tail -60` reports *tail's* exit code (0), while mvnw had actually died at the broken wrapper. Check the real status, not the tail.
+- **Histograms need declared SLO boundaries.** Never query a histogram at an `le` you did not explicitly configure; the default bucket set is an implementation detail that can change under you.
+
+### Honest status (Walk 8, what is NOT verified here)
+
+- The Java change (SLO boundary + the new test) was **not run locally**: this machine has only JDK 17 and 8 (the project needs 21), and the Docker daemon was not running, so the container route was unavailable too. The **CI `test` job (Temurin 21) is the verifier**, exactly as `docs/STATE.md` §3 intends. The fix is a config boundary plus a guard test; the API usage was reviewed against Micrometer/Boot 3.5.
+- The Maven wrapper fix **was** verified here (`./mvnw -version` prints Maven 3.9.9 and runs).

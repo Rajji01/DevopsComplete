@@ -2,14 +2,14 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-10-18 (Walk 7). Branch: `claude/modest-bardeen-r4czhv`.
+Last updated: 2026-10-20 (Walk 8). Branch: `master` (web-session work fast-forwarded in and pushed).
 
 ## 1. What is in the repo
 
 | Area | Path | Status |
 |---|---|---|
 | Learning project v0 | `Devops/`, `microservice01/`, `notes.txt` | kept as the "before" picture; manifests lint-clean and kubeconform-valid |
-| ShopFlow services | `shopflow/{order,inventory,notification,payment}-service`, `shopflow-outbox` | 50 tests green: inventory 11, order 31, notification 2, payment 6 |
+| ShopFlow services | `shopflow/{order,inventory,notification,payment}-service`, `shopflow-outbox` | 51 tests: inventory 11, order 32 (+1 SLO-bucket guard, Walk 8), notification 2, payment 6. 50 verified earlier via `mvn verify`; the Walk 8 order-service test is verified in CI (JDK 21) — this machine has no JDK 21 |
 | Local stack | `shopflow/docker-compose.yml` | Postgres, Kafka, Redis, Keycloak, 4 services, Prometheus, **Alertmanager**, Tempo, Loki, Alloy, Grafana (dashboards provisioned) |
 | Kubernetes | `shopflow/k8s/` (Kustomize), `shopflow/helm/` (Helm), `shopflow/k8s/rollouts/` (Argo Rollouts), `shopflow/k8s/policies/` (Kyverno, Gatekeeper) | all rendered + schema-validated |
 | Monitoring | `shopflow/monitoring/` | alert rules (8 + 2 SLO), recording rules, **unit-tested** alerts, Alertmanager routing, Grafana dashboard |
@@ -80,6 +80,7 @@ Rule: a state where **no money has moved** (PENDING, FAILED) is safe to auto-can
 - Chaos experiments (kill a broker / RDS failover) under the k6 load test.
 - Refund gateway failures (real processor) — the fake one always succeeds; a `RefundFailed` path + alert is unmodelled.
 - Orchestrated saga timeout for genuinely orphaned CONFIRMED orders (currently alert-only, human decides).
+- SLO SLI (Walk 8): the latency term counts *any* slow non-5xx (incl. 4xx/429) as "bad"; a stricter SLI would only count slow 2xx. Minor — left for a walk that can run `promtool` + a live Prometheus to retune and re-pin the alert tests.
 
 ## 5. How to keep this file true
 1. Every walk: update sections 1–4 **in the same commit** as the change.
