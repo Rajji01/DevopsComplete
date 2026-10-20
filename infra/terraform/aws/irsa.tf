@@ -5,7 +5,7 @@
 # 1. External Secrets Operator: read the DB secret
 module "irsa_external_secrets" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.0"
+  version = "~> 6.8"
 
   role_name = "${var.name}-external-secrets"
 
@@ -37,7 +37,7 @@ resource "aws_iam_policy" "read_db_secret" {
 # 2. order-service / notification-service: produce and consume on MSK with IAM auth
 module "irsa_kafka_clients" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.0"
+  version = "~> 6.8"
 
   role_name = "${var.name}-kafka-clients"
 
@@ -89,7 +89,7 @@ resource "aws_iam_policy" "kafka_clients" {
 # 3. AWS Load Balancer Controller: creates the ALB for the Ingress
 module "irsa_lb_controller" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.0"
+  version = "~> 6.8"
 
   role_name                              = "${var.name}-aws-load-balancer-controller"
   attach_load_balancer_controller_policy = true
