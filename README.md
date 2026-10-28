@@ -18,6 +18,7 @@ Goal: **mastery in DevOps + Java backend**, by building, shipping, running and d
 | [`docs/PRACTICE-LABS.md`](docs/PRACTICE-LABS.md) | 15 build-it-yourself practice tasks on this project (easy Hinglish): task → why → diagram → steps → full solution → common mistakes → verify |
 | [`docs/LABS.md`](docs/LABS.md) | 33 hands-on break/fix labs (OOMKilled, CrashLoopBackOff, circuit breaker, zero-downtime deploy, kill Kafka, duplicate events, poison pill, JWT, cache, tracing, ...) |
 | [`docs/interview-notes/`](docs/interview-notes/) | Interview notes: project walkthrough, Java/Spring, microservices, Docker, Kubernetes, CI/CD, observability, Linux/networking, AWS production, Kafka, security/caching/performance, and a hard-questions file |
+| [`docs/comprehension/`](docs/comprehension/README.md) | **Comprehension rounds** (Google-style): read a real ShopFlow scenario cold → reason through 5 tiers of questions → separate concept notes (kya/kyu/kaise/diagrams/alternatives) → break & fix it yourself locally (minikube/docker) or online (Codespaces/Cloud Shell) |
 
 ## Basics (first learning project)
 

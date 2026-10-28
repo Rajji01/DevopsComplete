@@ -6,6 +6,17 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-10-29 — CLI (Fable/Opus) — comprehension rounds added
+**Branch:** `master` (pulled first: already up to date; `claude/modest-bardeen-r4czhv` fully in master).
+**Hua:** Naya `docs/comprehension/` section banaya — Google-style comprehension-round prep (DSA ki jagah). **15 topics**, har ek apne folder mein `comprehension.md` (cold passage + 5-tier Qs: literal/inference/trade-off/transfer/spot-flaw + `<details>` model answers + "Tod ke dekho" local minikube/docker + online hands-on + interviewer's lens) **aur** `notes.md` (kya/easy/kyu/kaise/flow+component diagram/alternate table/understanding check):
+  01 outbox-dual-write · 02 saga-cancel-refund · 03 idempotency-three-ways · 04 order-limbo-reconciler · 05 overselling-concurrency · 06 slo-burn-rate-bug · 07 k8s-readiness-cascade · 08 supply-chain-signing · 09 resilience-breaker-retry · 10 oauth2-jwt-idor · 11 kafka-dlt-lag · 12 caching-cache-aside-failopen · 13 tracing-logs-correlation · 14 kustomize-vs-helm · 15 canary-bluegreen-rollouts (15 topics total).
+  Plus `README.md` (round kya hai + practice method + rubric + index) aur `ONLINE-LABS.md` (Codespaces/Cloud Shell/Killercoda/Render+Neon+Upstash+Confluent free-tier setup — kyunki is machine pe Docker/JDK nahi).
+  Sab real shopflow code pe grounded (file paths + exact commands/curl `/api/v1/orders`, FakePaymentGateway limit 100000 → PS5 qty2 declined, decrementStock atomic SQL, SLI `le=1.0` bucket bug, readiness group `readinessState,db`, cosign keyless + Kyverno verify). INDEX §1+tree, STATE §1 row, ye log update kiye.
+**Verify (honest):** docs hain; passages/commands source ke against likhe gaye, par **is machine pe chala ke verify nahi** kiye (Docker daemon + JDK 21 nahi — STATE §3). `make lint`/`validate`/`test` nahi chalaye (pure markdown add; koi YAML/code change nahi). Commit/push nahi kiya (Abhishek ke bolne pe).
+**Pending / next:** (a) hands-on commands ko Codespaces pe ek baar run karke verify karna. (b) aur comprehension topics isi mould mein (optional): HPA/PDB autoscaling, Terraform/EKS prod + IRSA/OIDC, backups RPO/RTO (pg_dump CronJob vs RDS PITR), ArchUnit guardrails, virtual threads, External Secrets, NetworkPolicies. (c) STATE §4 ke purane open items jyo-ke-tyo.
+
+---
+
 ## 2026-10-20 — CLI (Opus 4.8) — Walk 8 (self-walk + improve)
 **Branch:** `master`
 **Hua (2 real findings fix kiye, dono "green jo actually red tha"):**

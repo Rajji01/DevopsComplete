@@ -2,7 +2,7 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-10-20 (Walk 8). Branch: `master` (web-session work fast-forwarded in and pushed).
+Last updated: 2026-10-29 (comprehension rounds added; §1 only). Branch: `master`. Prior: 2026-10-20 (Walk 8, web-session work fast-forwarded in and pushed).
 
 ## 1. What is in the repo
 
@@ -19,6 +19,7 @@ Last updated: 2026-10-20 (Walk 8). Branch: `master` (web-session work fast-forwa
 | CI/CD | `.github/workflows/shopflow.yml`, `shopflow/Jenkinsfile`, `shopflow/argocd/` | lint → test → validate → build → scan → SBOM → push → sign → pin SHA |
 | Dev hygiene | `Makefile`, `.pre-commit-config.yaml`, `.yamllint.yaml`, `.hadolint.yaml`, `.gitleaks.toml` | `make lint`, `make validate` |
 | Learning docs | `docs/EASY-NOTES.md`, `docs/LABS.md` (break/fix), `docs/PRACTICE-LABS.md` (build it yourself, with solutions), `docs/ROADMAP.md`, `docs/SELF-WALK.md`, `docs/interview-notes/` | synced with this file at every walk |
+| Comprehension rounds | `docs/comprehension/` (01–15, each `comprehension.md` + `notes.md`) + `README.md` + `ONLINE-LABS.md` | Google-style comprehension prep: cold passage → 5-tier Qs + answers → separate concept notes (kya/kyu/kaise/diagram/alternate) → local (minikube/docker) + online (Codespaces/Cloud Shell/Killercoda/Render) hands-on. 15 topics: outbox, saga, idempotency, limbo/reconciler, overselling, SLO burn-rate, k8s readiness, supply-chain signing, resilience4j breaker/retry, OAuth2/JWT/IDOR, Kafka DLT/lag, caching fail-open, tracing, Kustomize-vs-Helm, canary/blue-green. Grounded in real shopflow code with file paths; passages/commands reviewed against source, not yet executed on this machine (no Docker/JDK here) |
 
 ### Order state machine (after Walk 7)
 
