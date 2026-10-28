@@ -201,3 +201,27 @@ Walk 8 lessons:
 - The Java change (SLO boundary + the new test) could not run on this machine (only JDK 17/8; Docker daemon off). Finding #3 made the first-ever `master` run of the pipeline happen, and its **`Unit + integration tests` job passed on Temurin 21** — so the SLO bucket fix and its guard test are **verified in CI** (run `39421250786`).
 - The Maven wrapper fix **was** verified here (`./mvnw -version` prints Maven 3.9.9 and runs).
 - As predicted, enabling CI on `master` surfaced **pre-existing** failures in three tooling-heavy jobs that had never run on `master` before: `k6 inspect` (loadtest), `tflint` (AWS ruleset), and `helm lint/template | kubeconform`. These are not caused by this walk's changes (the Java tests, Terraform fmt/validate, and the kustomize/kyverno/promtool validate steps all passed). They need the CI job logs to fix precisely (the sources read clean), so they are logged as triage items in `STATE.md` §4 rather than blind-patched.
+
+## Walk 9: auditing the new comprehension docs against the source (Oct 29, 2026)
+
+Scope: the just-added `docs/comprehension/` (15 topics, each `comprehension.md` + `notes.md`). These docs make many specific claims about the real ShopFlow code and ship copy-paste "Tod ke dekho" commands, none of which had been run on this machine (no Docker/JDK here). A doc that misstates the code is worse than no doc — interviewers probe exactly the claim you got wrong. So this walk verified the load-bearing facts and commands against the source.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **Topic 05's raw-concurrency demo was placed *after* `make loadtest`, which drains PS5 stock to 0.** The 20-parallel-reserve block then hits 0 stock → every call returns `409`, so it would show "0 reserved," not the "exactly 3" the lab claims to prove | A hands-on that contradicts its own stated result teaches the opposite lesson and makes the reader distrust the whole doc | Reseed note added (`make down && make up` so PS5 = 3), and the block now stands as an independent demo |
+| **Same block backgrounded 20 `curl`s piped straight into `sort` with no `wait`.** The pipe's subshell can close before the background jobs finish, so the counts under-report non-deterministically | A flaky lab command that "sometimes" shows the right thing is a bug report waiting to happen | Wrapped as `{ for …; do curl … & done; wait; } \| sort \| uniq -c` so every request completes before counting |
+| **Same block said success was `200/201`.** `ReservationController.reserve` is `@ResponseStatus(HttpStatus.CREATED)` — it is always **201** (the race-loser path returns 201 too) | A wrong status code is the kind of detail an interviewer uses to check if you actually ran it | Corrected to "3×`201`, 17×`409`, never an oversell" |
+
+Verified correct (claims that held up against source — spot-checked, no change needed):
+- Endpoints/paths: `POST /api/v1/orders`, `DELETE /api/v1/orders/{id}`, `GET /api/v1/products/{sku}`, `POST /api/v1/reservations` (201) + `DELETE /api/v1/reservations/{orderRef}` (204) — all match the controllers.
+- Config values quoted in the docs: reconcile grace `2m` / stuck grace `10m`, rate limiter `50`/`1s`, breaker `50%` over `10` calls / `10s` open, retry `3` attempts `200ms ×2`, Kafka error backoff `500ms ×2` capped `10s`, Redis cache `time-to-live: 60s`, outbox retention `7d`, explicit SLO bucket `distribution.slo.http.server.requests: 1s` — all present in `application.yml` / config as cited.
+- Topic/event facts: `orders.events` + `payments.events` topic constants → DLT name `payments.events.DLT` (topic 11) is correct; `FakePaymentGateway` limit `100000` so `PS5-SLIM` (54990) × qty 2 = 109980 is declined (topic 02); `decrementStock` is the atomic `… WHERE quantity >= :qty` (topic 05); readiness group is `readinessState, db` only (topic 07); Grafana Tempo↔Loki linking via `tracesToLogsV2` + `derivedFields` (topic 13).
+
+Walk 9 lessons:
+- **A copy-paste lab is a claim too.** Every command that asserts an output ("→ exactly 3") must be reasoned through for state it depends on (here: stock seeded by a prior step) and shell correctness (backgrounded jobs need `wait`), exactly like a code claim.
+- **Know your status codes.** "200/201" is a tell that the command was written from memory, not run. `@ResponseStatus` on the controller is the source of truth.
+
+### Honest status (Walk 9, what is NOT verified here)
+
+- The docs are **reviewed against source, not executed.** This machine has no Docker daemon or JDK 21 (per `STATE.md` §3), so none of the `make up` / `kubectl` / `k6` / `promtool` / `cosign` flows were actually run. The fixes above come from reading the controllers/config, not from a green terminal.
+- Remaining next step (logged in `SESSION-LOG.md`): run one full topic end-to-end on GitHub Codespaces (`ONLINE-LABS.md` §A) to catch anything that only a real run would surface, before trusting the rest of the hands-on blocks verbatim.

@@ -115,14 +115,18 @@ docker run --rm -i --network host -e TOKEN=$TOKEN grafana/k6 run - < shopflow/lo
 docker compose -f shopflow/docker-compose.yml exec postgres \
   psql -U inventory -d inventory -c "select sku, quantity from product where sku='PS5-SLIM';"   # -> 0
 
-# see overselling be IMPOSSIBLE even with raw concurrency (fire 20 parallel reserves for 3 stock):
-for i in $(seq 1 20); do
-  curl -s -X POST http://localhost:8082/api/v1/reservations \
-    -H 'Content-Type: application/json' -d "{\"orderRef\":\"r-$i\",\"sku\":\"PS5-SLIM\",\"quantity\":1}" -o /dev/null -w "%{http_code}\n" &
-done | sort | uniq -c    # -> only 3 succeed (200/201), the rest 409 insufficient-stock
+# --- raw-concurrency demo (run on a FRESH stack so PS5 stock = 3 again) ---
+# make down && make up   # reseed: PS5-SLIM starts at 3
+# fire 20 parallel reserves for 3 units; `wait` so every backgrounded curl finishes before we count:
+{ for i in $(seq 1 20); do
+    curl -s -X POST http://localhost:8082/api/v1/reservations \
+      -H 'Content-Type: application/json' -d "{\"orderRef\":\"r-$i\",\"sku\":\"PS5-SLIM\",\"quantity\":1}" \
+      -o /dev/null -w "%{http_code}\n" &
+  done; wait; } | sort | uniq -c
+#   -> exactly 3 return 201 (reserved), the other 17 return 409 (insufficient stock). Never 4.
 ```
 
-**Proved:** the `count==3` threshold and `quantity=0` (never negative) show the atomic `UPDATE` serialised 300 racing buyers correctly; `429`/`409` are the system correctly shedding load, not errors.
+**Proved:** the `count==3` threshold and `quantity=0` (never negative) show the atomic `UPDATE` serialised 300 racing buyers correctly; `429`/`409` are the system correctly shedding load, not errors. The raw 20-parallel-reserve demo makes the same point without k6 — 3×`201`, 17×`409`, never an oversell.
 
 > Break it: temporarily swap `decrementStock` for a read-check-write in Java and re-run — watch `confirmed` jump above 3. That one experiment teaches the whole topic.
 
