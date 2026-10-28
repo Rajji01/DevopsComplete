@@ -225,3 +225,26 @@ Walk 9 lessons:
 
 - The docs are **reviewed against source, not executed.** This machine has no Docker daemon or JDK 21 (per `STATE.md` §3), so none of the `make up` / `kubectl` / `k6` / `promtool` / `cosign` flows were actually run. The fixes above come from reading the controllers/config, not from a green terminal.
 - Remaining next step (logged in `SESSION-LOG.md`): run one full topic end-to-end on GitHub Codespaces (`ONLINE-LABS.md` §A) to catch anything that only a real run would surface, before trusting the rest of the hands-on blocks verbatim.
+
+## Walk 10: a deeper pass over every lab command (Oct 29, 2026)
+
+Scope: the `Tod ke dekho` command blocks across all 15 comprehension topics, read **against the actual DB schema and the error/response behaviour of the code** — the parts a reader will literally copy-paste when the "test phase" comes. Walk 9 spot-checked claims; this walk ran down every `psql`, `docker run`, shell helper and "capture the id" step. Six more real defects (none would have produced the stated output):
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **Topic 01 / 03 `psql` ordered a UUID PK `desc` to get "newest."** `outbox_event.id` and `processed_event.event_id` are **uuid**, so `order by id desc` returns arbitrary order, not the newest row the comment promises | The lab's "newest row has published_at = NULL" claim would often point at the wrong row | Order by `created_at` / `processed_at` instead |
+| **Topic 03 `select id … from payment`.** The `payment` table has **no `id` column** — its primary key *is* `event_id` (V1__payment.sql). The query errors with `column "id" does not exist` | A copy-pasted query that throws is the first thing a reviewer notices | `select event_id, order_ref, status … order by created_at desc` |
+| **Topic 04 / 09 captured the order id from the POST response while inventory was down.** That POST throws `InventoryUnavailableException` → **HTTP 503 problem-detail**, not an order body, so `jq -r '.id'` / `.status` is null — every follow-up (`/orders/$ID`, `{status}`) then breaks | The order *is* saved (FAILED), but you can't observe it the way the lab said; the whole demo falls over | Observe via the DB (`psql … select status from orders`) and, for topic 09, via the **HTTP code + `%{time_total}`** (503 fast-vs-slow shows the breaker) + the breaker metric |
+| **Topic 08 `docker run anchore/syft … <image>` had no docker socket.** Syft in a container can't reach the host daemon, so it can't find `shopflow/order-service:local` (the adjacent Trivy line *did* mount the socket) | The SBOM step would just fail to find the image | Added `-v /var/run/docker.sock:/var/run/docker.sock` |
+| **Topic 11 `KT bash -c "…"`.** The `KT` helper prepends `/opt/kafka/bin/`, so `KT bash` runs `/opt/kafka/bin/bash`, which doesn't exist | The poison-pill producer step — the climax of the lab — would error out | Pipe host `echo` straight into the container's producer with `docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh` |
+
+Verified correct this pass (no change): DB names/users (`orders`/`orders`, `payments`/`payments`, `inventory`/`inventory`), table/column names actually queried (`orders`, `product`, `outbox_event.published_at`), the k6 thresholds (`count==3`, browse p99<300, order p95<800), breaker/retry/backoff numbers, `KAFKA_NUM_PARTITIONS: 3`, and the business-reject path returning **201 `REJECTED`** (only the inventory-*down* path is a 503).
+
+Walk 10 lessons:
+- **Know the primary key.** Half these bugs came from assuming a conventional `id` column; three tables here are keyed by a uuid or a business id. Read the migration before writing the query.
+- **An error response is not a data source.** When the failure path returns a 503 problem-detail, the demo has to observe the side effect (the DB row, a metric, the timing), not parse an order out of the error.
+- **A shell helper has a contract.** `KT` means "run a `/opt/kafka/bin/*` tool"; feeding it `bash` silently builds a path that doesn't exist.
+
+### Honest status (Walk 10)
+
+- Still **not executed here** — these fixes come from reading the schema and the controllers' error behaviour, not from a terminal. They remove the defects a dry read can find; a Codespaces run (the agreed "test phase") is still what will confirm the rest.

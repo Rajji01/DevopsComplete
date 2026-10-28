@@ -114,8 +114,8 @@ curl -si -X POST http://localhost:8081/api/v1/orders -H "Authorization: Bearer $
 ID=$(curl -s -X POST http://localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"AIRPODS-PRO","quantity":1}' | jq -r .id)
 sleep 3
-docker compose -f shopflow/docker-compose.yml exec postgres psql -U orders   -d orders   -c "select event_id from processed_event order by event_id desc limit 3;"
-docker compose -f shopflow/docker-compose.yml exec postgres psql -U payments -d payments -c "select id, order_ref, status from payment order by id desc limit 3;"  # id == OrderConfirmed eventId
+docker compose -f shopflow/docker-compose.yml exec postgres psql -U orders   -d orders   -c "select event_id, processed_at from processed_event order by processed_at desc limit 3;"
+docker compose -f shopflow/docker-compose.yml exec postgres psql -U payments -d payments -c "select event_id, order_ref, status from payment order by created_at desc limit 3;"  # payment PK event_id == OrderConfirmed eventId (no separate id column)
 ```
 
 **Proved:** mechanism (1) collapses a client retry to one order and refuses a cross-user replay; (2)/(3) leave a dedupe fingerprint (`processed_event` row, payment PK) that makes a Kafka redelivery a no-op.

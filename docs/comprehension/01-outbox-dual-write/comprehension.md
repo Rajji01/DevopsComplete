@@ -108,8 +108,8 @@ curl -s -X POST http://localhost:8081/api/v1/orders \
 # 3) OBSERVE: the outbox row is unpublished, and the backlog gauge climbs
 docker compose -f shopflow/docker-compose.yml exec postgres \
   psql -U orders -d orders -c \
-  "select id, event_type, published_at from outbox_event order by id desc limit 5;"
-#   -> newest row has published_at = NULL
+  "select event_type, published_at, created_at from outbox_event order by created_at desc limit 5;"
+#   -> newest row has published_at = NULL   (id is a uuid, so order by created_at for newest-first)
 # Prometheus (http://localhost:9090) -> query:  outbox_unpublished   -> goes up
 # Leave it >5 min and OutboxBacklogGrowing fires (http://localhost:9093 alertmanager)
 

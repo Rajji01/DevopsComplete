@@ -92,25 +92,29 @@ Goal: create a `FAILED`/limbo order by taking inventory down, watch the reconcil
 
 ```bash
 make up && TOKEN=$(make -s token)
+# observe order status straight from the DB (the FAILED order's POST returns a 503, not a body, so we read the row):
+PSQL() { docker compose -f shopflow/docker-compose.yml exec -T postgres psql -U orders -d orders -tc "$1"; }
 
-# A) LIMBO: inventory down -> order saved FAILED, readiness still UP
+# A) LIMBO: inventory down -> POST returns 503, but the order IS saved as FAILED; readiness stays UP
 docker compose -f shopflow/docker-compose.yml stop inventory-service
-ID=$(curl -s -X POST http://localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"PIXEL-9","quantity":1}' | jq -r '.id // .status')
-curl -s http://localhost:8081/actuator/health/readiness | jq   # still UP (inventory excluded)
+curl -s -o /dev/null -w "POST http=%{http_code}\n" -X POST http://localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"PIXEL-9","quantity":1}'   # 503
+curl -s http://localhost:8081/actuator/health/readiness | jq            # still UP (inventory excluded)
+PSQL "select order_ref, status from orders order by created_at desc limit 1;"   # -> ... | FAILED
 
 # B) RECONCILER settles it: bring inventory back, wait past the 2m grace + a 60s tick
 docker compose -f shopflow/docker-compose.yml start inventory-service
 # (speed it up by lowering grace: set env orders.reconcile.grace=10s on order-service and restart, or just wait ~3 min)
 sleep 180
-curl -s http://localhost:8081/api/v1/orders/$ID -H "Authorization: Bearer $TOKEN" | jq '.status'   # -> "CANCELLED" (no limbo)
+PSQL "select order_ref, status from orders order by created_at desc limit 1;"   # -> ... | CANCELLED (no limbo)
 
-# C) STUCK CONFIRMED gauge: stop payment-service, place a normal order -> sits CONFIRMED
+# C) STUCK CONFIRMED gauge: stop payment-service, place a normal order -> sits CONFIRMED (not auto-cancelled)
 docker compose -f shopflow/docker-compose.yml stop payment-service
 curl -s -X POST http://localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"PIXEL-9","quantity":1}' >/dev/null
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"PIXEL-9","quantity":1}' | jq '.status'  # CONFIRMED
+sleep 90; PSQL "select order_ref, status from orders order by created_at desc limit 1;"   # still CONFIRMED (NOT cancelled)
 # Prometheus (http://localhost:9090) -> query:  orders_stuck_confirmed   (climbs after the 10m grace)
-# It is NEVER auto-cancelled. Bring payment back -> it reaches PAID on its own:
+# Bring payment back -> it reaches PAID on its own (never auto-cancelled):
 docker compose -f shopflow/docker-compose.yml start payment-service
 ```
 

@@ -92,16 +92,20 @@ Goal: open the breaker by taking inventory down, watch calls fail fast and order
 
 ```bash
 make up && TOKEN=$(make -s token)
-ORDER() { curl -s -X POST http://localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"PIXEL-9","quantity":1}'; }
+PSQL() { docker compose -f shopflow/docker-compose.yml exec -T postgres psql -U orders -d orders -tc "$1"; }
+# inventory-down orders return HTTP 503 (not a body), so watch the HTTP code + TIMING, and read status from the DB:
+ORDER() { curl -s -o /dev/null -w "http=%{http_code} time=%{time_total}s\n" -X POST http://localhost:8081/api/v1/orders \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"PIXEL-9","quantity":1}'; }
 
-# 1) inventory DOWN -> first few orders retry+timeout (slow), then breaker OPENS -> fast FAILED
+# 1) inventory DOWN -> all return 503, but watch the TIME: first few are slow (retries + 2s read timeout),
+#    later ones return FAST once the breaker OPENS (CallNotPermitted, no network wait)
 docker compose -f shopflow/docker-compose.yml stop inventory-service
-for i in $(seq 1 8); do ORDER | jq -c '{status, failureReason}'; done
-#   first calls slower (retries + 2s read timeout), later calls return FAST (CallNotPermitted) -> status FAILED
+for i in $(seq 1 8); do ORDER; done
+#   -> http=503 every time; time drops from ~2-6s (retrying) to ~0.0xs (breaker open)
 curl -s http://localhost:8081/actuator/health/readiness | jq        # STILL UP
+PSQL "select status, count(*) from orders group by status;"         # the orders are saved as FAILED
 
-# 2) see the breaker metric (open=1)
+# 2) see the breaker metric (state=open -> value 1)
 curl -s http://localhost:8081/actuator/prometheus | grep 'resilience4j_circuitbreaker_state' | grep 'inventory'
 
 # 3) business reject does NOT trip breaker: bring inventory up, order a huge qty -> 409 REJECTED, breaker stays closed

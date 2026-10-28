@@ -93,7 +93,7 @@ Full admission enforcement needs a cluster with Kyverno; but the sign/verify cor
 ```bash
 # 1) SBOM of a local image (what's inside) — Syft:
 make build                                   # builds shopflow/*:local (or: docker build ...)
-docker run --rm anchore/syft:latest shopflow/order-service:local -o cyclonedx-json | head -40
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft:latest shopflow/order-service:local -o cyclonedx-json | head -40
 
 # 2) Scan like CI — Trivy, fail on fixable HIGH/CRITICAL:
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest \

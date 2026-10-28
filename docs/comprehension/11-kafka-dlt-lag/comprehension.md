@@ -109,8 +109,11 @@ KT kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group
 docker compose -f shopflow/docker-compose.yml start payment-service                                 # lag drains
 
 # 4) POISON PILL -> DLT: hand-produce a malformed record to payments.events, watch it land on the DLT
-KT bash -c "echo 'not-json-at-all' | /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic payments.events"
-sleep 12   # retries (10s) then dead-letter
+#    (pipe host echo into the container's producer; -T disables the TTY so the pipe works.
+#     Don't wrap in `KT bash` — KT prepends /opt/kafka/bin/, and there is no /opt/kafka/bin/bash.)
+echo 'not-json-at-all' | docker compose -f shopflow/docker-compose.yml exec -T kafka \
+  /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic payments.events
+sleep 12   # order-service consumes it -> readValue fails -> retries (10s) then dead-letter
 KT kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic payments.events.DLT --from-beginning --timeout-ms 5000
 ```
 
