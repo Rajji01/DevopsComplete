@@ -6,6 +6,16 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-10-29 — CLI (Opus 4.8) — debugging drills series added
+**Branch:** `master`.
+**Hua:** Naya `docs/debugging/` series — **real-time debugging** training (architect-knowledge + on-call skill ke liye, Abhishek ka goal). Symptom-in → root-cause-out format: har drill ek Page/symptom (alert/graph/log) deta, phir Signals (`<details>`), "Your move" diagnostic questions, Walkthrough (diagnostic tree → root cause → blast-radius-safe fix → confirm), aur "The pattern" (transferable heuristic). README ek debugging **method** deta hai (blast radius → kya change hua → path bisect → RED/USE → differential diagnosis → confirm → safe fix). 6 drills, shopflow failure modes pe grounded:
+  D01 orders stuck CONFIRMED (payment-service consumer lag) · D02 201 OK but silent downstream (Kafka down / outbox backlog) · D03 p99 spike no 5xx (inventory DB-pool saturation) · D04 CrashLoop exit 137 (OOMKilled, unbounded cache) · D05 SLO alert never fired (missing `le=1.0` bucket — monitor the monitor) · D06 oversold flash sale (cache in write path breaks atomic decrement).
+  Wired: INDEX (table+tree), STATE §1 row, README, ye log.
+**Verify (honest):** docs; source ke against likhe, **execute nahi** (test phase pending). Commit+push.
+**Pending / next:** aur drills (duplicate charges/idempotency gap, poison-pill one-partition stall, 401 after IdP change, Redis-down thundering herd, readiness cascade, DLT filling). Phir comprehension topics (HPA/PDB, Terraform/EKS, backups, ArchUnit, virtual threads).
+
+---
+
 ## 2026-10-29 — CLI (Fable/Opus) — comprehension rounds added
 **Branch:** `master` (pulled first: already up to date; `claude/modest-bardeen-r4czhv` fully in master).
 **Hua:** Naya `docs/comprehension/` section banaya — Google-style comprehension-round prep (DSA ki jagah). **15 topics**, har ek apne folder mein `comprehension.md` (cold passage + 5-tier Qs: literal/inference/trade-off/transfer/spot-flaw + `<details>` model answers + "Tod ke dekho" local minikube/docker + online hands-on + interviewer's lens) **aur** `notes.md` (kya/easy/kyu/kaise/flow+component diagram/alternate table/understanding check):

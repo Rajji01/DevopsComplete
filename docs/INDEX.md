@@ -34,6 +34,7 @@ Kaam continue karna? → SESSION-LOG top entry → CLAUDE.md → kaam.
 | `docs/runbooks/*` | alert pe kya karein | — |
 | `docs/interview-notes/*` | topic-wise interview answers (Q→model answer) | — |
 | `docs/comprehension/*` | comprehension-round prep: passage→reason→alag notes→local+online hands-on | — |
+| `docs/debugging/*` | debugging drills: symptom→diagnosis→root cause→fix (real-time debugging skill) | — |
 
 ## 2. Poora project structure (tree)
 ```
@@ -52,7 +53,8 @@ DevopsComplete/
 │   ├── EASY-NOTES.md / LABS.md / PRACTICE-LABS.md / ROADMAP.md / SELF-WALK.md
 │   ├── runbooks/ .......... per-alert on-call steps
 │   ├── interview-notes/ ... 01..12 + README (Q → model answer)
-│   └── comprehension/ ..... Google-style comprehension rounds: 01..15/{comprehension,notes}.md + README + ONLINE-LABS.md
+│   ├── comprehension/ ..... Google-style comprehension rounds: 01..15/{comprehension,notes}.md + README + ONLINE-LABS.md
+│   └── debugging/ ......... debugging drills (symptom → root cause → fix): D01..D06 + README
 ├── shopflow/ ............... asli microservices project
 │   ├── order-service/  inventory-service/  payment-service/  notification-service/
 │   ├── shopflow-outbox/ ... shared outbox lib
