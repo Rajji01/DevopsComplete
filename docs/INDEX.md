@@ -11,9 +11,10 @@ INDEX.md (yahan ho)
    ├─▶ STATE.md ............. AUTHORITATIVE state (kya hai/verified/pending) ← jhagde mein jeet-ta
    ├─▶ SESSION-LOG.md ....... pichhli session kya chhod gayi (newest first)
    ├─▶ START-HERE.md ........ poora map + ek-din ka plan + code reading order
+   ├─▶ VISUAL-FLOWS.md ...... har flow ka diagram + kya/kyu/kaise (aankhon se samajho)
    └─▶ GLOSSARY.md .......... koi shabd/folder samajh na aaye to
 ```
-Pehli baar? → SUMMARY → STATE §1 → START-HERE.
+Pehli baar? → SUMMARY → STATE §1 → START-HERE → VISUAL-FLOWS.
 Kaam continue karna? → SESSION-LOG top entry → CLAUDE.md → kaam.
 
 ## 1. Har doc — "ismein kya jaata hai" (taaki content sahi jagah likhe)
@@ -26,6 +27,7 @@ Kaam continue karna? → SESSION-LOG top entry → CLAUDE.md → kaam.
 | `docs/SESSION-LOG.md` | per-session: hua kya, pending kya (newest first) | permanent facts (wo STATE mein) |
 | `docs/START-HERE.md` | onboarding map, one-day plan, code reading order | changing status |
 | `docs/GLOSSARY.md` | har shabd/folder ka 1-line matlab | deep explanation (wo EASY-NOTES) |
+| `docs/VISUAL-FLOWS.md` | har flow ka mermaid diagram + kya/kyu/kaise + code kahan (13 flows) | — |
 | `docs/EASY-NOTES.md` | concept ka problem→kyu→kaise (Hinglish) | — |
 | `docs/LABS.md` | break/fix labs | — |
 | `docs/PRACTICE-LABS.md` | khud-banao tasks + solution | — |
@@ -50,6 +52,7 @@ DevopsComplete/
 │   ├── SESSION-LOG.md ..... session handoff
 │   ├── START-HERE.md ...... onboarding map
 │   ├── GLOSSARY.md ........ shabd-matlab
+│   ├── VISUAL-FLOWS.md ..... har flow ka diagram + kya/kyu/kaise
 │   ├── EASY-NOTES.md / LABS.md / PRACTICE-LABS.md / ROADMAP.md / SELF-WALK.md
 │   ├── runbooks/ .......... per-alert on-call steps
 │   ├── interview-notes/ ... 01..12 + README (Q → model answer)
@@ -79,4 +82,4 @@ DevopsComplete/
 5. Commit (message: kya+kyu). Push sirf jab Abhishek bole.
 
 ## 4. Jaldi jump
-Map → START-HERE · State → STATE · Pichhla kaam → SESSION-LOG · Shabd → GLOSSARY · Commands → `make help` · Rules → CLAUDE.md
+Map → START-HERE · Diagrams → VISUAL-FLOWS · State → STATE · Pichhla kaam → SESSION-LOG · Shabd → GLOSSARY · Commands → `make help` · Rules → CLAUDE.md
