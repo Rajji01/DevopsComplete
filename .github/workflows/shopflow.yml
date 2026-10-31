@@ -88,11 +88,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install kustomize + kubeconform
+      - name: Install kustomize + kubeconform + helm
+        # into runner.temp (on PATH), NOT the repo: the job's other steps run in working-directory
+        # shopflow, which already has a helm/ directory -> extracting ./helm there collided
+        # ("tar: helm: Cannot open: File exists") and failed the whole job.
         working-directory: ${{ runner.temp }}
         run: |
           curl -sSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_amd64.tar.gz | tar xz
           curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          curl -sSL https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz | tar xz --strip-components=1 linux-amd64/helm
           echo "$PWD" >> "$GITHUB_PATH"
       - name: kustomize build | kubeconform
         run: |
@@ -124,11 +128,12 @@ jobs:
       - name: docker compose config
         run: docker compose config --quiet
       - name: Helm chart lint + template | kubeconform
+        # helm is installed on PATH (see the install step); a bare `helm` resolves to that binary,
+        # not the local helm/ chart directory (only `./helm` would have collided).
         run: |
-          curl -sSL https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz | tar xz --strip-components=1 linux-amd64/helm
-          ./helm lint helm/shopflow-service -f helm/values/order-service.yaml
+          helm lint helm/shopflow-service -f helm/values/order-service.yaml
           for v in helm/values/order-service.yaml helm/values/payment-service.yaml; do
-            ./helm template svc helm/shopflow-service -f "$v" | kubeconform -strict -summary -
+            helm template svc helm/shopflow-service -f "$v" | kubeconform -strict -summary -
           done
 
   terraform:

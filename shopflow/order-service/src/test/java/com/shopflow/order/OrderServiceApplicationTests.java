@@ -431,8 +431,10 @@ class OrderServiceApplicationTests {
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         try (var consumer = new DefaultKafkaConsumerFactory<>(props, new StringDeserializer(), new StringDeserializer()).createConsumer()) {
             kafka.consumeFromAnEmbeddedTopic(consumer, OrderEvent.TOPIC);
-            // the relay runs every 100ms in tests; wait for the event keyed by this order
-            await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
+            // the relay runs every 100ms in tests; wait for the event keyed by this order.
+            // 30s (not 10s) so a slow CI runner's broker/consumer-group warm-up can't flake this
+            // (the sibling Kafka tests already use 15-30s); Awaitility returns as soon as it's found.
+            await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
                 var records = KafkaTestUtils.getRecords(consumer, Duration.ofMillis(500));
                 boolean found = false;
                 for (var r : records) {

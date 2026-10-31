@@ -15,7 +15,12 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 **Verify (is baar Docker tha, isliye actually RAN):** k6 inspect ✅, tflint 0 issues ✅, terraform fmt ✅, helm lint + template|kubeconform ✅. `terraform validate` + full pipeline = CI (push isse trigger karega).
 **Files synced:** STATE §4 (triage resolved/annotated) + header, SELF-WALK Walk 11, ye entry. Code: `.github/workflows/shopflow.yml`, `infra/terraform/aws/elasticache.tf`.
-**Pending:** helm CI transient confirm (next run); baaki STATE §4 items (rate-limit, Schema Registry, chaos, RefundFailed, orphaned-saga, SLI slow-4xx).
+**Round 2 — CI logs padhe (git credential se token, API se, token print nahi kiya). Dono bache hue red ab REAL bugs nikle:**
+- **helm — "transient" nahi tha, deterministic bug.** Log: `tar: helm: Cannot open: File exists`. Step `working-directory: shopflow` mein chalta hai jahan `helm/` **directory** pehle se hai; `curl|tar ... ./helm` binary usse collide karta tha. **Fix:** helm ko `runner.temp` (PATH) mein install kiya (kustomize/kubeconform jaise), step bare `helm` use karta hai (`./helm` nahi).
+- **test flakiness — ek hi jad.** CI pe `publishesOrderEventThroughTheOutbox` 10s timeout; local (Docker JDK21) pe `OutboxCleanupTest` fail. Dono ki wajah: **live `OutboxRelay` @Scheduled (100ms) test assertions se race kar raha tha** (cleanup test ki "pending" row ko publish kar deta, phir cleanup use delete). **Fix:** `OutboxCleanupTest` ko isolated context + relay parked (`outbox.relay.delay=1h`); outbox-publish test ko 30s await (siblings jaise).
+
+**Verify (Round 2):** k6/tflint/terraform ✅ (Docker). Java test fix: local Docker verify **memory-pressure se kill** ho gaya (ArchitectureTest+WebTest tak pahuncha, target tests tak nahi) → **CI (JDK 21) verifier**; fixes well-reasoned (race structurally hataai, 30s sirf widen). helm fix bhi CI pe confirm hoga.
+**Pending:** CI run confirm (helm green + dono flaky tests green); baaki STATE §4 items.
 
 ---
 

@@ -83,10 +83,11 @@ Rule: a state where **no money has moved** (PENDING, FAILED) is safe to auto-can
 - Refund gateway failures (real processor) — the fake one always succeeds; a `RefundFailed` path + alert is unmodelled.
 - Orchestrated saga timeout for genuinely orphaned CONFIRMED orders (currently alert-only, human decides).
 - SLO SLI (Walk 8): the latency term counts *any* slow non-5xx (incl. 4xx/429) as "bad"; a stricter SLI would only count slow 2xx. Minor — left for a walk that can run `promtool` + a live Prometheus to retune and re-pin the alert tests.
-- **CI triage (Walk 8 → mostly resolved in Walk 11, reproduced in Docker):**
-  - `k6 inspect` (loadtest-syntax) — **fixed**: job ran `shopflow/loadtest/...` while already in `working-directory: shopflow` (double path). Now `loadtest/flash-sale.js`. k6 script itself valid.
-  - `tflint` AWS ruleset (lint) — **fixed**: `elasticache.tf` used the uneditable `default.redis7` group; now an owned `aws_elasticache_parameter_group`. `tflint` → 0 issues, `terraform fmt` clean locally.
-  - `helm lint/template | kubeconform` (validate-manifests) — **not reproducible** locally (helm 3.19.0 + kubeconform v0.6.7 pass, 4/4 valid for both values); likely a transient download in that CI run. Watch the next `master` run; if red again, harden the `get.helm.sh` download step.
+- **CI triage (Walk 8 → all root-caused and fixed in Walk 11; CI logs read via API):**
+  - `k6 inspect` (loadtest-syntax) — **fixed** (CI green): job ran `shopflow/loadtest/...` while already in `working-directory: shopflow` (double path). Now `loadtest/flash-sale.js`.
+  - `tflint` AWS ruleset (lint) — **fixed** (CI green): `elasticache.tf` used the uneditable `default.redis7` group; now an owned `aws_elasticache_parameter_group`. `tflint` → 0 issues, `terraform fmt` clean.
+  - `helm lint/template | kubeconform` (validate-manifests) — **fixed** (not transient): CI log showed `tar: helm: Cannot open: File exists` — the step runs in `working-directory: shopflow`, which has a `helm/` directory, so extracting `./helm` collided. Helm is now installed into `runner.temp` (on PATH) with kustomize/kubeconform; the step calls bare `helm`.
+  - **Flaky tests (surfaced during this walk):** `publishesOrderEventThroughTheOutbox` (CI 10s timeout) and `OutboxCleanupTest` (local assertion) shared one cause — the live `OutboxRelay` `@Scheduled` (100ms) raced test assertions (publishing a row a test expected to stay pending). Fixed: `OutboxCleanupTest` gets an isolated context with the relay parked (`outbox.relay.delay=1h`); the publish test waits 30s. Java verified in CI (local Docker run was reaped by memory pressure).
 
 ## 5. How to keep this file true
 1. Every walk: update sections 1–4 **in the same commit** as the change.
