@@ -6,6 +6,19 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-10-31 — CLI (Opus 4.8) — Walk 11 (clear the red CI from Walk 8)
+**Branch:** `master` (session start pe origin se 4 commits peeche tha — Walk 9/10 + comprehension/debugging docs web se aaye the; FF kar liya.)
+**Hua — Walk 8 ki 3 red CI jobs, Docker up hone se exact tool versions pe reproduce karke:**
+1. **k6** `loadtest-syntax` job — **fix**: job `working-directory: shopflow` inherit karta hai par step `k6 inspect shopflow/loadtest/...` chalata tha → `shopflow/shopflow/...` = file not found. Ab `loadtest/flash-sale.js`. (script khud valid — `k6 inspect` local exit 0.)
+2. **tflint** AWS ruleset — **fix (real IaC smell)**: `elasticache.tf` `default.redis7` (uneditable default param group) use kar raha tha → apna `aws_elasticache_parameter_group` banaya. tflint → **0 issues**, `terraform fmt -check` clean (dono Docker mein verified).
+3. **helm** `template|kubeconform` — **reproduce NAHI hua** (helm 3.19.0 + kubeconform v0.6.7 se dono values 4/4 valid). Source untouched; CI mein likely transient download. Next master run watch.
+
+**Verify (is baar Docker tha, isliye actually RAN):** k6 inspect ✅, tflint 0 issues ✅, terraform fmt ✅, helm lint + template|kubeconform ✅. `terraform validate` + full pipeline = CI (push isse trigger karega).
+**Files synced:** STATE §4 (triage resolved/annotated) + header, SELF-WALK Walk 11, ye entry. Code: `.github/workflows/shopflow.yml`, `infra/terraform/aws/elasticache.tf`.
+**Pending:** helm CI transient confirm (next run); baaki STATE §4 items (rate-limit, Schema Registry, chaos, RefundFailed, orphaned-saga, SLI slow-4xx).
+
+---
+
 ## 2026-10-29 — CLI (Opus 4.8) — debugging drills series added
 **Branch:** `master`.
 **Hua:** Naya `docs/debugging/` series — **real-time debugging** training (architect-knowledge + on-call skill ke liye, Abhishek ka goal). Symptom-in → root-cause-out format: har drill ek Page/symptom (alert/graph/log) deta, phir Signals (`<details>`), "Your move" diagnostic questions, Walkthrough (diagnostic tree → root cause → blast-radius-safe fix → confirm), aur "The pattern" (transferable heuristic). README ek debugging **method** deta hai (blast radius → kya change hua → path bisect → RED/USE → differential diagnosis → confirm → safe fix). 6 drills, shopflow failure modes pe grounded:

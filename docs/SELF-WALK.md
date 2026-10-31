@@ -248,3 +248,24 @@ Walk 10 lessons:
 ### Honest status (Walk 10)
 
 - Still **not executed here** — these fixes come from reading the schema and the controllers' error behaviour, not from a terminal. They remove the defects a dry read can find; a Codespaces run (the agreed "test phase") is still what will confirm the rest.
+
+## Walk 11: clearing the red CI that Walk 8 switched on (Oct 31, 2026)
+
+Scope: the three jobs that went red the first time ShopFlow CI ran on `master` (Walk 8, finding #3) and had sat as a `STATE.md` §4 triage item: `k6 inspect`, `tflint` (AWS ruleset), `helm lint/template | kubeconform`. Unlike Walks 9–10, this machine now had a **working Docker daemon**, so each failure was **reproduced with the exact CI tool versions** (k6 latest, `alpine/helm:3.19.0`, `ghcr.io/yannh/kubeconform:v0.6.7`, `tflint` + aws ruleset `0.49.0`) before touching anything — no blind patching.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **`k6 inspect` failed on a path that doesn't exist.** The `loadtest-syntax` job inherits `defaults.run.working-directory: shopflow`, but its step ran `k6 inspect shopflow/loadtest/flash-sale.js` → resolved to `shopflow/shopflow/loadtest/…` → file not found. The k6 script itself is valid (`k6 inspect loadtest/flash-sale.js` exits 0 locally) | A "syntax gate" that fails on a path bug tells you nothing about the script, and trains people to ignore the job | Step now runs `k6 inspect loadtest/flash-sale.js` (relative to the job's working dir) |
+| **`tflint` flagged a real smell:** `elasticache.tf` set `parameter_group_name = "default.redis7"`, the AWS-managed default group you cannot edit (`aws_elasticache_replication_group_default_parameter_group`). Exit 2 → the whole lint job red | You cannot tune Redis (maxmemory-policy, timeouts) on the default group without recreating the cluster; and it kept the lint gate red for everyone | Added an owned `aws_elasticache_parameter_group "redis" {family = "redis7"}` and pointed the cluster at it. Re-ran tflint → **0 issues**; `terraform fmt -check -recursive` clean |
+| **`helm lint/template \| kubeconform`: could NOT reproduce.** `helm lint`, and `helm template … \| kubeconform -strict` for both `order-service` and `payment-service` values, all pass locally (helm 3.19.0, kubeconform v0.6.7): 4/4 valid each | Don't "fix" what you can't reproduce — that is how you add churn and new bugs | Left the source untouched; most likely a transient download (`get.helm.sh` / schema fetch) in that CI run. The next `master` run (triggered by this push) is the check |
+
+Walk 11 lessons:
+- **Reproduce before you patch.** With Docker up, two of three "failures" turned out to be a CI *path* bug and a real IaC smell; the third did not reproduce at all. Guessing would have "fixed" the wrong files.
+- **`working-directory` applies to `run:` steps, not `uses:`.** A job-level default silently rewrites every relative path in that job's scripts; a path that reads right at repo root is wrong inside the working dir.
+- **tflint's AWS ruleset is schema-aware.** It catches cloud-correctness smells (`terraform validate` won't): referencing an uneditable default parameter group is valid HCL but poor practice.
+
+### Honest status (Walk 11, what IS and is NOT verified here)
+
+- **Verified locally, in Docker, this session:** `k6 inspect loadtest/flash-sale.js` (exit 0), `tflint` after the fix (0 issues), `terraform fmt -check -recursive` (clean), `helm lint` + `helm template | kubeconform -strict` for both value files (4/4 valid).
+- **Not verified locally:** `terraform validate` (needs the AWS provider + modules download) and the full CI pipeline — these run in CI. The k6 path fix is confirmed by logic + the local `k6 inspect` run; CI will re-exercise it.
+- The helm job's original failure is **unexplained** (not reproducible locally); if the next `master` run reds again on helm, it is CI-environment-specific and the download step is the place to harden.

@@ -25,6 +25,14 @@ resource "aws_elasticache_subnet_group" "redis" {
   subnet_ids = module.vpc.private_subnets
 }
 
+# Own a parameter group instead of pointing at AWS's "default.redis7": the default one cannot be
+# edited, so this is what lets you later tune Redis (maxmemory-policy, timeouts) without recreating
+# the cluster. Empty today = same settings as the default, but now ours. (tflint-aws flags the default.)
+resource "aws_elasticache_parameter_group" "redis" {
+  name   = "${var.name}-redis7"
+  family = "redis7"
+}
+
 resource "aws_elasticache_replication_group" "redis" {
   replication_group_id = "${var.name}-cache"
   description          = "shopflow product cache"
@@ -34,7 +42,7 @@ resource "aws_elasticache_replication_group" "redis" {
   node_type            = var.cache_node_type
   num_cache_clusters   = 2 # primary + 1 replica
   port                 = 6379
-  parameter_group_name = "default.redis7"
+  parameter_group_name = aws_elasticache_parameter_group.redis.name
 
   subnet_group_name  = aws_elasticache_subnet_group.redis.name
   security_group_ids = [aws_security_group.redis.id]

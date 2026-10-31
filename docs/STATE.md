@@ -2,7 +2,7 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-10-29 (comprehension rounds added; §1 only). Branch: `master`. Prior: 2026-10-20 (Walk 8, web-session work fast-forwarded in and pushed).
+Last updated: 2026-10-31 (Walk 11: fixed the red CI from Walk 8). Branch: `master`. Prior: 2026-10-29 (comprehension rounds); 2026-10-20 (Walk 8, web-session work fast-forwarded in).
 
 ## 1. What is in the repo
 
@@ -83,7 +83,10 @@ Rule: a state where **no money has moved** (PENDING, FAILED) is safe to auto-can
 - Refund gateway failures (real processor) — the fake one always succeeds; a `RefundFailed` path + alert is unmodelled.
 - Orchestrated saga timeout for genuinely orphaned CONFIRMED orders (currently alert-only, human decides).
 - SLO SLI (Walk 8): the latency term counts *any* slow non-5xx (incl. 4xx/429) as "bad"; a stricter SLI would only count slow 2xx. Minor — left for a walk that can run `promtool` + a live Prometheus to retune and re-pin the alert tests.
-- **CI triage (Walk 8, surfaced when CI first ran on `master`):** three tooling jobs fail — `k6 inspect` (loadtest-syntax), `tflint` AWS ruleset (lint), `helm lint/template | kubeconform` (validate-manifests). Pre-existing (not from this walk; tests + terraform + kustomize/kyverno/promtool all pass). Need the job logs from run `39421250786` to fix precisely; sources read clean, likely tool/plugin/schema-download or version drift.
+- **CI triage (Walk 8 → mostly resolved in Walk 11, reproduced in Docker):**
+  - `k6 inspect` (loadtest-syntax) — **fixed**: job ran `shopflow/loadtest/...` while already in `working-directory: shopflow` (double path). Now `loadtest/flash-sale.js`. k6 script itself valid.
+  - `tflint` AWS ruleset (lint) — **fixed**: `elasticache.tf` used the uneditable `default.redis7` group; now an owned `aws_elasticache_parameter_group`. `tflint` → 0 issues, `terraform fmt` clean locally.
+  - `helm lint/template | kubeconform` (validate-manifests) — **not reproducible** locally (helm 3.19.0 + kubeconform v0.6.7 pass, 4/4 valid for both values); likely a transient download in that CI run. Watch the next `master` run; if red again, harden the `get.helm.sh` download step.
 
 ## 5. How to keep this file true
 1. Every walk: update sections 1–4 **in the same commit** as the change.

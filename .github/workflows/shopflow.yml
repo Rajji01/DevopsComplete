@@ -250,7 +250,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: grafana/setup-k6-action@v1
-      - run: k6 inspect shopflow/loadtest/flash-sale.js   # parses + evaluates options, no traffic
+        # this job inherits defaults.run.working-directory: shopflow, so the path is relative to it
+        # (it was "shopflow/loadtest/..." -> resolved to shopflow/shopflow/... -> file not found)
+      - run: k6 inspect loadtest/flash-sale.js   # parses + evaluates options, no traffic
 
   deploy-manifests:
     name: Pin prod overlay to this build
