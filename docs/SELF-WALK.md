@@ -269,3 +269,20 @@ Walk 11 lessons:
 - **Verified locally, in Docker, this session:** `k6 inspect loadtest/flash-sale.js` (exit 0), `tflint` after the fix (0 issues), `terraform fmt -check -recursive` (clean), `helm lint` + `helm template | kubeconform -strict` for both value files (4/4 valid).
 - **Not verified locally:** `terraform validate` (needs the AWS provider + modules download) and the full CI pipeline — these run in CI. The k6 path fix is confirmed by logic + the local `k6 inspect` run; CI will re-exercise it.
 - The helm job's original failure is **unexplained** (not reproducible locally); if the next `master` run reds again on helm, it is CI-environment-specific and the download step is the place to harden.
+
+## Walk 12: finishing the green, and an action tag that never existed (Oct 31 – Nov 1, 2026)
+
+Scope: close the loop Walk 11 opened — read the CI logs again, confirm each fix, and chase whatever is still red. This is the "don't trust it until the pipeline is green" walk.
+
+First, the Walk 11 fixes were **confirmed green in CI** (run `41214762574`): `Unit + integration tests` (the flaky outbox tests), `Lint` (tflint), `k6 script compiles`, `Validate K8s` (the helm step — so the `tar: helm: Cannot open: File exists` fix landed), and `Terraform fmt + validate` all passed. The helm failure that Walk 11 called "unexplained" **was** the `tar`/`helm/`-directory collision; installing helm into `runner.temp` resolved it.
+
+Then one job was still red:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **`image` job failed at "Set up job"** with `Unable to resolve action sigstore/cosign-installer@v4, unable to find version v4`. There is no `v4` of that action (v3 is the latest major). The "Install cosign" step is `if: github.ref == 'refs/heads/main'`, but **GitHub downloads every `uses:` action during "Set up job" regardless of its `if:`** — so a bad tag on a step that would be skipped still failed the whole job the first time `image` ran on `master`. matrix fail-fast then cancelled the other three service builds | A build gate that dies at setup tells you nothing about the image, and it was invisible until Walk 8 made CI run on `master` at all | `sigstore/cosign-installer@v4` → `@v3`; added `fail-fast: false` to the `image` matrix so one leg's problem no longer cancels the others (clearer signal). Confirmed `cosign-installer@v4` was the *only* unresolvable action in the run's setup log |
+
+Walk 12 lessons:
+- **`if:` does not defer action resolution.** Every `uses:` in a job is fetched at "Set up job"; a wrong tag on a conditional step breaks the job on branches where that step never runs. Pin actions to tags that exist.
+- **A matrix without `fail-fast: false` hides the blast radius.** One leg's setup error cancelled three healthy builds and made the cause look service-specific; it was shared.
+- **Green is the only proof.** Three of Walk 11's fixes were "verified locally," but only the `master` run proved the helm fix and the Java flaky-test fixes end to end — and surfaced this cosign tag, which no local run touches.

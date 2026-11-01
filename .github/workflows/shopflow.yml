@@ -162,6 +162,7 @@ jobs:
       packages: write          # push to ghcr.io
       id-token: write          # OIDC token: AWS role (ci-oidc.tf) and keyless cosign signing
     strategy:
+      fail-fast: false   # independent per-service builds; one leg's problem shouldn't cancel the rest
       matrix:
         service: [order-service, inventory-service, notification-service, payment-service]
     env:
@@ -224,7 +225,9 @@ jobs:
       # admission policy (Kyverno / sigstore policy-controller) can then refuse unsigned images.
       - name: Install cosign
         if: github.ref == 'refs/heads/main'
-        uses: sigstore/cosign-installer@v4
+        # v3 is the latest major (there is no v4). Actions are resolved at "Set up job" even when
+        # their `if:` will skip them, so a bad tag here failed the whole image job on master.
+        uses: sigstore/cosign-installer@v3
       - name: Sign image
         if: github.ref == 'refs/heads/main'
         run: cosign sign --yes "${IMAGE}@${{ steps.push.outputs.digest }}"

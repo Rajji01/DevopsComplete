@@ -2,7 +2,7 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-10-31 (Walk 11: fixed the red CI from Walk 8). Branch: `master`. Prior: 2026-10-29 (comprehension rounds); 2026-10-20 (Walk 8, web-session work fast-forwarded in).
+Last updated: 2026-11-01 (Walk 12: CI fully green — cosign action tag + fail-fast). Branch: `master`. Prior: 2026-10-31 (Walk 11, red CI from Walk 8); 2026-10-29 (comprehension rounds).
 
 ## 1. What is in the repo
 
@@ -83,7 +83,9 @@ Rule: a state where **no money has moved** (PENDING, FAILED) is safe to auto-can
 - Refund gateway failures (real processor) — the fake one always succeeds; a `RefundFailed` path + alert is unmodelled.
 - Orchestrated saga timeout for genuinely orphaned CONFIRMED orders (currently alert-only, human decides).
 - SLO SLI (Walk 8): the latency term counts *any* slow non-5xx (incl. 4xx/429) as "bad"; a stricter SLI would only count slow 2xx. Minor — left for a walk that can run `promtool` + a live Prometheus to retune and re-pin the alert tests.
-- **CI triage (Walk 8 → all root-caused and fixed in Walk 11; CI logs read via API):**
+- **CI triage (Walk 8 → fixed in Walk 11, confirmed green + 1 more fixed in Walk 12; CI logs read via API):**
+  - Walk 11 fixes **confirmed green** in CI run `41214762574`: tests, lint/tflint, k6, validate/helm, terraform all passed.
+  - `sigstore/cosign-installer@v4` (Walk 12) — **fixed**: no such tag exists (latest is v3), and `uses:` actions resolve at "Set up job" even when their `if:` skips them, so this failed the whole `image` job on master. Now `@v3`; added `fail-fast: false` to the image matrix.
   - `k6 inspect` (loadtest-syntax) — **fixed** (CI green): job ran `shopflow/loadtest/...` while already in `working-directory: shopflow` (double path). Now `loadtest/flash-sale.js`.
   - `tflint` AWS ruleset (lint) — **fixed** (CI green): `elasticache.tf` used the uneditable `default.redis7` group; now an owned `aws_elasticache_parameter_group`. `tflint` → 0 issues, `terraform fmt` clean.
   - `helm lint/template | kubeconform` (validate-manifests) — **fixed** (not transient): CI log showed `tar: helm: Cannot open: File exists` — the step runs in `working-directory: shopflow`, which has a `helm/` directory, so extracting `./helm` collided. Helm is now installed into `runner.temp` (on PATH) with kustomize/kubeconform; the step calls bare `helm`.

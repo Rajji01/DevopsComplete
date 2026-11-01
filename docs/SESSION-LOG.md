@@ -6,6 +6,17 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-01 — CLI (Opus 4.8) — Walk 12 (CI fully green)
+**Branch:** `master` (in-sync, koi naya web commit nahi).
+**Pehle:** Walk 11 ke fixes **CI pe green confirm** (run `41214762574`): tests (flaky outbox fix ✅), lint/tflint ✅, k6 ✅, validate/helm ✅ (tar-collision fix landed), terraform ✅.
+**Naya finding (CI log se):** `image` job "Set up job" pe fail — `Unable to resolve action sigstore/cosign-installer@v4` (koi v4 tag hi nahi, max v3). `uses:` actions "Set up job" pe resolve hote hain chahe step `if: main` se skip ho → gated cosign step ne poora image job master pe tod diya; matrix fail-fast ne baaki 3 legs cancel kar diye.
+**Fix:** `cosign-installer@v4` → `@v3`; image matrix mein `fail-fast: false`.
+**Lesson:** `if:` action resolution ko defer nahi karta — har `uses:` setup pe download hota hai; galat tag wahan bhi todta hai jahan step chalta hi nahi.
+**Verify:** CI push se re-run (poll karke confirm karunga). Docs synced: STATE §4+header, SELF-WALK Walk 12, ye entry.
+**Pending:** CI green confirm; baaki STATE §4 items (rate-limit, Schema Registry, chaos, RefundFailed, orphaned-saga, SLI slow-4xx).
+
+---
+
 ## 2026-10-31 — CLI (Opus 4.8) — Walk 11 (clear the red CI from Walk 8)
 **Branch:** `master` (session start pe origin se 4 commits peeche tha — Walk 9/10 + comprehension/debugging docs web se aaye the; FF kar liya.)
 **Hua — Walk 8 ki 3 red CI jobs, Docker up hone se exact tool versions pe reproduce karke:**
