@@ -21,7 +21,8 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 **Lesson:** har fix agle red ko unmask karta hai; scanner jo ref parse na kare = kuch scan nahi hua; transitive CVEs BOM pe patch karo, sirf genuinely-unfixable ko (documented) triage.
 **Verify:** sab push → CI poll. pom override low-risk (patch bumps) par Docker verify memory se reap hua → CI test/build job verifier. Docs synced: STATE §4+header, SELF-WALK Walk 12 (+cont.+cont.2), ye entry.
 **Cont. 3:** 1st CVE fix ke baad **inventory image GREEN + test job GREEN** (overrides compatible). Par 3 Kafka services (order/notification/payment) mein 5 aur CVEs nikle — Kafka compression (lz4-java→1.11.4, snappy-java→1.1.10.9) + httpcore5/-h2→5.4.3. 3 aur pom overrides add kiye. (inventory pass hua kyunki uska Kafka client nahi.)
-**Pending:** CI green confirm (ab teeno Kafka images bhi clean hone chahiye); baaki STATE §4 (+ Boot-4 upgrade).
+**Cont. 4:** httpcore5 override kaam kiya, par lz4-java/snappy-java property override **no-op** — ye kafka-clients pin karta hai, Boot manage nahi karta. `<dependencyManagement>` se force kiya (lz4-java 1.11.4, snappy-java 1.1.10.9). Lesson: property tabhi chalta hai jab BOM usse declare kare — verify karo jar sach mein badla.
+**Pending:** CI green confirm; baaki STATE §4 (+ Boot-4 upgrade).
 
 ---
 
