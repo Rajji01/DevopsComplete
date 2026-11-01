@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ShopFlow Comprehension</title>
+<!--
+  Google-style comprehension round for ShopFlow: read the passage, answer, reveal the real reason
+  (grounded in the actual code), then jump to the live lab. No backend needed (static). The "run it
+  live" links open the React lab-console (labs/lab-console.html).
+  Open directly, or: cd labs && python -m http.server 5500 -> http://localhost:5500/comprehension.html
+-->
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js" crossorigin></script>
+<style>
+  :root { --bg:#0f1221; --card:#191d33; --ink:#e7e9f3; --mut:#9aa0bf; --ok:#3fb950; --bad:#f85149; --acc:#5b8cff; --line:#2a2f4a; }
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif}
+  header{padding:18px 20px;border-bottom:1px solid var(--line)} h1{font-size:19px;margin:0 0 4px} .sub{color:var(--mut);font-size:13px}
+  main{max-width:820px;margin:0 auto;padding:18px 20px}
+  .score{position:sticky;top:0;background:var(--bg);padding:10px 0;color:var(--mut);font-size:13px;border-bottom:1px solid var(--line);z-index:2}
+  .q{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin:16px 0}
+  .tag{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:6px;padding:2px 7px}
+  .passage{border-left:3px solid var(--acc);padding:6px 12px;margin:10px 0;color:#c9cded;font-size:14px}
+  .qtext{font-weight:600;margin:10px 0}
+  button.opt{display:block;width:100%;text-align:left;background:#0c0f1d;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:10px 12px;margin:6px 0;cursor:pointer;font:inherit}
+  button.opt:hover{border-color:var(--acc)} button.opt.correct{border-color:var(--ok);background:rgba(63,185,80,.12)} button.opt.wrong{border-color:var(--bad);background:rgba(248,81,73,.12)}
+  .explain{margin-top:10px;background:#0c0f1d;border:1px solid var(--line);border-radius:9px;padding:12px;font-size:14px}
+  code{color:var(--acc);font-family:ui-monospace,monospace} a{color:var(--acc)}
+  .done{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;text-align:center;margin-top:16px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState } = React;
+
+// Every question is grounded in real ShopFlow code — the "why" cites the actual file/behaviour.
+const QUESTIONS = [
+  {
+    topic: "Transactional outbox",
+    passage: "order-service saves the order row and an event row in one local DB transaction (saveWithEvent via TransactionTemplate); a separate OutboxRelay polls and publishes to Kafka.",
+    q: "Why write the event to a DB table first instead of just calling Kafka after saving the order?",
+    opts: ["Kafka is slow", "To avoid the dual-write problem: a crash between the DB commit and the Kafka send would lose the event", "To batch events", "Kafka needs a DB"],
+    answer: 1,
+    why: "Dual-write (DB then Kafka) isn't atomic — a crash in between loses or phantoms the event. One DB transaction is atomic; the relay sends later (at-least-once), so consumers must be idempotent. See `OutboxRelay`, `OrderService.saveWithEvent`.",
+    lab: "outbox / idempotency panels"
+  },
+  {
+    topic: "Oversell / concurrency",
+    passage: "inventory-service reserves stock with: UPDATE product SET quantity = quantity - :qty WHERE sku = :sku AND quantity >= :qty.",
+    q: "Two orders for the last unit arrive at the same instant. What stops an oversell?",
+    opts: ["A Java synchronized block", "The single atomic UPDATE: the DB row lock serialises them and the WHERE re-checks stock, so the second gets 0 rows", "Redis", "The HPA"],
+    answer: 1,
+    why: "A read-then-write would race. One atomic conditional UPDATE lets the DB row lock serialise the two, and `quantity >= :qty` re-checks — the loser updates 0 rows and is rejected. `ProductRepository.decrementStock`.",
+    lab: "Oversell panel (fire 30 parallel -> exactly 3 CONFIRMED)"
+  },
+  {
+    topic: "Idempotency",
+    passage: "A customer's POST /orders is retried after a timeout with the same Idempotency-Key header.",
+    q: "What happens on the retry?",
+    opts: ["A second order is created", "409 error", "The existing order is returned (200), not a new one — and only if it belongs to the same customer, else 422", "Nothing"],
+    answer: 2,
+    why: "The key is looked up and the existing order replayed with 200; a different owner using the same key gets 422 (no cross-customer replay). `OrderService.placeOrder`.",
+    lab: "Idempotency panel"
+  },
+  {
+    topic: "Saga compensation",
+    passage: "Order is CONFIRMED (stock reserved), then payment-service declines the card and emits PaymentFailed.",
+    q: "What does order-service do?",
+    opts: ["Retries the card", "Releases the reserved stock and marks the order CANCELLED (compensation)", "Marks it PAID", "Deletes the order"],
+    answer: 1,
+    why: "Choreography saga: the decline's compensation is to give the stock back and cancel. `OrderService.onPaymentFailed`. (A declined refund, by contrast, does NOT fake success — Walk 20.)",
+    lab: "Saga panel (watch CONFIRMED -> PAID)"
+  },
+  {
+    topic: "Refund that fails",
+    passage: "A PAID order is cancelled -> REFUND_PENDING. The payment processor DECLINES the refund.",
+    q: "What must happen (Walk 20)?",
+    opts: ["Mark the order REFUNDED anyway", "Emit PaymentRefundFailed, keep the payment CAPTURED and the order REFUND_PENDING so a human is paged; a redelivery retries", "Delete the payment", "Charge the card again"],
+    answer: 1,
+    why: "Faking a refund that didn't happen is a silent money bug. We check the gateway Result; on decline we never mark REFUNDED — the order stays REFUND_PENDING (OrdersStuckConfirmed alert pages a human). `OrderConfirmedListener.refund`.",
+    lab: "(unit-tested: declinedRefundPublishesRefundFailed...)"
+  },
+  {
+    topic: "Authorization / IDOR",
+    passage: "A customer calls GET /api/v1/orders/{id} for an id that belongs to someone else.",
+    q: "What status comes back, and why that one?",
+    opts: ["403 Forbidden", "200 with the order", "404 Not Found — so the response doesn't reveal that the id exists", "500"],
+    answer: 2,
+    why: "Authentication ≠ authorization. Reads/cancels are filtered by the JWT owner; a non-owner gets 404 (not 403) so ids don't leak (OWASP API #1 / BOLA). `OrderService.get`, `Caller.mayAccess`.",
+    lab: "IDOR panel"
+  },
+  {
+    topic: "SLO burn-rate",
+    passage: "The checkout SLI counts 'bad' = 5xx or slower than 1s, over valid (2xx or 5xx) requests. 429s are excluded (Walk 14).",
+    q: "Why exclude 429 (rate-limited) from both numerator and denominator?",
+    opts: ["429 is a server error", "Because the rate limiter is our own protection working as intended — counting it would let a flash-sale burst either burn or hide the error budget", "To make the number look good", "Grafana can't show 429"],
+    answer: 1,
+    why: "A request-based SLI must define 'valid events'. Client 4xx and our own 429 aren't the service failing; including them lets protection distort the budget. `recording-rules.yml` sli:checkout_*.",
+    lab: "(unit-tested: alerts_test #7)"
+  },
+  {
+    topic: "Kafka at-least-once",
+    passage: "notification-service consumes orders.events; the outbox relay may re-send, and Kafka redelivers on a crash before offset commit.",
+    q: "How does it avoid sending two emails for one order event?",
+    opts: ["Kafka exactly-once magic", "A processed_event table keyed by eventId: a duplicate hits the primary key and is skipped, recorded in the same transaction as the side effect", "It doesn't", "A Redis lock"],
+    answer: 1,
+    why: "Delivery is at-least-once, so the consumer is made idempotent: eventId in `processed_event` (PK) — second delivery is a no-op. `OrderEventListener`, `ProcessedEvent`.",
+    lab: "Postman Lab 1 / reserve-idempotency"
+  },
+];
+
+function Question({ item, idx, onAnswer }) {
+  const [picked, setPicked] = useState(null);
+  function pick(i) { if (picked !== null) return; setPicked(i); onAnswer(i === item.answer); }
+  return (
+    <div className="q">
+      <div><span className="tag">{idx + 1}. {item.topic}</span></div>
+      <div className="passage">{item.passage}</div>
+      <div className="qtext">{item.q}</div>
+      {item.opts.map((o, i) => {
+        let cls = "opt";
+        if (picked !== null) { if (i === item.answer) cls += " correct"; else if (i === picked) cls += " wrong"; }
+        return <button key={i} className={cls} onClick={() => pick(i)}>{String.fromCharCode(65 + i)}. {o}</button>;
+      })}
+      {picked !== null && (
+        <div className="explain">
+          {picked === item.answer ? "✅ Correct. " : "❌ "}{item.why}
+          <div style={{marginTop:8, color:"var(--mut)"}}>▶ Run it live: {item.lab} — see <a href="lab-console.html">lab-console.html</a></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [answered, setAnswered] = useState(0);
+  const [correct, setCorrect] = useState(0);
+  function onAnswer(ok) { setAnswered(a => a + 1); if (ok) setCorrect(c => c + 1); }
+  return (<>
+    <header>
+      <h1>🧠 ShopFlow Comprehension</h1>
+      <div className="sub">Passage padho → jawab do → asli "kyu" (code se grounded) → live lab mein chalao. break → samjho → tod → jod.</div>
+    </header>
+    <main>
+      <div className="score">Score: {correct} / {answered} answered ({QUESTIONS.length} total)</div>
+      {QUESTIONS.map((item, i) => <Question key={i} item={item} idx={i} onAnswer={onAnswer} />)}
+      {answered === QUESTIONS.length && (
+        <div className="done">
+          <h2>Done — {correct}/{QUESTIONS.length}</h2>
+          <div className="sub">Deeper: <a href="../docs/comprehension/README.md">docs/comprehension/</a> (15 topics) · <a href="../docs/VISUAL-FLOWS.md">VISUAL-FLOWS</a> · <a href="../docs/SELF-WALK.md">SELF-WALK</a> (bug stories)</div>
+        </div>
+      )}
+    </main>
+  </>);
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

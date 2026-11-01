@@ -30,7 +30,7 @@ Ye ShopFlow repo ko ek **interactive learning lab** banata hai. Maqsad: har dime
 | **React + Java** | Spring APIs (order/inventory) | React lab-console (8 panels, live) | ✅ console live (dev CORS) |
 | **AWS services** | [`../docs/interview-notes/09-aws-production.md`](../docs/interview-notes/09-aws-production.md), [`../infra/terraform/aws/`](../infra/terraform/aws/README.md) | — | ✅ read-only; live labs need an AWS account |
 | **Interview Q&A** | [`../docs/interview-notes/`](../docs/interview-notes/README.md) (01–12 + rapid-fire) | — | ✅ |
-| **Comprehension round (Google-style)** | [`../docs/comprehension/`](../docs/comprehension/README.md) (15 topics) | React+Spring comprehension mode | 🚧 planned |
+| **Comprehension round (Google-style)** | [`../docs/comprehension/`](../docs/comprehension/README.md) (15 topics) | [`comprehension.html`](comprehension.html) — 8 grounded Q + reveal + live-lab link | ✅ live |
 | **Scenario-based** | debugging/ + comprehension/ | Postman scenarios + planned | 🚧 growing |
 
 ## Abhi kya hit kar sakte ho (Postman labs)
@@ -43,7 +43,7 @@ Ye ShopFlow repo ko ek **interactive learning lab** banata hai. Maqsad: har dime
 
 ## Roadmap (incrementally banayenge, har ek apni specific entry ke saath)
 - ~~React lab-console (local CORS)~~ ✅ done (`lab-console.html`, 8 panels: idempotency, oversell, IDOR, rate-limit, validation, reserve-idem, optimistic-lock, saga-async).
-- React+Spring **comprehension mode** (Google-style: passage → sawaal → code dikhao → chalao).
+- ~~React+Spring **comprehension mode**~~ ✅ done (`comprehension.html`, 8 grounded questions → reveal the real code reason → live-lab link).
 - LLD deep-dive (INDEXING-HIBERNATE.md ki tarah) — design patterns + class-level.
 - HLD scenario labs (design a feature → trade-offs).
 - Aur prod-debugging scenario drills (debugging/ ke upar).
