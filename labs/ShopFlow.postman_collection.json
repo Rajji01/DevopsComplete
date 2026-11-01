@@ -1,0 +1,206 @@
+{
+  "info": {
+    "name": "ShopFlow Labs",
+    "_postman_id": "shopflow-labs-0001",
+    "description": "Interactive, prod-style labs against the running ShopFlow stack (make up). Each folder = one distinct lab you can hit and watch the response. Run '0. Auth > Get token' first; the token is saved to a collection variable and used by every request. Concurrency labs (oversell, rate-limit) are meant for the Collection Runner with N iterations.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{token}}", "type": "string" } ] },
+  "variable": [
+    { "key": "order", "value": "http://localhost:8081" },
+    { "key": "inventory", "value": "http://localhost:8082" },
+    { "key": "keycloak", "value": "http://localhost:8180" },
+    { "key": "token", "value": "" },
+    { "key": "lastOrderId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "0. Auth",
+      "item": [
+        {
+          "name": "Get token (alice / customer)",
+          "event": [
+            { "listen": "test", "script": { "exec": [
+              "pm.test('got a token', () => pm.response.code === 200);",
+              "const t = pm.response.json().access_token;",
+              "pm.collectionVariables.set('token', t);",
+              "console.log('token saved (len ' + (t ? t.length : 0) + ')');"
+            ], "type": "text/javascript" } }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/x-www-form-urlencoded" } ],
+            "body": { "mode": "urlencoded", "urlencoded": [
+              { "key": "grant_type", "value": "password" },
+              { "key": "client_id", "value": "shopflow-web" },
+              { "key": "username", "value": "alice" },
+              { "key": "password", "value": "alice" }
+            ] },
+            "url": { "raw": "{{keycloak}}/realms/shopflow/protocol/openid-connect/token", "host": ["{{keycloak}}"], "path": ["realms","shopflow","protocol","openid-connect","token"] }
+          },
+          "description": "Keycloak password grant (same as `make token`). Saves access_token -> {{token}}, used by every other request."
+        },
+        {
+          "name": "Get token (bob / support)",
+          "event": [ { "listen": "test", "script": { "exec": [
+            "const t = pm.response.json().access_token; pm.collectionVariables.set('token', t);",
+            "pm.test('support token', () => pm.response.code === 200);"
+          ], "type": "text/javascript" } } ],
+          "request": {
+            "auth": { "type": "noauth" }, "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/x-www-form-urlencoded" } ],
+            "body": { "mode": "urlencoded", "urlencoded": [
+              { "key": "grant_type", "value": "password" }, { "key": "client_id", "value": "shopflow-web" },
+              { "key": "username", "value": "bob" }, { "key": "password", "value": "bob" }
+            ] },
+            "url": { "raw": "{{keycloak}}/realms/shopflow/protocol/openid-connect/token", "host": ["{{keycloak}}"], "path": ["realms","shopflow","protocol","openid-connect","token"] }
+          },
+          "description": "support role: can read every order (used in the ownership/IDOR lab)."
+        }
+      ]
+    },
+    {
+      "name": "Lab 1 - Idempotency-Key (retry-safe create)",
+      "description": "Same Idempotency-Key must create ONE order: first call 201, replay 200 (same body), a different user with the same key -> 422. Watch the response code + id.",
+      "item": [
+        {
+          "name": "Create order (201, new key)",
+          "event": [ { "listen": "prerequest", "script": { "exec": [ "pm.collectionVariables.set('idemKey', 'lab1-'+Date.now());" ], "type": "text/javascript" } },
+            { "listen": "test", "script": { "exec": [
+              "pm.test('201 created', () => pm.response.code === 201);",
+              "pm.collectionVariables.set('lastOrderId', pm.response.json().id);"
+            ], "type": "text/javascript" } } ],
+          "request": { "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "Idempotency-Key", "value": "{{idemKey}}" } ],
+            "body": { "mode": "raw", "raw": "{\"sku\":\"IPHONE-15\",\"quantity\":1}" },
+            "url": { "raw": "{{order}}/api/v1/orders", "host": ["{{order}}"], "path": ["api","v1","orders"] } }
+        },
+        {
+          "name": "Replay same key (200, same order)",
+          "event": [ { "listen": "test", "script": { "exec": [
+            "pm.test('200 replay (not a new 201)', () => pm.response.code === 200);",
+            "pm.test('same order id', () => pm.response.json().id == pm.collectionVariables.get('lastOrderId'));"
+          ], "type": "text/javascript" } } ],
+          "request": { "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "Idempotency-Key", "value": "{{idemKey}}" } ],
+            "body": { "mode": "raw", "raw": "{\"sku\":\"IPHONE-15\",\"quantity\":1}" },
+            "url": { "raw": "{{order}}/api/v1/orders", "host": ["{{order}}"], "path": ["api","v1","orders"] } },
+          "description": "Run 'Create' then this: same key -> you get the SAME order back with 200, not a duplicate."
+        }
+      ]
+    },
+    {
+      "name": "Lab 2 - Oversell under concurrency",
+      "description": "Only 3 PS5-SLIM in stock. Fire this many times in the Collection Runner (e.g. 50 iterations, no delay): exactly 3 come back CONFIRMED, the rest REJECTED, stock never goes below 0. Proves the atomic check-and-decrement.",
+      "item": [
+        {
+          "name": "Buy 1 PS5 (expect CONFIRMED or REJECTED, never 5xx)",
+          "event": [ { "listen": "test", "script": { "exec": [
+            "pm.test('no server error', () => pm.response.code < 500);",
+            "const s = pm.response.json().status;",
+            "console.log('status=' + s);",
+            "pm.test('CONFIRMED or REJECTED', () => ['CONFIRMED','REJECTED'].includes(s));"
+          ], "type": "text/javascript" } } ],
+          "request": { "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\"sku\":\"PS5-SLIM\",\"quantity\":1}" },
+            "url": { "raw": "{{order}}/api/v1/orders", "host": ["{{order}}"], "path": ["api","v1","orders"] } },
+          "description": "Collection Runner: 50 iterations. Count CONFIRMED in the console -> exactly 3. Reset stock with `make down && make up`."
+        }
+      ]
+    },
+    {
+      "name": "Lab 3 - Ownership / IDOR + cancel",
+      "description": "alice can only see/cancel her own orders (other id -> 404, not 403). Cancel transitions depend on state. Create as alice, read as alice (ok), then (optional) read with bob (support sees all).",
+      "item": [
+        {
+          "name": "Create (alice) -> save id",
+          "event": [ { "listen": "test", "script": { "exec": [
+            "pm.collectionVariables.set('lastOrderId', pm.response.json().id);",
+            "pm.test('created', () => pm.response.code === 201);"
+          ], "type": "text/javascript" } } ],
+          "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\"sku\":\"PIXEL-9\",\"quantity\":1}" },
+            "url": { "raw": "{{order}}/api/v1/orders", "host": ["{{order}}"], "path": ["api","v1","orders"] } }
+        },
+        {
+          "name": "Get my order (200)",
+          "request": { "method": "GET", "url": { "raw": "{{order}}/api/v1/orders/{{lastOrderId}}", "host": ["{{order}}"], "path": ["api","v1","orders","{{lastOrderId}}"] } },
+          "event": [ { "listen": "test", "script": { "exec": [ "pm.test('200 mine', () => pm.response.code === 200);" ], "type": "text/javascript" } } ]
+        },
+        {
+          "name": "Get someone else's id (404, not 403)",
+          "request": { "method": "GET", "url": { "raw": "{{order}}/api/v1/orders/999999", "host": ["{{order}}"], "path": ["api","v1","orders","999999"] } },
+          "event": [ { "listen": "test", "script": { "exec": [ "pm.test('404 (id not leaked)', () => pm.response.code === 404);" ], "type": "text/javascript" } } ],
+          "description": "Even if the id exists but belongs to another customer, you get 404 (not 403) so ids don't leak. OWASP API #1 (BOLA)."
+        },
+        {
+          "name": "Cancel my order (DELETE)",
+          "request": { "method": "DELETE", "url": { "raw": "{{order}}/api/v1/orders/{{lastOrderId}}", "host": ["{{order}}"], "path": ["api","v1","orders","{{lastOrderId}}"] } },
+          "description": "CONFIRMED -> CANCELLED (stock released). A PAID order would go REFUND_PENDING instead. Cancelling again -> 409."
+        }
+      ]
+    },
+    {
+      "name": "Lab 4 - Rate limit (429)",
+      "description": "The order endpoint is rate-limited (50/s per pod, timeout 0 = fail fast). Fire fast in the Collection Runner (e.g. 100 iterations, no delay) -> some come back 429 'Too many requests'.",
+      "item": [
+        {
+          "name": "Rapid create (watch for 429)",
+          "event": [ { "listen": "test", "script": { "exec": [
+            "console.log('code=' + pm.response.code);",
+            "pm.test('201/200 or 429 (not 5xx)', () => [200,201,429].includes(pm.response.code));"
+          ], "type": "text/javascript" } } ],
+          "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\"sku\":\"AIRPODS-PRO\",\"quantity\":1}" },
+            "url": { "raw": "{{order}}/api/v1/orders", "host": ["{{order}}"], "path": ["api","v1","orders"] } }
+        }
+      ]
+    },
+    {
+      "name": "Lab 5 - Validation (400 problem+json)",
+      "description": "Bean validation: quantity must be 1..100, sku not blank. Invalid body -> 400 with an 'errors' list (RFC 7807 problem+json).",
+      "item": [
+        {
+          "name": "quantity 0 -> 400",
+          "event": [ { "listen": "test", "script": { "exec": [
+            "pm.test('400', () => pm.response.code === 400);",
+            "pm.test('has errors list', () => pm.response.json().errors !== undefined);"
+          ], "type": "text/javascript" } } ],
+          "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\"sku\":\"\",\"quantity\":0}" },
+            "url": { "raw": "{{order}}/api/v1/orders", "host": ["{{order}}"], "path": ["api","v1","orders"] } }
+        }
+      ]
+    },
+    {
+      "name": "Lab 6 - Inventory reserve idempotency (direct)",
+      "description": "Hit inventory-service directly: reserve is idempotent by orderRef (same orderRef twice -> same reservation, stock moves once). Then release (204).",
+      "item": [
+        {
+          "name": "Reserve (201)",
+          "event": [ { "listen": "prerequest", "script": { "exec": [ "pm.collectionVariables.set('ref','lab6-'+Date.now());" ], "type": "text/javascript" } },
+            { "listen": "test", "script": { "exec": [ "pm.test('201', () => pm.response.code === 201);" ], "type": "text/javascript" } } ],
+          "request": { "auth": {"type":"noauth"}, "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\"orderRef\":\"{{ref}}\",\"sku\":\"PIXEL-9\",\"quantity\":1}" },
+            "url": { "raw": "{{inventory}}/api/v1/reservations", "host": ["{{inventory}}"], "path": ["api","v1","reservations"] } },
+          "description": "inventory-service has no auth (internal); call it directly to see the reservation idempotency."
+        },
+        {
+          "name": "Reserve again same ref (201, same reservation)",
+          "request": { "auth": {"type":"noauth"}, "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\"orderRef\":\"{{ref}}\",\"sku\":\"PIXEL-9\",\"quantity\":1}" },
+            "url": { "raw": "{{inventory}}/api/v1/reservations", "host": ["{{inventory}}"], "path": ["api","v1","reservations"] } },
+          "event": [ { "listen": "test", "script": { "exec": [ "pm.test('still 201, idempotent', () => pm.response.code === 201);" ], "type": "text/javascript" } } ]
+        },
+        {
+          "name": "Release (204)",
+          "request": { "auth": {"type":"noauth"}, "method": "DELETE",
+            "url": { "raw": "{{inventory}}/api/v1/reservations/{{ref}}", "host": ["{{inventory}}"], "path": ["api","v1","reservations","{{ref}}"] } },
+          "event": [ { "listen": "test", "script": { "exec": [ "pm.test('204', () => pm.response.code === 204);" ], "type": "text/javascript" } } ]
+        }
+      ]
+    }
+  ]
+}

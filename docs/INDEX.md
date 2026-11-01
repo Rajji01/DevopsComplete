@@ -28,8 +28,8 @@ Kaam continue karna? → SESSION-LOG top entry → CLAUDE.md → kaam.
 | `docs/START-HERE.md` | onboarding map, one-day plan, code reading order | changing status |
 | `docs/GLOSSARY.md` | har shabd/folder ka 1-line matlab | deep explanation (wo EASY-NOTES) |
 | `docs/VISUAL-FLOWS.md` | har flow ka mermaid diagram + kya/kyu/kaise + code kahan (13 flows) | — |
-| `docs/INDEXING-HIBERNATE.md` | DB indexing + Hibernate/JPA deep-dive: notes + diagrams + real snippets + psql labs (EXPLAIN, locks, oversell, N+1) | — |
-| `labs/` | interactive labs: Postman collection + React lab-console (API hit karo → response screen pe) | — |
+| `docs/INDEXING-HIBERNATE.md` | **one example topic** done as a full lab: DB indexing + Hibernate/JPA — notes + diagrams + real snippets + psql labs. Template for other topic deep-dives | — |
+| `labs/README.md` | **Labs & Mastery hub** — har dimension (Java/JPA, indexing, prod-debugging, HLD/LLD, DevOps, React+Java, AWS, interview, scenario) ka map + pedagogy (break→samjho→tod→jod) + interactive status (Postman live; React+Spring console planned) | — |
 | `docs/EASY-NOTES.md` | concept ka problem→kyu→kaise (Hinglish) | — |
 | `docs/LABS.md` | break/fix labs | — |
 | `docs/PRACTICE-LABS.md` | khud-banao tasks + solution | — |
