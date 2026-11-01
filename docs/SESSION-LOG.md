@@ -11,7 +11,7 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 **Found:** `ci.yml` (basics — Devops/microservice01, har push pe chalti hai) red thi. `Build & test Devops`: `mvn verify` pass, par `docker build -t Devops:ci .` → `invalid tag "Devops:ci": repository name must be lowercase`. Walk 12 wali hi casing class — ab matrix/dir naam `Devops` (capital) seedha docker tag ban raha tha. microservice01 (lowercase) pass hota par fail-fast ne cancel kiya. **Ye ci.yml banne se hi red thi** — dhyan shopflow pe tha isliye chhupi rahi.
 **Fix:** tag lowercase (`docker build -t "${SERVICE,,}:ci"`) + matrix `fail-fast: false`.
 **Lesson:** har workflow check karo, sirf loud wali nahi; lowercase-tag rule har jagah lagti hai jahan capital-naam docker tag banta hai.
-**Verify:** push → CI poll. Docs: SELF-WALK Walk 13, STATE, ye entry.
+**✅ Verified green:** CI run `41301618077` — Validate manifests, Build & test Devops, Build & test microservice01 sab pass. Ab **dono workflows (shopflow + basics CI) green**. Docs: SELF-WALK Walk 13, STATE, ye entry.
 
 ---
 
