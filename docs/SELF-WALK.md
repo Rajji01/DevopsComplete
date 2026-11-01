@@ -389,3 +389,15 @@ Scope: `infra/ansible/` — the "no Kubernetes" deploy path (Docker Compose on a
 Also noted (left as-is): `compose_profiles` in `group_vars` is vestigial — the compose file defines no `profiles:`, and the systemd unit doesn't reference it. Harmless; flagged for a later cleanup rather than touched blind.
 
 Walk 18 lesson: **read infra as "fresh machine," not "my machine."** The missing `mkdir` is invisible on any box where `/etc/apt/keyrings` already exists (most dev laptops), and only bites the clean VM the role is actually meant for. `--syntax-check` and `ansible-lint` won't catch it — only asking "does step 2 assume what step 1 didn't create?" does.
+
+## Walk 19: Terraform security read — least privilege on the Kafka IAM role (Nov 1, 2026)
+
+Scope: a security read of `infra/terraform/aws/` (RDS, IRSA, security groups, IAM) — the things `terraform validate` and tflint pass on syntactically but can't judge: public access, open SGs, over-broad IAM.
+
+Mostly tight, and worth recording as verified: **RDS** is `storage_encrypted`, `publicly_accessible = false`, SG ingress 5432 only from the EKS node SGs (not `0.0.0.0/0`), Multi-AZ/backups/deletion-protection gated on prod; **External Secrets** IAM is scoped to the one secret ARN; MSK topic/group ARNs are scoped to `orders.events*` / `payments.events*` and the three consumer groups. One real finding:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The kafka-clients IRSA policy used **`kafka-cluster:*Topic*`**, which silently includes **`DeleteTopic`** and `AlterTopic*`. A producer/consumer never needs those; a compromised service pod could delete its own event topic (`orders.events` / `payments.events`) | Least privilege: the blast radius of a popped pod should be "read/write its topics," not "destroy the event log." Wildcards in IAM actions hide exactly this | Replaced the wildcard with the explicit set a client needs — `CreateTopic` (auto-create), `DescribeTopic`, `DescribeTopicDynamicConfiguration`, `WriteData`, `ReadData` — dropping Delete/Alter. `terraform fmt` clean; `validate` + tflint run in CI |
+
+Walk 19 lesson: **an IAM action wildcard is a blind spot the linter waves through.** `*Topic*` reads as "topic stuff" but grants destruction; enumerate the verbs a workload actually performs. (Resource scoping here was already good — it's the *action* wildcard that leaked.)

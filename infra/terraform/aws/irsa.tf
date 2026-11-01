@@ -66,7 +66,16 @@ resource "aws_iam_policy" "kafka_clients" {
       },
       {
         Effect = "Allow"
-        Action = ["kafka-cluster:*Topic*", "kafka-cluster:WriteData", "kafka-cluster:ReadData"]
+        # Least privilege: a producer/consumer needs create (auto-create), describe, read and write —
+        # NOT DeleteTopic / AlterTopic, which "kafka-cluster:*Topic*" silently granted (Walk 19). A
+        # compromised pod could otherwise delete its own event topic.
+        Action = [
+          "kafka-cluster:CreateTopic",
+          "kafka-cluster:DescribeTopic",
+          "kafka-cluster:DescribeTopicDynamicConfiguration",
+          "kafka-cluster:WriteData",
+          "kafka-cluster:ReadData",
+        ]
         # topic ARN format: arn:aws:kafka:region:account:topic/cluster-name/cluster-uuid/topic-name
         Resource = [
           "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:topic/${var.name}/*/orders.events*",

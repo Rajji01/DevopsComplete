@@ -2,7 +2,7 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-11-01 (Walk 18: Ansible keyrings-dir fix; Walk 16/17: policies cover init/ephemeral containers; Walk 15 sweep). Prior: Walk 14 (SLI), 13 (basics ci.yml), 12 (shopflow CI green). Branch: `master`.
+Last updated: 2026-11-01 (Walk 19: least-privilege on the Kafka IRSA role; Walk 18 Ansible; 16/17 policies init-coverage; 15 sweep). Prior: 14 (SLI), 13 (basics ci.yml), 12 (shopflow CI green). Branch: `master`.
 
 ## 1. What is in the repo
 

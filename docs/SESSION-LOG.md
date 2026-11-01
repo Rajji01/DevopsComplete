@@ -14,6 +14,11 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 **Verify:** push → shopflow CI (kyverno apply step) confirm karega. Gatekeeper CI-run nahi hota (OPA nahi) — correct-by-construction + documented.
 **Lesson:** gap mile to poora family grep karo — `spec.containers[*]` har jagah tha; jahan matter karta (image tag, privesc) fix, jahan nahi (probes) chhodo.
 
+## 2026-11-01 — CLI (Opus 4.8) — Walk 19 (Terraform security: least-privilege Kafka IAM)
+**Branch:** `master`. **Sweep:** RDS (encrypted, not public, SG EKS-only, Multi-AZ/backups/deletion-protection) + External-Secrets IAM (secret-ARN scoped) + MSK ARNs (topics/groups scoped) — **sound**. **Finding:** kafka-clients IRSA policy `kafka-cluster:*Topic*` mein chupke **DeleteTopic/AlterTopic** aa rahe the → compromised pod apne event topic delete kar sakta. **Fix:** explicit least-privilege set (CreateTopic, DescribeTopic, DescribeTopicDynamicConfiguration, WriteData, ReadData) — Delete/Alter hata diye. `terraform fmt` clean; validate+tflint CI mein. **Lesson:** IAM action wildcard linter ka blind spot — `*Topic*` "topic stuff" dikhta par destruction deta; verbs enumerate karo. (Resource scoping already achhi thi.)
+
+---
+
 ## 2026-11-01 — CLI (Opus 4.8) — Walk 18 (Ansible: fresh-VM path bug)
 **Branch:** `master`. **Found:** `infra/ansible` docker role GPG key ko `/etc/apt/keyrings/docker.asc` pe daalta tha bina `/etc/apt/keyrings` banaye — fresh Ubuntu VM pe wo dir default nahi → playbook pehle hi step pe fail (Docker ke official steps ye dir banate hain). **Fix:** ek `file: state=directory` task pehle. **Verified:** `ansible-lint` (production profile) 0 failures (Docker). **Noted (left):** `compose_profiles` var vestigial hai (compose mein `profiles:` hai hi nahi) — later cleanup. **Lesson:** infra ko "fresh machine" soch ke padho, apni machine nahi — missing mkdir dev-laptop pe invisible, asli VM pe bites; syntax-check/lint nahi pakadta.
 
