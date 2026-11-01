@@ -27,7 +27,7 @@ Ye ShopFlow repo ko ek **interactive learning lab** banata hai. Maqsad: har dime
 | **LLD (class/patterns)** | [`../docs/START-HERE.md`](../docs/START-HERE.md) code-reading order, [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) | — | 🚧 LLD deep-dive (like the indexing one) planned |
 | **DevOps / CI-CD / k8s / IaC** | interview-notes [04–09], [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) §12/13, [`../docs/SELF-WALK.md`](../docs/SELF-WALK.md) Walks 8–14 | — | ✅ |
 | **Observability / SRE** | [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) §11, [`../docs/runbooks/`](../docs/runbooks/README.md) | — | ✅ |
-| **React + Java** | Spring APIs (order/inventory) | React lab-console (6 panels, live) | ✅ console live (dev CORS) |
+| **React + Java** | Spring APIs (order/inventory) | React lab-console (8 panels, live) | ✅ console live (dev CORS) |
 | **AWS services** | [`../docs/interview-notes/09-aws-production.md`](../docs/interview-notes/09-aws-production.md), [`../infra/terraform/aws/`](../infra/terraform/aws/README.md) | — | ✅ read-only; live labs need an AWS account |
 | **Interview Q&A** | [`../docs/interview-notes/`](../docs/interview-notes/README.md) (01–12 + rapid-fire) | — | ✅ |
 | **Comprehension round (Google-style)** | [`../docs/comprehension/`](../docs/comprehension/README.md) (15 topics) | React+Spring comprehension mode | 🚧 planned |
@@ -42,7 +42,7 @@ Ye ShopFlow repo ko ek **interactive learning lab** banata hai. Maqsad: har dime
 6. **Inventory reserve idempotency** — direct inventory-service, same orderRef → same reservation.
 
 ## Roadmap (incrementally banayenge, har ek apni specific entry ke saath)
-- ~~React lab-console (local CORS)~~ ✅ done (`lab-console.html`, 6 panels).
+- ~~React lab-console (local CORS)~~ ✅ done (`lab-console.html`, 8 panels: idempotency, oversell, IDOR, rate-limit, validation, reserve-idem, optimistic-lock, saga-async).
 - React+Spring **comprehension mode** (Google-style: passage → sawaal → code dikhao → chalao).
 - LLD deep-dive (INDEXING-HIBERNATE.md ki tarah) — design patterns + class-level.
 - HLD scenario labs (design a feature → trade-offs).

@@ -113,6 +113,8 @@ function App() {
       <RateLimit ctx={ctx} />
       <Validation ctx={ctx} />
       <ReserveIdem ctx={ctx} />
+      <OptimisticLock ctx={ctx} />
+      <SagaObserve ctx={ctx} />
     </main>
   </>);
 }
@@ -234,6 +236,57 @@ function ReserveIdem({ ctx }) {
     <b className="tag">reserve (201)</b><Result r={a} />
     <b className="tag">reserve again (201, idempotent)</b><Result r={b} />
     <b className="tag">release (204)</b><Result r={c} />
+  </div>);
+}
+
+// Lab 7: Optimistic lock (@Version) — two concurrent cancels
+function OptimisticLock({ ctx }) {
+  const [res, setRes] = useState(null), [busy, setBusy] = useState(false);
+  async function run() {
+    setBusy(true);
+    const c = await hit("POST", ctx.order, "/api/v1/orders", { token: ctx.token, body: { sku: "PIXEL-9", quantity: 1 } });
+    const id = c.json && c.json.id;
+    const [a, b] = await Promise.all([
+      hit("DELETE", ctx.order, "/api/v1/orders/" + id, { token: ctx.token }),
+      hit("DELETE", ctx.order, "/api/v1/orders/" + id, { token: ctx.token }),
+    ]);
+    setRes({ a, b }); setBusy(false);
+  }
+  const codes = res ? [res.a.status, res.b.status] : [];
+  const good = res && codes.includes(200) && codes.includes(409);
+  return (<div className="card">
+    <h2>7 · Optimistic lock <span className="tag">@Version, concurrent cancel</span></h2>
+    <p className="why">Ek hi order ko do baar ek saath cancel → ek <code>200</code>, doosra <code>409</code> (lost update roka, 500 nahi).</p>
+    <div className="row"><button onClick={run} disabled={!ctx.token||busy}>{busy?"...":"Create + 2 parallel cancel"}</button>
+      {res && <span className={"pill "+(good?"ok":"warn")}>{good?"one 200 + one 409 ✓":"codes: "+codes.join(", ")}</span>}</div>
+    <b className="tag">cancel A</b><Result r={res && res.a} />
+    <b className="tag">cancel B</b><Result r={res && res.b} />
+  </div>);
+}
+
+// Lab 8: Saga — watch CONFIRMED -> PAID happen asynchronously (Kafka)
+function SagaObserve({ ctx }) {
+  const [steps, setSteps] = useState([]), [busy, setBusy] = useState(false);
+  async function run() {
+    setBusy(true); const log = [];
+    const c = await hit("POST", ctx.order, "/api/v1/orders", { token: ctx.token, body: { sku: "AIRPODS-PRO", quantity: 1 } });
+    const id = c.json && c.json.id;
+    log.push({ t: 0, status: c.json && c.json.status }); setSteps([...log]);
+    for (let i = 1; i <= 15; i++) {
+      await new Promise(r => setTimeout(r, 700));
+      const g = await hit("GET", ctx.order, "/api/v1/orders/" + id, { token: ctx.token });
+      const s = g.json && g.json.status;
+      if (!log.length || log[log.length - 1].status !== s) { log.push({ t: i * 0.7, status: s }); setSteps([...log]); }
+      if (s === "PAID" || s === "CANCELLED") break;
+    }
+    setBusy(false);
+  }
+  return (<div className="card">
+    <h2>8 · Saga (async) <span className="tag">CONFIRMED → PAID via Kafka</span></h2>
+    <p className="why">Order banao → <code>CONFIRMED</code>. payment-service event se charge karta hai → thodi der mein <code>PAID</code>. Transition live dekho.</p>
+    <div className="row"><button onClick={run} disabled={!ctx.token||busy}>{busy?"watching...":"Place order & watch"}</button></div>
+    <div className="tally">{steps.map((s,i)=>(<div key={i}><b style={{fontSize:13,color:s.status==="PAID"?"var(--ok)":"var(--ink)"}}>{s.status}</b><span>~{s.t}s</span></div>))}</div>
+    {steps.some(s=>s.status==="PAID") && <span className="pill ok">saga completed ✓ (PAID)</span>}
   </div>);
 }
 
