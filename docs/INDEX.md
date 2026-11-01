@@ -28,6 +28,8 @@ Kaam continue karna? → SESSION-LOG top entry → CLAUDE.md → kaam.
 | `docs/START-HERE.md` | onboarding map, one-day plan, code reading order | changing status |
 | `docs/GLOSSARY.md` | har shabd/folder ka 1-line matlab | deep explanation (wo EASY-NOTES) |
 | `docs/VISUAL-FLOWS.md` | har flow ka mermaid diagram + kya/kyu/kaise + code kahan (13 flows) | — |
+| `docs/INDEXING-HIBERNATE.md` | DB indexing + Hibernate/JPA deep-dive: notes + diagrams + real snippets + psql labs (EXPLAIN, locks, oversell, N+1) | — |
+| `labs/` | interactive labs: Postman collection + React lab-console (API hit karo → response screen pe) | — |
 | `docs/EASY-NOTES.md` | concept ka problem→kyu→kaise (Hinglish) | — |
 | `docs/LABS.md` | break/fix labs | — |
 | `docs/PRACTICE-LABS.md` | khud-banao tasks + solution | — |
