@@ -15,9 +15,12 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 **Cont. (cosign fix ke baad image job aage badha → 2 aur bugs, dono log se):**
 - **Image-ref casing:** cosign+fail-fast ke baad saare 4 image builds bane, par Trivy scan pe FATAL `could not parse reference: ghcr.io/Rajji01/...`. OCI ref lowercase hona chahiye; `env.IMAGE` ne `github.repository_owner` (`Rajji01`, capital) raw use kiya. Build to `metadata-action` ne lowercase kar diya, par Trivy/SBOM/ECR raw `$IMAGE` padhte the. **Fix:** ek step `IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/shopflow-<svc>` set karta hai.
 - **Backup atomicity (boring-file sweep):** nightly `pg_dump` seedha `$db.dump` likhta tha; fail hua dump truncated file chhod deta jise restore valid samajh le. **Fix:** `.part` pe dump → success pe `mv` to `.dump` (atomic). Migrations + NetworkPolicies sweep: sound (no change). Note: `OutboxRelay` @Transactional Kafka I/O ke across hold karta hai (bounded; low-pri open item).
-**Lesson:** har fix agle red ko unmask karta hai — pipeline tabhi "green" jab poora chale. Casing: `github.repository_owner` case preserve karta hai, OCI refs lowercase maangte hain.
-**Verify:** sab push → CI re-run poll. Docs synced: STATE §4+header, SELF-WALK Walk 12 (+cont.), ye entry.
-**Pending:** CI green confirm (image jobs ab Trivy paar karein); baaki STATE §4 items.
+**Cont. 2 — casing fix ke baad Trivy ne sach mein scan kiya → 14 REAL fixable CVEs (7 HIGH, 7 CRIT), sab Spring Boot transitive Java deps:**
+- jackson/netty/tomcat/postgresql → `shopflow/pom.xml` mein BOM properties override (fixed versions Trivy ne batayi: jackson 2.21.7, netty 4.1.137.Final, tomcat 10.1.59, postgres 42.7.12).
+- spring-webmvc (CVE-2026-47884 CRIT + 47890) → fix sirf Spring 7/Boot 4 mein → documented triage `/.trivyignore` mein (blanket mute nahi; naye CVEs abhi bhi fail karenge). Boot-4 upgrade STATE §4 open item.
+**Lesson:** har fix agle red ko unmask karta hai; scanner jo ref parse na kare = kuch scan nahi hua; transitive CVEs BOM pe patch karo, sirf genuinely-unfixable ko (documented) triage.
+**Verify:** sab push → CI poll. pom override low-risk (patch bumps) par Docker verify memory se reap hua → CI test/build job verifier. Docs synced: STATE §4+header, SELF-WALK Walk 12 (+cont.+cont.2), ye entry.
+**Pending:** CI green confirm (image Trivy ab clean ho); baaki STATE §4 items (+ Boot-4 upgrade naya).
 
 ---
 

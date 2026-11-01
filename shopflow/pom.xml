@@ -32,6 +32,14 @@
         <wiremock.version>3.13.2</wiremock.version>
         <aws-msk-iam-auth.version>2.3.9</aws-msk-iam-auth.version>
         <archunit.version>1.5.1</archunit.version>
+        <!-- CVE patches (Walk 12): override Spring Boot's managed transitive versions to the fixed
+             releases Trivy named, so `make build` + the CI image scan are clean. Drop these back to
+             the BOM defaults once a Boot patch ships them. (spring-webmvc's fix is only in Spring 7 /
+             Boot 4, so it can't be overridden here — it is triaged in /.trivyignore instead.) -->
+        <jackson-bom.version>2.21.7</jackson-bom.version>   <!-- CVE-2026-89407/89425/68497/91776/91777 -->
+        <netty.version>4.1.137.Final</netty.version>         <!-- CVE-2026-59901 (codec), CVE-2026-75595 (handler) -->
+        <tomcat.version>10.1.59</tomcat.version>             <!-- CVE-2026-65182/65637/65905/68525 -->
+        <postgresql.version>42.7.12</postgresql.version>     <!-- CVE-2026-54291 -->
     </properties>
 
     <!-- Dependencies shared by every service -->

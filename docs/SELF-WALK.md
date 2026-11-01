@@ -295,3 +295,21 @@ Walk 12 lessons:
 | Boring-file sweep (migrations, NetworkPolicies, backup CronJob). Migrations and NetworkPolicies were sound. The **nightly `pg_dump`** wrote straight to `/backups/$db.dump`; a dump that fails midway (DB blip) leaves a **truncated `*.dump`** that a restore would happily pick as a good backup | A backup you can't trust is worse than none — you find out during the restore, mid-incident | Dump to `$db.dump.part`, `mv` to `.dump` only on success (atomic); sweep stale `.part` files. A failed dump now never appears as a backup |
 
 Also confirmed sound this sweep (no change): Flyway migrations use the expand pattern with backfill + defaults (safe on a live table, H2-parseable); NetworkPolicies are default-deny ingress+egress with per-service allow-lists and correct ports (8081/8082/8083/8084, 5432, 9092, 6379, 8180, DNS). Open note for a later walk: `OutboxRelay.publishPending()` holds its `@Transactional` across the Kafka `send().get(5s)` for the whole batch — bounded (it returns on the first failure) but worth moving the broker I/O out of the DB transaction if the pool is ever pressured.
+
+### Walk 12 (cont. 2): the scan that finally ran found real CVEs
+
+Once the ref was lowercase, Trivy actually scanned and failed with **14 fixable findings (7 HIGH, 7 CRITICAL)** — all in Spring Boot's transitive Java deps, not the OS layer:
+
+| Dependency | CVEs | Fixed in | How handled |
+|---|---|---|---|
+| jackson-core / jackson-databind | 89407, 89425, 68497, 91776, 91777 | 2.21.7 | `jackson-bom.version` override in `shopflow/pom.xml` |
+| netty-codec / netty-handler | 59901, 75595 (CRIT) | 4.1.137.Final | `netty.version` override |
+| tomcat-embed-core | 65182, 65637, 65905, 68525 | 10.1.59 | `tomcat.version` override |
+| postgresql | 54291 | 42.7.12 | `postgresql.version` override |
+| spring-webmvc | 47884 (CRIT), 47890 | 7.0.9 (Spring 7 / Boot 4) | **triaged** in `/.trivyignore` — no fix in our 6.2.x line |
+
+The first four are patched by overriding Spring Boot's managed versions to the exact fixed releases Trivy named (surgical, reversible once a Boot patch ships them). The spring-webmvc pair has no fix below Spring 7, so it is a *documented, scoped* accept in `.trivyignore` (new CVEs still fail the build) with the Boot 4 upgrade tracked in `STATE.md` §4 — not a blanket mute.
+
+Walk 12 (cont. 2) lessons:
+- **A scanner that can't parse the ref is a scanner that found nothing.** The "CVE" failure only became real after the casing fix; always confirm the tool actually ran.
+- **Patch transitive CVEs at the BOM, triage only the unfixable.** Overriding managed versions is the honest fix; `.trivyignore` is for what genuinely has no fix in your major line — and it must be documented and bounded, never a catch-all.

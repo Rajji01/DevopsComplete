@@ -199,6 +199,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+          trivyignores: .trivyignore   # triaged, documented accepts (see the file); new CVEs still fail
       # Supply chain: an SBOM (what is inside the image) is kept with the build so a future CVE
       # can be answered with "which images contain log4j 2.14?" without rebuilding anything.
       - name: SBOM (CycloneDX)

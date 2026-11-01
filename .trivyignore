@@ -1,0 +1,12 @@
+# Triaged image-scan findings (Walk 12, 2026-11-01). Everything here is a CONSCIOUS, documented
+# accept — not a blanket mute. New CVEs still fail the build. Review each at the next dependency pass.
+#
+# jackson / netty / tomcat / postgresql CVEs are NOT listed here: they are fixed by version overrides
+# in shopflow/pom.xml. Only the ones with no fix in our current major line live here.
+
+# spring-webmvc CVE-2026-47884 (CRITICAL) + CVE-2026-47890: fixed only in Spring Framework 7.0.9,
+# i.e. Spring Boot 4. We are on Boot 3.5.x (Spring 6.2.x), so there is no drop-in fix. Risk is bounded
+# here (demo app, fake payment gateway, not internet-exposed; ingress is authenticated). Tracked as
+# the Boot 4 / Spring 7 upgrade in docs/STATE.md §4; remove these two lines once that lands.
+CVE-2026-47884
+CVE-2026-47890
