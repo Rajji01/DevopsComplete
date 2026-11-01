@@ -122,6 +122,9 @@ jobs:
           # init-container coverage (Walk 16): a valid app container but a :latest initContainer must still fail
           if ./kyverno apply k8s/policies/kyverno/disallow-latest-tag.yaml --resource k8s/policies/tests/bad-initcontainer-pod.yaml | grep -q 'fail: 0'; then
             echo "bad-initcontainer-pod should have been rejected by disallow-latest-tag"; exit 1; fi
+          # init-container securityContext coverage (Walk 17): a privilege-escalating initContainer must fail
+          if ./kyverno apply k8s/policies/kyverno/require-non-root.yaml --resource k8s/policies/tests/bad-init-privesc-pod.yaml | grep -q 'fail: 0'; then
+            echo "bad-init-privesc-pod should have been rejected by require-non-root"; exit 1; fi
       - name: "Prometheus rules: syntax + unit tests; Alertmanager config"
         run: |
           docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v3.5.0 \

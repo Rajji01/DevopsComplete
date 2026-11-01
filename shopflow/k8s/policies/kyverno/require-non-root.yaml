@@ -31,3 +31,11 @@ spec:
             containers:
               - securityContext:
                   allowPrivilegeEscalation: false
+            # init/ephemeral containers run with the same blast radius; cover them too (Walk 17).
+            # Conditional anchors skip the lists when absent, so pods without them aren't rejected.
+            "=(initContainers)":
+              - securityContext:
+                  allowPrivilegeEscalation: false
+            "=(ephemeralContainers)":
+              - securityContext:
+                  allowPrivilegeEscalation: false

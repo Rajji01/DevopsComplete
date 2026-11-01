@@ -1,0 +1,22 @@
+# Walk 17: app container is non-root + allowPrivilegeEscalation:false, but the initContainer omits it.
+# Before the fix, require-non-root only checked spec.containers, so this privileged init slipped through.
+# `kyverno apply require-non-root.yaml` must now report a failure for this file.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-init-privesc-pod
+  namespace: shopflow
+  labels:
+    app.kubernetes.io/name: bad-init-privesc
+    app.kubernetes.io/part-of: shopflow
+spec:
+  securityContext:
+    runAsNonRoot: true
+  initContainers:
+    - name: setup
+      image: busybox:1.36            # tagged, so disallow-latest is happy; the sin is the missing securityContext
+  containers:
+    - name: app
+      image: ghcr.io/rajji01/shopflow-order-service:abc1234
+      securityContext:
+        allowPrivilegeEscalation: false

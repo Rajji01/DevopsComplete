@@ -367,3 +367,13 @@ Walk 16 lessons:
 - **A Pod is more than `spec.containers`.** Any policy over images/security must also cover `initContainers` and `ephemeralContainers`, or it is bypassable by construction.
 - **Conditional anchors, not required fields.** `=(initContainers)` validates the list only when present; writing it as a plain required field would have rejected every Pod without init-containers. The good-Pod test (with and without init) is what proved that.
 - **Keep the two policy engines actually equivalent.** The claim "Kyverno and Gatekeeper enforce the same rule" (STATE §2) is only true if you re-check it — here they had drifted into the same gap, now both fixed.
+
+## Walk 17: the same hole, one policy over (Nov 1, 2026)
+
+Scope: having found the init-container gap in `disallow-latest-tag` (Walk 16), check its siblings for the same class of bug. `require-probes`/`require-resources` legitimately apply to `spec.containers` only (init-containers run to completion — no readiness probe), but **`require-non-root` should cover every container**.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **`require-non-root` only enforced `allowPrivilegeEscalation: false` on `spec.containers`.** The pod-level `runAsNonRoot: true` does reach init-containers, but `allowPrivilegeEscalation` is a per-container field — so an `initContainer` that omits it (or sets it true) could **escalate privileges** while the policy reported clean | Init-containers often run setup/migration steps as the first thing in the pod, with the same node access; a privilege-escalation hole there is a real break-in path | Added `=(initContainers)` / `=(ephemeralContainers)` securityContext checks. **Verified** with `kyverno apply` v1.19.1: a new `bad-init-privesc-pod` (valid app container, init without `allowPrivilegeEscalation:false`) now fails at `/spec/initContainers/0/securityContext`; a fully-compliant pod passes. Pinned with its own CI assertion |
+
+Walk 17 lesson: **when you find a gap, grep the whole family.** The init-container blind spot wasn't one policy's bug — it was a pattern (`spec.containers[*]` everywhere). Fix the ones where it matters (image tag, privilege escalation), and consciously leave the ones where it doesn't (probes).

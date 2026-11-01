@@ -6,11 +6,13 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
-## 2026-11-01 — CLI (Opus 4.8) — Walk 15+16 (quiet-files sweep + policy init-container gap)
+## 2026-11-01 — CLI (Opus 4.8) — Walk 15+16+17 (quiet-files sweep + policy init-container gaps)
 **Branch:** `master` (in-sync).
 **Walk 15 (sweep, no-change clean):** docker-compose (`localhost:host-gateway` trick correct — multi-address fallback), Jenkinsfile (casing-trap se bacha — `ghcr.io/rajji01` lowercase, `.trivyignore` root pe), argocd prod (sound). Trivial: prod external-secret comment "three keys"→"four keys".
 **Walk 16 (real finding, verified):** `disallow-latest-tag` (Kyverno **aur** Gatekeeper) sirf `spec.containers` check karta tha → `:latest` **initContainer/ephemeralContainer** bypass. **Fix:** Kyverno mein `=(initContainers)`/`=(ephemeralContainers)` conditional anchors (absent → skip, valid pods safe); Gatekeeper Rego mein `all_containers` set (teeno types). **Verified** `kyverno apply` v1.19.1 Docker: naya `bad-initcontainer-pod` (valid app + `:latest` init) ab **FAIL**, valid pods (init ke saath/bina) **PASS**. CI mein dedicated assertion se pin kiya.
+**Walk 17 (same gap, ek policy aage):** `require-non-root` bhi sirf `spec.containers` ka `allowPrivilegeEscalation` dekhta tha → privilege-escalation **initContainer** slip. (`require-probes`/`require-resources` init pe apply nahi hote — jaanbujh ke chhoda.) **Fix:** `=(initContainers)`/`=(ephemeralContainers)` securityContext check. **Verified** kyverno apply: `bad-init-privesc-pod` FAIL, compliant pod PASS. CI assertion se pin.
 **Verify:** push → shopflow CI (kyverno apply step) confirm karega. Gatekeeper CI-run nahi hota (OPA nahi) — correct-by-construction + documented.
+**Lesson:** gap mile to poora family grep karo — `spec.containers[*]` har jagah tha; jahan matter karta (image tag, privesc) fix, jahan nahi (probes) chhodo.
 
 ---
 
