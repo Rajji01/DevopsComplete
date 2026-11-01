@@ -307,6 +307,7 @@ Once the ref was lowercase, Trivy actually scanned and failed with **14 fixable 
 | tomcat-embed-core | 65182, 65637, 65905, 68525 | 10.1.59 | `tomcat.version` override |
 | postgresql | 54291 | 42.7.12 | `postgresql.version` override |
 | spring-webmvc | 47884 (CRIT), 47890 | 7.0.9 (Spring 7 / Boot 4) | **triaged** in `/.trivyignore` — no fix in our 6.2.x line |
+| lz4-java, snappy-java, httpcore5/-h2 | 106451, 108106, 93451, 54399, 54428 | 1.11.4 / 1.1.10.9 / 5.4.3 | `lz4.version` / `snappy-java.version` / `httpcore5.version` overrides (2nd scan: these hit only the 3 Kafka services — inventory had no Kafka client, so it went green first) |
 
 The first four are patched by overriding Spring Boot's managed versions to the exact fixed releases Trivy named (surgical, reversible once a Boot patch ships them). The spring-webmvc pair has no fix below Spring 7, so it is a *documented, scoped* accept in `.trivyignore` (new CVEs still fail the build) with the Boot 4 upgrade tracked in `STATE.md` §4 — not a blanket mute.
 
