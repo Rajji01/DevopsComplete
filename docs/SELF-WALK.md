@@ -377,3 +377,15 @@ Scope: having found the init-container gap in `disallow-latest-tag` (Walk 16), c
 | **`require-non-root` only enforced `allowPrivilegeEscalation: false` on `spec.containers`.** The pod-level `runAsNonRoot: true` does reach init-containers, but `allowPrivilegeEscalation` is a per-container field — so an `initContainer` that omits it (or sets it true) could **escalate privileges** while the policy reported clean | Init-containers often run setup/migration steps as the first thing in the pod, with the same node access; a privilege-escalation hole there is a real break-in path | Added `=(initContainers)` / `=(ephemeralContainers)` securityContext checks. **Verified** with `kyverno apply` v1.19.1: a new `bad-init-privesc-pod` (valid app container, init without `allowPrivilegeEscalation:false`) now fails at `/spec/initContainers/0/securityContext`; a fully-compliant pod passes. Pinned with its own CI assertion |
 
 Walk 17 lesson: **when you find a gap, grep the whole family.** The init-container blind spot wasn't one policy's bug — it was a pattern (`spec.containers[*]` everywhere). Fix the ones where it matters (image tag, privilege escalation), and consciously leave the ones where it doesn't (probes).
+
+## Walk 18: the Ansible path that assumed a directory (Nov 1, 2026)
+
+Scope: `infra/ansible/` — the "no Kubernetes" deploy path (Docker Compose on a VM via systemd). Read it as "would this actually run on a fresh Ubuntu box?".
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The `docker` role downloaded Docker's GPG key to **`/etc/apt/keyrings/docker.asc` without creating `/etc/apt/keyrings` first.** On a fresh Ubuntu VM that directory doesn't exist by default, so `get_url` fails with "Destination directory ... does not exist" — the playbook dies at the very first provisioning step | The whole VM path is the fallback for teams without K8s; if it can't get past installing Docker, none of it works. Docker's own install docs create this dir explicitly (`install -m 0755 -d /etc/apt/keyrings`) — it was just missing here | Added an `ansible.builtin.file: path=/etc/apt/keyrings state=directory mode=0755` task before the key download. Verified `ansible-lint` (production profile) stays green: 0 failures |
+
+Also noted (left as-is): `compose_profiles` in `group_vars` is vestigial — the compose file defines no `profiles:`, and the systemd unit doesn't reference it. Harmless; flagged for a later cleanup rather than touched blind.
+
+Walk 18 lesson: **read infra as "fresh machine," not "my machine."** The missing `mkdir` is invisible on any box where `/etc/apt/keyrings` already exists (most dev laptops), and only bites the clean VM the role is actually meant for. `--syntax-check` and `ansible-lint` won't catch it — only asking "does step 2 assume what step 1 didn't create?" does.
