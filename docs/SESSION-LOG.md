@@ -6,6 +6,15 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-01 — CLI (Opus 4.8) — Walk 13 (the other pipeline that was quietly red)
+**Branch:** `master` (in-sync). shopflow CI green confirm karne ke baad doosri workflow dekhi.
+**Found:** `ci.yml` (basics — Devops/microservice01, har push pe chalti hai) red thi. `Build & test Devops`: `mvn verify` pass, par `docker build -t Devops:ci .` → `invalid tag "Devops:ci": repository name must be lowercase`. Walk 12 wali hi casing class — ab matrix/dir naam `Devops` (capital) seedha docker tag ban raha tha. microservice01 (lowercase) pass hota par fail-fast ne cancel kiya. **Ye ci.yml banne se hi red thi** — dhyan shopflow pe tha isliye chhupi rahi.
+**Fix:** tag lowercase (`docker build -t "${SERVICE,,}:ci"`) + matrix `fail-fast: false`.
+**Lesson:** har workflow check karo, sirf loud wali nahi; lowercase-tag rule har jagah lagti hai jahan capital-naam docker tag banta hai.
+**Verify:** push → CI poll. Docs: SELF-WALK Walk 13, STATE, ye entry.
+
+---
+
 ## 2026-11-01 — CLI (Opus 4.8) — Walk 12 (CI fully green)
 **Branch:** `master` (in-sync, koi naya web commit nahi).
 **Pehle:** Walk 11 ke fixes **CI pe green confirm** (run `41214762574`): tests (flaky outbox fix ✅), lint/tflint ✅, k6 ✅, validate/helm ✅ (tar-collision fix landed), terraform ✅.

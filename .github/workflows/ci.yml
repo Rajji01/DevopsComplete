@@ -9,6 +9,7 @@ jobs:
     name: Build & test ${{ matrix.service }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false   # Devops + microservice01 are independent; don't cancel one for the other
       matrix:
         service: [Devops, microservice01]
     defaults:
@@ -23,7 +24,10 @@ jobs:
           cache: maven
       - run: mvn -B verify
       - name: Docker build (no push)
-        run: docker build -t ${{ matrix.service }}:ci .
+        # a docker tag must be lowercase, but the matrix value is the directory name (e.g. "Devops")
+        run: docker build -t "${SERVICE,,}:ci" .
+        env:
+          SERVICE: ${{ matrix.service }}
 
   validate-manifests:
     name: Validate Kubernetes manifests

@@ -322,3 +322,15 @@ The first four are patched by overriding Spring Boot's managed versions to the e
 Walk 12 (cont. 2) lessons:
 - **A scanner that can't parse the ref is a scanner that found nothing.** The "CVE" failure only became real after the casing fix; always confirm the tool actually ran.
 - **Patch transitive CVEs at the BOM, triage only the unfixable.** Overriding managed versions is the honest fix; `.trivyignore` is for what genuinely has no fix in your major line — and it must be documented and bounded, never a catch-all.
+
+## Walk 13: the other pipeline that was quietly red all along (Nov 1, 2026)
+
+Scope: with `shopflow` finally green, check the repo's *other* workflow. `.github/workflows/ci.yml` (the "basics" CI for `Devops/` and `microservice01/`) runs on **every push**, so my own docs commits were triggering it — and it was failing.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `Build & test Devops` passed `mvn verify` but died at **`docker build -t Devops:ci .`** with `invalid tag "Devops:ci": repository name must be lowercase`. Same casing class as Walk 12's image-ref bug, but here the matrix value `Devops` (a directory name with a capital) was used directly as a Docker tag. `microservice01` (lowercase) would have passed but was cancelled by matrix fail-fast, so the whole workflow showed red | `ci.yml` runs on every push, so this had been **red since the file was added** — invisible because all the attention was on the louder `shopflow` pipeline. A second workflow sitting red trains people to ignore the ✗ | Lowercase the tag (`docker build -t "${SERVICE,,}:ci"`), and `fail-fast: false` on the matrix so one service's failure stops hiding the other |
+
+Walk 13 lessons:
+- **Check every workflow, not just the loud one.** A repo can have more than one pipeline; a quiet one can sit red for weeks while a green badge elsewhere lulls you.
+- **The lowercase-tag rule bites anywhere a name with capitals becomes a Docker tag** — repo owner (Walk 12) or a matrix/dir name (here). Lowercase at the point of tagging.
