@@ -2,7 +2,7 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-11-01 (Walk 12: CI fully green — cosign action tag + fail-fast). Branch: `master`. Prior: 2026-10-31 (Walk 11, red CI from Walk 8); 2026-10-29 (comprehension rounds).
+Last updated: 2026-11-01 (Walk 12: shopflow CI **fully green on master** — CI config, image-ref casing, and 19 image CVEs). Branch: `master`. Prior: 2026-10-31 (Walk 11, red CI from Walk 8); 2026-10-29 (comprehension rounds).
 
 ## 1. What is in the repo
 
@@ -83,18 +83,17 @@ Rule: a state where **no money has moved** (PENDING, FAILED) is safe to auto-can
 - Refund gateway failures (real processor) — the fake one always succeeds; a `RefundFailed` path + alert is unmodelled.
 - Orchestrated saga timeout for genuinely orphaned CONFIRMED orders (currently alert-only, human decides).
 - SLO SLI (Walk 8): the latency term counts *any* slow non-5xx (incl. 4xx/429) as "bad"; a stricter SLI would only count slow 2xx. Minor — left for a walk that can run `promtool` + a live Prometheus to retune and re-pin the alert tests.
-- **CI triage (Walk 8 → fixed in Walk 11, confirmed green + 1 more fixed in Walk 12; CI logs read via API):**
-  - Walk 11 fixes **confirmed green** in CI run `41214762574`: tests, lint/tflint, k6, validate/helm, terraform all passed.
-  - `sigstore/cosign-installer@v4` (Walk 12) — **fixed**: no such tag exists (latest is v3), and `uses:` actions resolve at "Set up job" even when their `if:` skips them, so this failed the whole `image` job on master. Now `@v3`; added `fail-fast: false` to the image matrix.
-  - **Image-ref casing (Walk 12 cont.)** — **fixed**: once the images built, Trivy died with `could not parse reference: ghcr.io/Rajji01/...` — OCI refs must be lowercase but `env.IMAGE` used `github.repository_owner` verbatim. A step now sets `IMAGE` from a lowercased owner (`${GITHUB_REPOSITORY_OWNER,,}`).
-- **Backup hygiene (Walk 12 cont.):** the nightly `pg_dump` CronJob wrote directly to `$db.dump`; a failed dump left a truncated file a restore could pick. Now dumps to `.part` and `mv`s to `.dump` only on success (atomic).
-  - **Image CVEs (Walk 12 cont.):** once the ref was lowercase, Trivy scanned and found fixable CVEs in transitive Java deps. Fixed by overriding Spring Boot's managed versions in `shopflow/pom.xml` — shared: `jackson-bom` 2.21.7, `netty` 4.1.137.Final, `tomcat` 10.1.59, `postgresql` 42.7.12; Kafka-only (order/notification/payment): `lz4` 1.11.4, `snappy-java` 1.1.10.9, `httpcore5` 5.4.3. `spring-webmvc` (CVE-2026-47884/47890, fixed only in Spring 7) is a documented triage in `/.trivyignore`.
-- **OutboxRelay (open, low priority):** `publishPending()` holds its `@Transactional` across the Kafka `send().get(5s)` for the batch. Bounded (returns on first failure) but ideally the broker I/O moves out of the DB transaction; revisit if the Hikari pool is ever pressured.
-- **Spring Boot 4 / Spring 7 upgrade (open):** the proper fix for `spring-webmvc` CVE-2026-47884/47890 (currently triaged in `.trivyignore`) and a chance to drop the pom CVE-patch overrides. A major upgrade — plan and test deliberately.
-  - `k6 inspect` (loadtest-syntax) — **fixed** (CI green): job ran `shopflow/loadtest/...` while already in `working-directory: shopflow` (double path). Now `loadtest/flash-sale.js`.
-  - `tflint` AWS ruleset (lint) — **fixed** (CI green): `elasticache.tf` used the uneditable `default.redis7` group; now an owned `aws_elasticache_parameter_group`. `tflint` → 0 issues, `terraform fmt` clean.
-  - `helm lint/template | kubeconform` (validate-manifests) — **fixed** (not transient): CI log showed `tar: helm: Cannot open: File exists` — the step runs in `working-directory: shopflow`, which has a `helm/` directory, so extracting `./helm` collided. Helm is now installed into `runner.temp` (on PATH) with kustomize/kubeconform; the step calls bare `helm`.
-  - **Flaky tests (surfaced during this walk):** `publishesOrderEventThroughTheOutbox` (CI 10s timeout) and `OutboxCleanupTest` (local assertion) shared one cause — the live `OutboxRelay` `@Scheduled` (100ms) raced test assertions (publishing a row a test expected to stay pending). Fixed: `OutboxCleanupTest` gets an isolated context with the relay parked (`outbox.relay.delay=1h`); the publish test waits 30s. Java verified in CI (local Docker run was reaped by memory pressure).
+- **CI pipeline — FULLY GREEN on `master`** (Walk 8 turned it on there; Walks 11–12 fixed it; run `41297074849`, 2026-11-01). All jobs pass: tests, lint/tflint, k6, validate (kustomize/kyverno/promtool/helm), terraform, 4 image builds + Trivy scan + SBOM. `Pin prod overlay` stays skipped (main-only). Fixes, in the order found — each unmasked the next:
+  - `k6 inspect`: double path (`working-directory: shopflow` + `shopflow/loadtest/...`) → `loadtest/flash-sale.js`.
+  - `tflint`: `elasticache.tf` used the uneditable `default.redis7` → owned `aws_elasticache_parameter_group`.
+  - helm: `tar: helm: Cannot open: File exists` (collided with the `helm/` dir) → install helm into `runner.temp`, call bare `helm`.
+  - Flaky tests: live `OutboxRelay` `@Scheduled` raced assertions → isolate `OutboxCleanupTest` (relay parked `outbox.relay.delay=1h`), 30s await on the publish test.
+  - `sigstore/cosign-installer@v4` doesn't exist (`uses:` resolve at setup regardless of `if:`) → `@v3`; `fail-fast: false` on the image matrix.
+  - Image-ref casing (`ghcr.io/Rajji01/...`) → a step sets `IMAGE` from a lowercased owner (OCI refs must be lowercase).
+  - Image CVEs (Trivy, fixable HIGH/CRITICAL): pom property overrides for Boot-managed deps (`jackson-bom` 2.21.7, `netty` 4.1.137.Final, `tomcat` 10.1.59, `postgresql` 42.7.12, `httpcore5` 5.4.3) + `<dependencyManagement>` for the kafka-clients-pinned ones NOT Boot-managed (`at.yawk.lz4:lz4-java` 1.11.4, `snappy-java` 1.1.10.9). `spring-webmvc` (Spring-7-only fix) triaged in `/.trivyignore`.
+  - Backup hygiene: nightly `pg_dump` now writes `.part` + atomic `mv`, so a failed dump never looks like a good backup.
+- **OutboxRelay (open, low priority):** `publishPending()` holds its `@Transactional` across the Kafka `send().get(5s)`; bounded (returns on first failure) but move broker I/O out of the DB transaction if the Hikari pool is ever pressured.
+- **Spring Boot 4 / Spring 7 upgrade (open):** the proper fix for the triaged `spring-webmvc` CVEs and a chance to drop the pom CVE-patch overrides. A major upgrade — plan and test deliberately.
 
 ## 5. How to keep this file true
 1. Every walk: update sections 1–4 **in the same commit** as the change.

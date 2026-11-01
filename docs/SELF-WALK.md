@@ -311,6 +311,12 @@ Once the ref was lowercase, Trivy actually scanned and failed with **14 fixable 
 
 Walk 12 (cont. 3) lesson: **a version property only works if the BOM declares it.** `jackson-bom`/`netty`/`tomcat`/`postgresql`/`httpcore5` are Spring-Boot-managed, so a property override moved them; `lz4-java` and `snappy-java` are pinned by `kafka-clients` itself and Boot doesn't manage them, so the property was silently ignored (the jars stayed vulnerable) until they were forced through `<dependencyManagement>`. Verify the override actually changed the jar, don't assume.
 
+And one more, cont. 5: even the `<dependencyManagement>` pin missed `lz4-java` at first because I used the conventional coordinate `org.lz4:lz4-java`; the jar is actually published/declared as **`at.yawk.lz4:lz4-java`** (what Trivy and the jar's own POM report), so the pin didn't match. `snappy-java` cleared because its coordinate *did* match. Lesson: **pin the exact coordinate the tooling reports, not the one you remember.**
+
+### Outcome — the pipeline is green
+
+Run `41297074849` (2026-11-01) is the first **fully green** `master` run since Walk 8 switched CI on there: tests, lint/tflint, k6, validate (kustomize/kyverno/promtool/helm), terraform, and all four image builds + Trivy scan + SBOM pass; `Pin prod overlay` stays skipped (main-only). It took **eight** chained fixes — each one only visible after the previous unblocked the job behind it (setup → build → scan → each dependency). The meta-lesson of Walk 12: a long-dark pipeline doesn't have one bug, it has a stack of them, and "green" is the only signal that you reached the bottom.
+
 The first four are patched by overriding Spring Boot's managed versions to the exact fixed releases Trivy named (surgical, reversible once a Boot patch ships them). The spring-webmvc pair has no fix below Spring 7, so it is a *documented, scoped* accept in `.trivyignore` (new CVEs still fail the build) with the Boot 4 upgrade tracked in `STATE.md` §4 — not a blanket mute.
 
 Walk 12 (cont. 2) lessons:

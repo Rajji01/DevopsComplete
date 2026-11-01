@@ -21,8 +21,10 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 **Lesson:** har fix agle red ko unmask karta hai; scanner jo ref parse na kare = kuch scan nahi hua; transitive CVEs BOM pe patch karo, sirf genuinely-unfixable ko (documented) triage.
 **Verify:** sab push → CI poll. pom override low-risk (patch bumps) par Docker verify memory se reap hua → CI test/build job verifier. Docs synced: STATE §4+header, SELF-WALK Walk 12 (+cont.+cont.2), ye entry.
 **Cont. 3:** 1st CVE fix ke baad **inventory image GREEN + test job GREEN** (overrides compatible). Par 3 Kafka services (order/notification/payment) mein 5 aur CVEs nikle — Kafka compression (lz4-java→1.11.4, snappy-java→1.1.10.9) + httpcore5/-h2→5.4.3. 3 aur pom overrides add kiye. (inventory pass hua kyunki uska Kafka client nahi.)
-**Cont. 4:** httpcore5 override kaam kiya, par lz4-java/snappy-java property override **no-op** — ye kafka-clients pin karta hai, Boot manage nahi karta. `<dependencyManagement>` se force kiya (lz4-java 1.11.4, snappy-java 1.1.10.9). Lesson: property tabhi chalta hai jab BOM usse declare kare — verify karo jar sach mein badla.
-**Pending:** CI green confirm; baaki STATE §4 (+ Boot-4 upgrade).
+**Cont. 4–5:** httpcore5 override chala, par lz4/snappy property **no-op** (kafka-clients pin karta hai, Boot nahi) → `<dependencyManagement>`. snappy clear hua par lz4 abhi bhi purana — kyunki iska asli coordinate **`at.yawk.lz4:lz4-java`** hai (mera `org.lz4` guess match nahi hua; Trivy/jar wahi batate hain) → dono coordinates se pin kiya.
+**✅ RESOLVED — shopflow CI FULLY GREEN on master** (run `41297074849`): tests, lint/tflint, k6, validate(kustomize/kyverno/promtool/helm), terraform, 4 image builds + Trivy + SBOM — sab pass. (`Pin prod overlay` skipped = main-only.) Walk 8 ne master pe CI on kiya tha; uske baad **pehli full-green**.
+**Lessons:** har fix agle red ko unmask karta hai; scanner jo ref parse na kare = kuch scan nahi hua; version property tabhi chalta jab BOM declare kare, warna `<dependencyManagement>`; coordinate exactly wahi lo jo Trivy/jar bataye; har override ke baad verify karo jar sach mein badla.
+**Pending (open):** STATE §4 — OutboxRelay long-tx (low-pri), Spring Boot 4 upgrade (spring-webmvc triage hatane ko), + purane items (rate-limit, Schema Registry, chaos, RefundFailed, orphaned-saga, SLI slow-4xx).
 
 ---
 
