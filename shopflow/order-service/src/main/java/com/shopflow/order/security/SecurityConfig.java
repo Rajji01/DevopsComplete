@@ -3,6 +3,7 @@ package com.shopflow.order.security;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -22,6 +23,7 @@ public class SecurityConfig {
     @Bean
     SecurityFilterChain filterChain(HttpSecurity http, JwtRolesConverter rolesConverter) throws Exception {
         return http
+                .cors(Customizer.withDefaults())         // honour the CorsConfigurationSource bean (CorsConfig) — dev only
                 .csrf(csrf -> csrf.disable())           // no cookies/session -> no CSRF surface
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth

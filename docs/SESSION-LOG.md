@@ -6,6 +6,20 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-01 — CLI (Opus 4.8) — Labs system setup (interactive + organized)
+**Branch:** `master` (in-sync).
+**Context:** Abhishek wants labs har dimension pe (debugger/coder/DevOps/HLD/LLD/Java/prod-debug/React+Java/AWS/interview/scenario/comprehension), **break→samjho→tod→jod** method, interactive (Postman + React+Spring), aur **har cheez ki specific-honest entry md files mein** (ek file mein sab kuch nahi; intent sahi ho).
+**Hua:**
+- `docs/INDEXING-HIBERNATE.md` — pehla **example topic** full lab (indexing + JPA: notes+diagrams+snippets+psql labs). Baaki topics isi template pe.
+- `labs/ShopFlow.postman_collection.json` — **live**: 6 prod-style labs (idempotency, oversell-concurrency, ownership/IDOR, rate-limit, validation, inventory reserve) real stack pe, auth + assertions ke saath.
+- `labs/README.md` — **Labs & Mastery hub**: har dimension → material + ✅live/🚧planned status, pedagogy, roadmap. INDEX + README entries specific+honest ki.
+**React console ✅ (CORS ok mila to bana diya):** dev-CORS order-service (`CorsConfig` + `.cors()`) + inventory-service (`WebCorsConfig`) pe (localhost origins only, Bearer so no credentials; `app.cors.allowed-origin-patterns` se override). Keycloak realm pehle se `webOrigins:*` → login browser se chalta hai, koi change nahi. `labs/lab-console.html` — single-file React (CDN, no build), 6 panels (idempotency, oversell-tally, IDOR, rate-limit, validation, reserve-idem), Run → response+metric on screen. README run-steps ke saath.
+**Verify:** CI (shopflow test job) order/inventory CORS compile+test verify karega; console/CORS ka live run user ke `make up` pe (yahan JDK21/Docker-memory se full run nahi). 
+**Next:** React+Spring **comprehension mode** (Google-style) + LLD/HLD deep-dives + aur scenario labs.
+**Intent note:** overclaim nahi — status sach (✅ live / 🚧 planned).
+
+---
+
 ## 2026-11-01 — CLI (Opus 4.8) — Walk 14 (SLI jise uska apna rate limiter fool kar sakta tha)
 **Branch:** `master` (in-sync). STATE §4 ka documented open item band kiya (ab promtool Docker se chalta hai).
 **Found:** checkout SLI "bad" = `5xx + slow non-5xx`, denominator = **saare** POST. To flash-sale ke **429 burst** (rate limiter ka kaam) do tarah se galat: slow 429 → "bad" (budget falsely jalata), aur har 429 denominator mein (ratio dilute → real 5xx chhupata). SLI ko apni hi protection fool kar sakti thi — dono directions mein.

@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ShopFlow Lab Console</title>
+<!--
+  Local React console for the ShopFlow labs. Hit the real running stack and watch each
+  prod-style scenario on screen.
+
+  RUN:
+    1) make up                      # start the stack
+    2) cd labs && python -m http.server 5500
+    3) open http://localhost:5500/lab-console.html   (origin http://localhost:5500 is CORS-allowed)
+    4) click "Login alice" (Keycloak webOrigins already allows the browser), then Run any lab.
+
+  CORS is enabled for localhost on order-service + inventory-service (dev only); Keycloak's
+  shopflow-web client already allows browser origins. Nothing here needs CORS to be disabled.
+-->
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js" crossorigin></script>
+<style>
+  :root { --bg:#0f1221; --card:#191d33; --ink:#e7e9f3; --mut:#9aa0bf; --ok:#3fb950; --bad:#f85149; --warn:#d29922; --acc:#5b8cff; --line:#2a2f4a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif; }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2; }
+  h1 { font-size:18px; margin:0 0 4px; } .sub { color:var(--mut); font-size:12px; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
+  input { background:#0c0f1d; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:6px 8px; font:12px ui-monospace,monospace; }
+  button { background:var(--acc); color:#fff; border:0; border-radius:8px; padding:7px 12px; font-weight:600; cursor:pointer; }
+  button.ghost { background:#262b47; color:var(--ink); } button:disabled { opacity:.5; cursor:not-allowed; }
+  main { padding:18px 20px; display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:16px; max-width:1200px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
+  .card h2 { font-size:15px; margin:0 0 2px; } .card .why { color:var(--mut); font-size:12px; margin:0 0 10px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  pre { background:#0c0f1d; border:1px solid var(--line); border-radius:8px; padding:10px; overflow:auto; max-height:220px; font:12px ui-monospace,monospace; margin:6px 0 0; white-space:pre-wrap; }
+  .pill { padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; }
+  .pill.ok{background:rgba(63,185,80,.15);color:var(--ok)} .pill.bad{background:rgba(248,81,73,.15);color:var(--bad)} .pill.warn{background:rgba(210,153,34,.15);color:var(--warn)}
+  .tally { display:flex; gap:10px; flex-wrap:wrap; margin:8px 0; }
+  .tally div { background:#0c0f1d; border:1px solid var(--line); border-radius:8px; padding:8px 12px; text-align:center; min-width:70px; }
+  .tally b { display:block; font-size:20px; } .tally span { color:var(--mut); font-size:11px; }
+  code { color:var(--acc); } .tag{font-size:10px;color:var(--mut);border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin-left:6px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState } = React;
+
+// ---- tiny API helper ----
+async function hit(method, base, path, { token, body, headers } = {}) {
+  const t0 = performance.now();
+  const h = Object.assign({ "Content-Type": "application/json" }, headers || {});
+  if (token) h["Authorization"] = "Bearer " + token;
+  let res, text, json;
+  try {
+    res = await fetch(base + path, { method, headers: h, body: body ? JSON.stringify(body) : undefined });
+    text = await res.text();
+    try { json = text ? JSON.parse(text) : null; } catch { json = text; }
+    return { status: res.status, ms: Math.round(performance.now() - t0), json };
+  } catch (e) {
+    return { status: 0, ms: Math.round(performance.now() - t0), json: { error: String(e), hint: "CORS/stack down? make up chal raha hai? origin http://localhost:* hai?" } };
+  }
+}
+const pill = (s) => s === 0 ? "bad" : s < 300 ? "ok" : s < 500 ? "warn" : "bad";
+function Result({ r }) {
+  if (!r) return null;
+  return (<div><span className={"pill " + pill(r.status)}>HTTP {r.status || "ERR"}</span> <span className="tag">{r.ms} ms</span>
+    <pre>{typeof r.json === "string" ? r.json : JSON.stringify(r.json, null, 2)}</pre></div>);
+}
+
+function App() {
+  const [order, setOrder] = useState("http://localhost:8081");
+  const [inv, setInv] = useState("http://localhost:8082");
+  const [kc, setKc] = useState("http://localhost:8180");
+  const [token, setToken] = useState("");
+  const [who, setWho] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function login(user) {
+    setBusy(true);
+    try {
+      const res = await fetch(kc + "/realms/shopflow/protocol/openid-connect/token", {
+        method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "password", client_id: "shopflow-web", username: user, password: user }),
+      });
+      const j = await res.json();
+      if (j.access_token) { setToken(j.access_token); setWho(user); }
+      else alert("login fail: " + JSON.stringify(j));
+    } catch (e) { alert("login error (Keycloak up? CORS?): " + e); }
+    setBusy(false);
+  }
+
+  const ctx = { order, inv, token };
+  return (<>
+    <header>
+      <h1>🧪 ShopFlow Lab Console</h1>
+      <div className="sub">Real stack pe prod-style labs — Run dabao, response + metric yahin dikhega. Method: break → samjho → tod → jod.</div>
+      <div className="bar">
+        <button onClick={() => login("alice")} disabled={busy}>Login alice (customer)</button>
+        <button className="ghost" onClick={() => login("bob")} disabled={busy}>Login bob (support)</button>
+        {who ? <span className="pill ok">logged in: {who}</span> : <span className="pill warn">not logged in</span>}
+        <input style={{width:200}} value={order} onChange={e=>setOrder(e.target.value)} title="order-service" />
+        <input style={{width:200}} value={inv} onChange={e=>setInv(e.target.value)} title="inventory-service" />
+        <input style={{width:200}} value={kc} onChange={e=>setKc(e.target.value)} title="keycloak" />
+      </div>
+    </header>
+    <main>
+      <Idempotency ctx={ctx} />
+      <Oversell ctx={ctx} />
+      <Idor ctx={ctx} />
+      <RateLimit ctx={ctx} />
+      <Validation ctx={ctx} />
+      <ReserveIdem ctx={ctx} />
+    </main>
+  </>);
+}
+
+// Lab 1: Idempotency-Key
+function Idempotency({ ctx }) {
+  const [a, setA] = useState(null), [b, setB] = useState(null), [key, setKey] = useState("");
+  async function run() {
+    const k = "lab1-" + Date.now(); setKey(k);
+    const r1 = await hit("POST", ctx.order, "/api/v1/orders", { token: ctx.token, headers: { "Idempotency-Key": k }, body: { sku: "IPHONE-15", quantity: 1 } });
+    setA(r1); setB(null);
+    const r2 = await hit("POST", ctx.order, "/api/v1/orders", { token: ctx.token, headers: { "Idempotency-Key": k }, body: { sku: "IPHONE-15", quantity: 1 } });
+    setB(r2);
+  }
+  const same = a && b && a.json && b.json && a.json.id === b.json.id;
+  return (<div className="card">
+    <h2>1 · Idempotency-Key <span className="tag">retry-safe create</span></h2>
+    <p className="why">Same key do baar → ek hi order. Pehla <code>201</code>, replay <code>200</code> (wahi id).</p>
+    <div className="row"><button onClick={run} disabled={!ctx.token}>Run (create + replay)</button>{same && <span className="pill ok">same order ✓ (no duplicate)</span>}</div>
+    <b className="tag">1st (expect 201)</b><Result r={a} />
+    <b className="tag">replay same key (expect 200)</b><Result r={b} />
+  </div>);
+}
+
+// Lab 2: Oversell under concurrency
+function Oversell({ ctx }) {
+  const [n, setN] = useState(30), [res, setRes] = useState(null), [busy, setBusy] = useState(false);
+  async function run() {
+    setBusy(true);
+    const calls = Array.from({ length: n }, () => hit("POST", ctx.order, "/api/v1/orders", { token: ctx.token, body: { sku: "PS5-SLIM", quantity: 1 } }));
+    const out = await Promise.all(calls);
+    const t = { CONFIRMED: 0, REJECTED: 0, other: 0, err: 0 };
+    out.forEach(r => { const s = r.json && r.json.status; if (t[s] !== undefined) t[s]++; else if (r.status === 0) t.err++; else t.other++; });
+    setRes(t); setBusy(false);
+  }
+  return (<div className="card">
+    <h2>2 · Oversell under load <span className="tag">concurrency</span></h2>
+    <p className="why">Stock 3 hi hai. {n} parallel buyers → <b>exactly 3 CONFIRMED</b>, baaki REJECTED, kabhi oversell nahi. (Reset: <code>make down && make up</code>.)</p>
+    <div className="row"><button onClick={run} disabled={!ctx.token||busy}>{busy?"firing...":"Fire "+n+" parallel"}</button>
+      <input type="number" style={{width:70}} value={n} onChange={e=>setN(+e.target.value)} /></div>
+    {res && <div className="tally">
+      <div><b style={{color:"var(--ok)"}}>{res.CONFIRMED}</b><span>CONFIRMED</span></div>
+      <div><b>{res.REJECTED}</b><span>REJECTED</span></div>
+      <div><b style={{color:"var(--warn)"}}>{res.other}</b><span>429/other</span></div>
+      <div><b style={{color:"var(--bad)"}}>{res.err}</b><span>error</span></div>
+    </div>}
+    {res && <span className={"pill "+(res.CONFIRMED<=3?"ok":"bad")}>{res.CONFIRMED<=3?"no oversell ✓ (<=3)":"OVERSOLD! ✗"}</span>}
+  </div>);
+}
+
+// Lab 3: Ownership / IDOR
+function Idor({ ctx }) {
+  const [mine, setMine] = useState(null), [other, setOther] = useState(null);
+  async function run() {
+    const c = await hit("POST", ctx.order, "/api/v1/orders", { token: ctx.token, body: { sku: "PIXEL-9", quantity: 1 } });
+    const id = c.json && c.json.id;
+    setMine(await hit("GET", ctx.order, "/api/v1/orders/" + id, { token: ctx.token }));
+    setOther(await hit("GET", ctx.order, "/api/v1/orders/999999", { token: ctx.token }));
+  }
+  return (<div className="card">
+    <h2>3 · Ownership / IDOR <span className="tag">OWASP API#1</span></h2>
+    <p className="why">Apna order <code>200</code>; dusre ki id <code>404</code> (403 nahi — id leak na ho).</p>
+    <div className="row"><button onClick={run} disabled={!ctx.token}>Run</button></div>
+    <b className="tag">my order (expect 200)</b><Result r={mine} />
+    <b className="tag">id 999999 (expect 404)</b><Result r={other} />
+  </div>);
+}
+
+// Lab 4: Rate limit
+function RateLimit({ ctx }) {
+  const [n, setN] = useState(80), [res, setRes] = useState(null), [busy, setBusy] = useState(false);
+  async function run() {
+    setBusy(true);
+    const out = await Promise.all(Array.from({ length: n }, () => hit("POST", ctx.order, "/api/v1/orders", { token: ctx.token, body: { sku: "AIRPODS-PRO", quantity: 1 } })));
+    const t = { ok: 0, limited: 0, err: 0 };
+    out.forEach(r => { if (r.status === 429) t.limited++; else if (r.status >= 200 && r.status < 300) t.ok++; else t.err++; });
+    setRes(t); setBusy(false);
+  }
+  return (<div className="card">
+    <h2>4 · Rate limit <span className="tag">429</span></h2>
+    <p className="why">Order endpoint rate-limited (50/s per pod, fail-fast). {n} fast → kuch <code>429</code>.</p>
+    <div className="row"><button onClick={run} disabled={!ctx.token||busy}>{busy?"firing...":"Fire "+n+" fast"}</button>
+      <input type="number" style={{width:70}} value={n} onChange={e=>setN(+e.target.value)} /></div>
+    {res && <div className="tally">
+      <div><b style={{color:"var(--ok)"}}>{res.ok}</b><span>2xx</span></div>
+      <div><b style={{color:"var(--warn)"}}>{res.limited}</b><span>429</span></div>
+      <div><b style={{color:"var(--bad)"}}>{res.err}</b><span>error</span></div>
+    </div>}
+    {res && <span className={"pill "+(res.limited>0?"ok":"warn")}>{res.limited>0?"rate limiter kicked in ✓":"no 429 (aur fast/zyada try karo)"}</span>}
+  </div>);
+}
+
+// Lab 5: Validation
+function Validation({ ctx }) {
+  const [r, setR] = useState(null);
+  async function run() { setR(await hit("POST", ctx.order, "/api/v1/orders", { token: ctx.token, body: { sku: "", quantity: 0 } })); }
+  return (<div className="card">
+    <h2>5 · Validation <span className="tag">400 problem+json</span></h2>
+    <p className="why">quantity 1..100, sku not blank. Bad body → <code>400</code> + <code>errors</code> list.</p>
+    <div className="row"><button onClick={run} disabled={!ctx.token}>Send bad body</button>
+      {r && <span className={"pill "+(r.status===400?"ok":"bad")}>{r.status===400?"rejected ✓":"unexpected"}</span>}</div>
+    <Result r={r} />
+  </div>);
+}
+
+// Lab 6: Inventory reserve idempotency (direct, no auth)
+function ReserveIdem({ ctx }) {
+  const [a, setA] = useState(null), [b, setB] = useState(null), [c, setC] = useState(null);
+  async function run() {
+    const ref = "lab6-" + Date.now();
+    setA(await hit("POST", ctx.inv, "/api/v1/reservations", { body: { orderRef: ref, sku: "PIXEL-9", quantity: 1 } }));
+    setB(await hit("POST", ctx.inv, "/api/v1/reservations", { body: { orderRef: ref, sku: "PIXEL-9", quantity: 1 } }));
+    setC(await hit("DELETE", ctx.inv, "/api/v1/reservations/" + ref));
+  }
+  return (<div className="card">
+    <h2>6 · Reserve idempotency <span className="tag">inventory (direct)</span></h2>
+    <p className="why">Same orderRef do baar → wahi reservation (<code>201</code>), stock ek hi baar ghata. Phir release <code>204</code>.</p>
+    <div className="row"><button onClick={run}>Run (reserve x2 + release)</button></div>
+    <b className="tag">reserve (201)</b><Result r={a} />
+    <b className="tag">reserve again (201, idempotent)</b><Result r={b} />
+    <b className="tag">release (204)</b><Result r={c} />
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

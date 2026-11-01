@@ -11,7 +11,7 @@ Ye ShopFlow repo ko ek **interactive learning lab** banata hai. Maqsad: har dime
 | Tareeka | Status | Kya |
 |---|---|---|
 | **Postman** | ✅ live | [`ShopFlow.postman_collection.json`](ShopFlow.postman_collection.json) — import karo, `make up` chalao, `0. Auth > Get token` chalao, phir har lab folder hit karo. Concurrency labs (oversell, rate-limit) Collection Runner mein N iterations. |
-| **React lab-console** | 🚧 next | `labs/lab-console.html` (single-file React, CDN) — har lab ka apna panel, "Run" dabao → API hit → **response + metric screen pe**. Local CORS services pe enable kiya ja raha hai (sirf dev). |
+| **React lab-console** | ✅ live | [`lab-console.html`](lab-console.html) (single-file React, CDN — no build). Chalao: `make up`, phir `cd labs && python -m http.server 5500`, phir `http://localhost:5500/lab-console.html` kholo → **Login alice** → koi bhi lab **Run** → response + metric screen pe. (Dev CORS order/inventory pe enabled; Keycloak `webOrigins:*` pehle se.) |
 | **psql / EXPLAIN** | ✅ live | DB-internal labs (index plan, locks) [`../docs/INDEXING-HIBERNATE.md`](../docs/INDEXING-HIBERNATE.md) ke andar. |
 | **CLI (curl/k6/kubectl)** | ✅ live | break/fix labs [`../docs/LABS.md`](../docs/LABS.md), build-it [`../docs/PRACTICE-LABS.md`](../docs/PRACTICE-LABS.md). |
 
@@ -27,7 +27,7 @@ Ye ShopFlow repo ko ek **interactive learning lab** banata hai. Maqsad: har dime
 | **LLD (class/patterns)** | [`../docs/START-HERE.md`](../docs/START-HERE.md) code-reading order, [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) | — | 🚧 LLD deep-dive (like the indexing one) planned |
 | **DevOps / CI-CD / k8s / IaC** | interview-notes [04–09], [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) §12/13, [`../docs/SELF-WALK.md`](../docs/SELF-WALK.md) Walks 8–14 | — | ✅ |
 | **Observability / SRE** | [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) §11, [`../docs/runbooks/`](../docs/runbooks/README.md) | — | ✅ |
-| **React + Java** | Spring APIs (order/inventory) | React lab-console | 🚧 next (CORS + console) |
+| **React + Java** | Spring APIs (order/inventory) | React lab-console (6 panels, live) | ✅ console live (dev CORS) |
 | **AWS services** | [`../docs/interview-notes/09-aws-production.md`](../docs/interview-notes/09-aws-production.md), [`../infra/terraform/aws/`](../infra/terraform/aws/README.md) | — | ✅ read-only; live labs need an AWS account |
 | **Interview Q&A** | [`../docs/interview-notes/`](../docs/interview-notes/README.md) (01–12 + rapid-fire) | — | ✅ |
 | **Comprehension round (Google-style)** | [`../docs/comprehension/`](../docs/comprehension/README.md) (15 topics) | React+Spring comprehension mode | 🚧 planned |
@@ -42,7 +42,7 @@ Ye ShopFlow repo ko ek **interactive learning lab** banata hai. Maqsad: har dime
 6. **Inventory reserve idempotency** — direct inventory-service, same orderRef → same reservation.
 
 ## Roadmap (incrementally banayenge, har ek apni specific entry ke saath)
-- React lab-console (local CORS) — har Postman lab ka visual panel + metric.
+- ~~React lab-console (local CORS)~~ ✅ done (`lab-console.html`, 6 panels).
 - React+Spring **comprehension mode** (Google-style: passage → sawaal → code dikhao → chalao).
 - LLD deep-dive (INDEXING-HIBERNATE.md ki tarah) — design patterns + class-level.
 - HLD scenario labs (design a feature → trade-offs).
