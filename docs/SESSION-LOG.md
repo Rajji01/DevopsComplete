@@ -12,7 +12,7 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 **Fix:** valid events = sirf 2xx ya 5xx (`status=~"[25].."`), bad = `5xx + slow-2xx`; 4xx/429 **dono** (numerator+denominator) se excluded. Alert test **#7** add kiya (slow-429 burst, no 5xx → **no page**) — purane SLI pe fail hota, naye pe pass.
 **Verify:** `promtool check rules` + `test rules` **Docker mein green** (incl #7). CI validate-manifests job bhi promtool chalata hai → wahan bhi confirm hoga.
 **Lesson:** request-based SLI mein "valid events" define karo — client 4xx + apna 429 throttling dono sides se bahar — warna protection khud budget jalati ya chhupati hai.
-**Verify (CI):** push → shopflow CI poll.
+**✅ Verify (CI):** shopflow run `41302098109` green — validate-manifests job ne refined rules + test #7 promtool se pass kiya.
 
 ---
 
