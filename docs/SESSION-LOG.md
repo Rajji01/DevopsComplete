@@ -16,7 +16,7 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ## 2026-11-01 — CLI (Opus 4.8) — Walk 20 (refund that could never fail — money correctness bug)
 **Branch:** `master`. **Found:** `payment-service` `OrderConfirmedListener.refund` `gateway.refund()` ka **Result ignore** karta tha — unconditionally REFUNDED mark + PaymentRefunded emit. Fake gateway (always ok) ne chhupaya; real processor decline kare to order galat REFUNDED, paisa wapas nahi, koi alert nahi → silent money bug. **Fix:** Result check; decline pe **`PaymentRefundFailed`** emit, payment `CAPTURED` rahe (redelivery retry), order `REFUND_PENDING` rahe (`OrdersStuckConfirmed` alert pehle se REFUND_PENDING count karta → human). order-service `onRefundFailed` (record + `orders.refund.failed` metric). `payment.refund-limit` (test profile) se PS5 refund decline. Test existing class mein method (`declinedRefundPublishesRefundFailedAndKeepsPaymentCaptured`) — **second @SpringBootTest context avoid** kiya (do embedded Kafka = contention, pehla attempt mein existing tests timeout hue the). STATE §4 refund open-item **resolved**.
-**Verify:** payment-service test Docker (JDK 21) + CI. order-service change chhota (switch case + onRefundFailed).
+**✅ Verify:** payment-service test Docker (JDK 21) green (0 fail; decline log confirmed) + **CI run `41310157870` green**. order-service change chhota (switch case + onRefundFailed).
 
 ---
 
