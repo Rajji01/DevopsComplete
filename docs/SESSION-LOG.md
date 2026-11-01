@@ -6,6 +6,14 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## ▶ RESUME HERE (night study session) — 2026-11-01
+**Mode:** GUIDED STUDY. Autonomous self-walk **PAUSED** — sirf tab chalao jab Abhishek literally "self walk" bole. Abhishek code padhega; Claude ka kaam: **explain → guide → quiz/test** (har topic 2-min explain → files padho → 2-3 sawaal → agla).
+**State:** sab green + in-sync (HEAD `924e456`); dono CI workflows green; Walks done **up to 21**. Background/Docker sab band.
+**Start topic:** **E — app correctness** (interview gold): refund-decline saga (Walk 20 → `payment-service/OrderConfirmedListener.refund`, `order-service/.../OrderService.onRefundFailed`), outbox persist (Walk 21 → `shopflow-outbox/OutboxEvent`), flaky-test fix (Walk 11 → `OutboxCleanupTest`). Self-test interactive: `labs/comprehension.html`.
+**Study map (jo humne banaya):** neeche ke entries + `SELF-WALK.md` (Walks 8–21, har change ki poori story = textbook). Deep-dives: `INDEXING-HIBERNATE.md`, `LLD-DESIGN-PATTERNS.md`, `HLD-SYSTEM-DESIGN.md`, `VISUAL-FLOWS.md`.
+
+---
+
 ## 2026-11-01 — CLI (Opus 4.8) — Walk 15+16+17 (quiet-files sweep + policy init-container gaps)
 **Branch:** `master` (in-sync).
 **Walk 15 (sweep, no-change clean):** docker-compose (`localhost:host-gateway` trick correct — multi-address fallback), Jenkinsfile (casing-trap se bacha — `ghcr.io/rajji01` lowercase, `.trivyignore` root pe), argocd prod (sound). Trivial: prod external-secret comment "three keys"→"four keys".
