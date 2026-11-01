@@ -14,7 +14,7 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 - `labs/ShopFlow.postman_collection.json` — **live**: 6 prod-style labs (idempotency, oversell-concurrency, ownership/IDOR, rate-limit, validation, inventory reserve) real stack pe, auth + assertions ke saath.
 - `labs/README.md` — **Labs & Mastery hub**: har dimension → material + ✅live/🚧planned status, pedagogy, roadmap. INDEX + README entries specific+honest ki.
 **React console ✅ (CORS ok mila to bana diya):** dev-CORS order-service (`CorsConfig` + `.cors()`) + inventory-service (`WebCorsConfig`) pe (localhost origins only, Bearer so no credentials; `app.cors.allowed-origin-patterns` se override). Keycloak realm pehle se `webOrigins:*` → login browser se chalta hai, koi change nahi. `labs/lab-console.html` — single-file React (CDN, no build), 6 panels (idempotency, oversell-tally, IDOR, rate-limit, validation, reserve-idem), Run → response+metric on screen. README run-steps ke saath.
-**Verify:** CI (shopflow test job) order/inventory CORS compile+test verify karega; console/CORS ka live run user ke `make up` pe (yahan JDK21/Docker-memory se full run nahi). 
+**✅ Verify:** shopflow CI run `41306433468` green — order/inventory CORS compile + saare tests + image builds + Trivy sab pass. Console ab 8 panels (optimistic-lock + async-saga bhi). Live browser run user ke `make up` pe (yahan JDK21/Docker-memory se full stack run nahi).
 **Next:** React+Spring **comprehension mode** (Google-style) + LLD/HLD deep-dives + aur scenario labs.
 **Intent note:** overclaim nahi — status sach (✅ live / 🚧 planned).
 
