@@ -139,6 +139,17 @@ public class OrderService {
         });
     }
 
+    /**
+     * Refund was declined by the processor (PaymentRefundFailed). We do NOT advance the order: it stays
+     * REFUND_PENDING (the money did not come back), and the OrdersStuckConfirmed gauge/alert — which
+     * counts REFUND_PENDING — pages a human to resolve it. We only record that it happened.
+     */
+    public void onRefundFailed(String orderRef, String reason) {
+        orderRepository.findByOrderRef(orderRef).filter(Order::isRefundPending).ifPresent(order ->
+                log.warn("refund failed for order {} ({}); stays REFUND_PENDING for manual handling", orderRef, reason));
+        meterRegistry.counter("orders.refund.failed").increment();
+    }
+
     /** Saga close for a refund: money is back, so release the stock and mark REFUNDED. Status-guarded. */
     public void onPaymentRefunded(String orderRef) {
         orderRepository.findByOrderRef(orderRef).filter(Order::isRefundPending).ifPresent(order -> {

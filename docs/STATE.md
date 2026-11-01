@@ -2,7 +2,7 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-11-01 (Walk 19: least-privilege on the Kafka IRSA role; Walk 18 Ansible; 16/17 policies init-coverage; 15 sweep). Prior: 14 (SLI), 13 (basics ci.yml), 12 (shopflow CI green). Branch: `master`.
+Last updated: 2026-11-01 (Walk 20: refund decline path — gateway Result was ignored; Walk 19 IRSA least-privilege; 18 Ansible; 16/17 policies). Prior: 14 (SLI), 13 (ci.yml), 12 (CI green). Branch: `master`.
 
 ## 1. What is in the repo
 
@@ -36,6 +36,7 @@ PENDING too long ────────────────reconciler (gra
 CONFIRMED/REFUND_PENDING too long ──▶ (NOT auto-cancelled) ──▶ gauge orders_stuck_confirmed + OrdersStuckConfirmed alert
 ```
 Rule: a state where **no money has moved** (PENDING, FAILED) is safe to auto-cancel; a state where it **might have** (CONFIRMED, REFUND_PENDING) is only alerted on.
+Refund decline (Walk 20): if payment-service's gateway declines the refund, it emits `PaymentRefundFailed`, the payment stays `CAPTURED` and the order stays `REFUND_PENDING` (never faked as REFUNDED) — the same stuck-alert pages a human, and a redelivered `OrderRefundPending` retries.
 
 ## 2. Approach matrix: basic ↔ advanced (both kept, on purpose)
 
@@ -80,7 +81,7 @@ Rule: a state where **no money has moved** (PENDING, FAILED) is safe to auto-can
 - Schema Registry (Avro/Protobuf) for event contracts; Testcontainers for PostgreSQL-only SQL.
 - Kyverno signature policy is written but needs a real signed image to test end to end.
 - Chaos experiments (kill a broker / RDS failover) under the k6 load test.
-- Refund gateway failures (real processor) — the fake one always succeeds; a `RefundFailed` path + alert is unmodelled.
+- Refund gateway failures — **resolved (Walk 20):** `OrderConfirmedListener.refund` now checks the gateway `Result` (it was ignored — a declined refund was faked as success). On decline it emits `PaymentRefundFailed`, leaves the payment `CAPTURED` and the order `REFUND_PENDING` (so the existing `OrdersStuckConfirmed` alert pages a human); a redelivery retries. `payment.refund-limit` (set in the test profile) makes the fake gateway decline a PS5 refund. Verified by `PaymentServiceApplicationTests.declinedRefundPublishesRefundFailedAndKeepsPaymentCaptured`.
 - Orchestrated saga timeout for genuinely orphaned CONFIRMED orders (currently alert-only, human decides).
 - SLO SLI — **resolved (Walk 14):** it counted slow 4xx/429 as "bad" and had 429s in the denominator. Redefined valid events as 2xx-or-5xx (`status=~"[25].."`), bad = `5xx + slow-2xx`; 4xx/429 excluded from both. Pinned by alert test #7 (slow-429 burst → no page). `promtool` verified in Docker.
 - **CI pipeline — FULLY GREEN on `master`** (Walk 8 turned it on there; Walks 11–12 fixed it; run `41297074849`, 2026-11-01). All jobs pass: tests, lint/tflint, k6, validate (kustomize/kyverno/promtool/helm), terraform, 4 image builds + Trivy scan + SBOM. `Pin prod overlay` stays skipped (main-only). Fixes, in the order found — each unmasked the next:

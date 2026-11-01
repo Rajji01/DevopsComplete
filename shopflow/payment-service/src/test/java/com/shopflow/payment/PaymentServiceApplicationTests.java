@@ -143,6 +143,23 @@ class PaymentServiceApplicationTests {
     }
 
     @Test
+    void declinedRefundPublishesRefundFailedAndKeepsPaymentCaptured() {
+        String orderRef = UUID.randomUUID().toString();
+        // capture a PS5 (54,990 < card-limit 100,000 -> charge ok)
+        kafkaTemplate.send("orders.events", orderRef, orderConfirmed(UUID.randomUUID(), orderRef, "PS5-SLIM", 1));
+        assertThat(awaitPaymentEvent(orderRef)).contains("\"type\":\"PaymentCaptured\"");
+
+        // refund requested, but 54,990 > refund-limit 50,000 (application-test.yml) -> processor declines.
+        // We must NOT fake success: PaymentRefundFailed, and the payment stays CAPTURED.
+        kafkaTemplate.send("orders.events", orderRef, orderEvent("OrderRefundPending", orderRef, "PS5-SLIM", 1));
+        assertThat(awaitPaymentEvent(orderRef))
+                .contains("\"type\":\"PaymentRefundFailed\"").contains("refund above the processor limit");
+
+        assertThat(payments.findByOrderRef(orderRef)).get()
+                .extracting(p -> p.getStatus()).isEqualTo(Payment.Status.CAPTURED);
+    }
+
+    @Test
     void refundIsIgnoredWhenThereIsNoCapturedPayment() {
         String orderRef = UUID.randomUUID().toString();
         // OrderRefundPending for an order payment-service never charged (e.g. it was REJECTED): no-op

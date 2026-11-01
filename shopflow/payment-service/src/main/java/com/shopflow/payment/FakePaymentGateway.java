@@ -10,9 +10,12 @@ import org.springframework.stereotype.Component;
 public class FakePaymentGateway implements PaymentGateway {
 
     private final BigDecimal limit;
+    private final BigDecimal refundLimit;
 
-    public FakePaymentGateway(@Value("${payment.card-limit:100000}") BigDecimal limit) {
+    public FakePaymentGateway(@Value("${payment.card-limit:100000}") BigDecimal limit,
+                              @Value("${payment.refund-limit:100000000}") BigDecimal refundLimit) {
         this.limit = limit;
+        this.refundLimit = refundLimit;
     }
 
     @Override
@@ -24,6 +27,10 @@ public class FakePaymentGateway implements PaymentGateway {
 
     @Override
     public Result refund(String orderRef, BigDecimal amount) {
-        return Result.ok();   // the fake processor always accepts refunds
+        // Refunds usually succeed; the default limit is effectively infinite. A low payment.refund-limit
+        // lets a test force the decline path so PaymentRefundFailed is exercised.
+        return amount.compareTo(refundLimit) > 0
+                ? Result.declined("refund above the processor limit (" + amount + " > " + refundLimit + ")")
+                : Result.ok();
     }
 }

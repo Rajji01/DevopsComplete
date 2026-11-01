@@ -21,4 +21,8 @@ public record PaymentEvent(UUID eventId, String type, String orderRef, BigDecima
     static PaymentEvent refunded(String orderRef, BigDecimal amount) {
         return new PaymentEvent(UUID.randomUUID(), "PaymentRefunded", orderRef, amount, null, Instant.now());
     }
+
+    static PaymentEvent refundFailed(String orderRef, BigDecimal amount, String reason) {
+        return new PaymentEvent(UUID.randomUUID(), "PaymentRefundFailed", orderRef, amount, reason, Instant.now());
+    }
 }

@@ -14,6 +14,12 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 **Verify:** push → shopflow CI (kyverno apply step) confirm karega. Gatekeeper CI-run nahi hota (OPA nahi) — correct-by-construction + documented.
 **Lesson:** gap mile to poora family grep karo — `spec.containers[*]` har jagah tha; jahan matter karta (image tag, privesc) fix, jahan nahi (probes) chhodo.
 
+## 2026-11-01 — CLI (Opus 4.8) — Walk 20 (refund that could never fail — money correctness bug)
+**Branch:** `master`. **Found:** `payment-service` `OrderConfirmedListener.refund` `gateway.refund()` ka **Result ignore** karta tha — unconditionally REFUNDED mark + PaymentRefunded emit. Fake gateway (always ok) ne chhupaya; real processor decline kare to order galat REFUNDED, paisa wapas nahi, koi alert nahi → silent money bug. **Fix:** Result check; decline pe **`PaymentRefundFailed`** emit, payment `CAPTURED` rahe (redelivery retry), order `REFUND_PENDING` rahe (`OrdersStuckConfirmed` alert pehle se REFUND_PENDING count karta → human). order-service `onRefundFailed` (record + `orders.refund.failed` metric). `payment.refund-limit` (test profile) se PS5 refund decline. Test existing class mein method (`declinedRefundPublishesRefundFailedAndKeepsPaymentCaptured`) — **second @SpringBootTest context avoid** kiya (do embedded Kafka = contention, pehla attempt mein existing tests timeout hue the). STATE §4 refund open-item **resolved**.
+**Verify:** payment-service test Docker (JDK 21) + CI. order-service change chhota (switch case + onRefundFailed).
+
+---
+
 ## 2026-11-01 — CLI (Opus 4.8) — Walk 19 (Terraform security: least-privilege Kafka IAM)
 **Branch:** `master`. **Sweep:** RDS (encrypted, not public, SG EKS-only, Multi-AZ/backups/deletion-protection) + External-Secrets IAM (secret-ARN scoped) + MSK ARNs (topics/groups scoped) — **sound**. **Finding:** kafka-clients IRSA policy `kafka-cluster:*Topic*` mein chupke **DeleteTopic/AlterTopic** aa rahe the → compromised pod apne event topic delete kar sakta. **Fix:** explicit least-privilege set (CreateTopic, DescribeTopic, DescribeTopicDynamicConfiguration, WriteData, ReadData) — Delete/Alter hata diye. `terraform fmt` clean; **CI run `feabbf9` green** (validate+tflint+sab jobs pass). Bonus: `ci-oidc.tf` GitHub-OIDC trust policy reviewed — `sub` StringEquals se repo+main pe pinned (classic wildcard vuln se bacha), sound. **Lesson:** IAM action wildcard linter ka blind spot — `*Topic*` "topic stuff" dikhta par destruction deta; verbs enumerate karo. (Resource scoping already achhi thi.)
 

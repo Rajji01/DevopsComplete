@@ -41,6 +41,7 @@ public class PaymentEventListener {
             case "PaymentCaptured" -> orderService.onPaymentCaptured(event.orderRef());
             case "PaymentFailed" -> orderService.onPaymentFailed(event.orderRef(), event.failureReason());
             case "PaymentRefunded" -> orderService.onPaymentRefunded(event.orderRef());
+            case "PaymentRefundFailed" -> orderService.onRefundFailed(event.orderRef(), event.failureReason());
             default -> log.warn("unknown payment event type {}", event.type());
         }
         processedEvents.save(new ProcessedEvent(event.eventId()));

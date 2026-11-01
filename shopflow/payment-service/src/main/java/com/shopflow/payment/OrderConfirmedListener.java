@@ -81,12 +81,24 @@ public class OrderConfirmedListener {
         payments.findByOrderRef(event.orderRef())
                 .filter(p -> p.getStatus() == Payment.Status.CAPTURED)
                 .ifPresent(payment -> {
-                    gateway.refund(payment.getOrderRef(), payment.getAmount());
-                    payment.markRefunded();
-                    outbox.publish(PaymentEvent.TOPIC, "Payment", payment.getOrderRef(),
-                            "PaymentRefunded", PaymentEvent.refunded(payment.getOrderRef(), payment.getAmount()));
-                    meterRegistry.counter("payments", "status", "REFUNDED").increment();
-                    log.info("refunded order {} amount {}", payment.getOrderRef(), payment.getAmount());
+                    var result = gateway.refund(payment.getOrderRef(), payment.getAmount());
+                    if (result.approved()) {
+                        payment.markRefunded();
+                        outbox.publish(PaymentEvent.TOPIC, "Payment", payment.getOrderRef(),
+                                "PaymentRefunded", PaymentEvent.refunded(payment.getOrderRef(), payment.getAmount()));
+                        meterRegistry.counter("payments", "status", "REFUNDED").increment();
+                        log.info("refunded order {} amount {}", payment.getOrderRef(), payment.getAmount());
+                    } else {
+                        // Refund declined by the processor. Do NOT mark REFUNDED (the money did not come back);
+                        // the payment stays CAPTURED so a redelivered OrderRefundPending retries. Emit
+                        // PaymentRefundFailed so the order stays REFUND_PENDING and the OrdersStuckConfirmed
+                        // alert (which counts REFUND_PENDING) pages a human — we never fake a refund that failed.
+                        outbox.publish(PaymentEvent.TOPIC, "Payment", payment.getOrderRef(),
+                                "PaymentRefundFailed", PaymentEvent.refundFailed(payment.getOrderRef(), payment.getAmount(), result.reason()));
+                        meterRegistry.counter("payments.refund.failed").increment();
+                        log.warn("refund DECLINED for order {}: {} (stays CAPTURED; order stays REFUND_PENDING)",
+                                payment.getOrderRef(), result.reason());
+                    }
                 });
     }
 }

@@ -6,6 +6,9 @@ spring:
   kafka:
     bootstrap-servers: ${spring.embedded.kafka.brokers}
 
+payment:
+  refund-limit: 50000     # tests: AIRPODS refund (24900) succeeds; a PS5 refund (54990) is declined
+
 outbox:
   relay:
     delay: 100ms

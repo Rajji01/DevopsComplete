@@ -401,3 +401,16 @@ Mostly tight, and worth recording as verified: **RDS** is `storage_encrypted`, `
 | The kafka-clients IRSA policy used **`kafka-cluster:*Topic*`**, which silently includes **`DeleteTopic`** and `AlterTopic*`. A producer/consumer never needs those; a compromised service pod could delete its own event topic (`orders.events` / `payments.events`) | Least privilege: the blast radius of a popped pod should be "read/write its topics," not "destroy the event log." Wildcards in IAM actions hide exactly this | Replaced the wildcard with the explicit set a client needs — `CreateTopic` (auto-create), `DescribeTopic`, `DescribeTopicDynamicConfiguration`, `WriteData`, `ReadData` — dropping Delete/Alter. `terraform fmt` clean; `validate` + tflint run in CI |
 
 Walk 19 lesson: **an IAM action wildcard is a blind spot the linter waves through.** `*Topic*` reads as "topic stuff" but grants destruction; enumerate the verbs a workload actually performs. (Resource scoping here was already good — it's the *action* wildcard that leaked.)
+
+## Walk 20: the refund that could never fail (Nov 1, 2026)
+
+Scope: the last long-standing open item — "refund gateway failures are unmodelled." Reading `payment-service`'s refund path turned up more than a missing feature: a **correctness bug**.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `OrderConfirmedListener.refund` called `gateway.refund(...)` **and ignored its `Result`** — it marked the payment `REFUNDED` and published `PaymentRefunded` unconditionally. With the fake gateway (always ok) this looked fine, but against a real processor a **declined refund would be reported as success**: the order flips to `REFUNDED`, the customer's money is still with us, and nothing pages anyone | A refund you claim happened but didn't is the worst kind of money bug — silent, customer-facing, and discovered only in a dispute | Check the `Result`. On success: unchanged. On decline: publish **`PaymentRefundFailed`**, leave the payment `CAPTURED` (so a redelivered `OrderRefundPending` retries) and the order `REFUND_PENDING` — the existing `OrdersStuckConfirmed` alert (it already counts REFUND_PENDING) pages a human. order-service gains `onRefundFailed` (record + `orders.refund.failed` metric; no state change). A `payment.refund-limit` (test profile) makes the fake gateway decline a PS5 refund; `declinedRefundPublishesRefundFailedAndKeepsPaymentCaptured` (in the existing test class — reusing its context rather than spinning a second embedded Kafka) proves `PaymentRefundFailed` is emitted and the payment stays `CAPTURED`, never `REFUNDED` |
+
+Walk 20 lessons:
+- **Check the return value of anything that moves money.** `gateway.refund(...)` returned a `Result` that was dropped on the floor; the fake always-succeeds gateway hid it in every test until one deliberately declined.
+- **"Unmodelled failure path" often means "silently mishandled," not "absent."** The code did run on a declined refund — it just lied about the outcome.
+- **Reuse the limbo you already built.** No new alert was needed: REFUND_PENDING was already counted by `OrdersStuckConfirmed`, so a failed refund lands exactly where a stuck one does — a human with a runbook.
