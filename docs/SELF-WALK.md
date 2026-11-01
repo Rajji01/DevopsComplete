@@ -346,3 +346,24 @@ Scope: close the documented open item "the checkout SLI counts any slow non-5xx 
 Walk 14 lessons:
 - **A request-based SLI must define "valid events."** Good / total only means something if `total` excludes what isn't the service's job — client 4xx and your own 429 throttling — from *both* sides. Otherwise your protection mechanism either burns or hides the error budget.
 - **Pin the intent with a test that fails on the old code.** Test #7 would have fired on the previous SLI; that is what makes it a regression guard, not decoration.
+
+## Walk 15: the quieter files (Nov 1, 2026)
+
+Scope: a sweep of the files nobody had re-read this cycle — `docker-compose.yml`, `Jenkinsfile`, `argocd/`, `init-db.sh`, the prod `external-secret.yaml`. Mostly **sound**, which is itself a finding worth recording:
+- `docker-compose.yml` — the `order-service` trick `extra_hosts: localhost:host-gateway` + `JWT_ISSUER_URI: http://localhost:8180` looked wrong but is correct: `localhost` resolves to two addresses, so the in-container JWKS fetch fails on 127.0.0.1 and falls through to the host-gateway (Keycloak), while the app's own `localhost:8081` still binds. No change.
+- `Jenkinsfile` — notably **did not** fall into the casing trap that bit GitHub Actions: `REGISTRY = 'ghcr.io/rajji01'` is hard-lowercased, and `trivy image` runs at repo root so it picks up `.trivyignore`. Consistent with the fixes. No change.
+- `argocd/application-prod.yaml` — sound (prune + selfHeal + `ignoreDifferences` on `/spec/replicas` for the HPA).
+- Trivial: the prod `external-secret.yaml` comment said "three keys" but syncs four — corrected.
+
+## Walk 16: the policy that ignored init containers (Nov 1, 2026)
+
+Scope: the admission policies (`k8s/policies/kyverno/` + the Gatekeeper equivalent). STATE §2 claims both enforce "the same rule"; this walk checked that claim against the Pod spec.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **`disallow-latest-tag` only inspected `spec.containers`.** Both the Kyverno `pattern` and the Gatekeeper Rego iterated `spec.containers[*]` only — so a Pod with a **`:latest` (or untagged) `initContainer`** (or ephemeral container) passed admission clean. The "no :latest, always rollback-able" guarantee had a hole exactly where migration/setup init-containers live | A policy that only half-covers a Pod gives false confidence; init-containers run with the same blast radius and are a common place to paste a quick `busybox:latest` | Kyverno: added conditional anchors `=(initContainers)` / `=(ephemeralContainers)` to both rules (absent lists are skipped, so valid Pods aren't rejected). Gatekeeper: an `all_containers` set unioning the three container types. **Verified** with `kyverno apply` v1.19.1 in Docker: a new `bad-initcontainer-pod` (valid app container, `:latest` init) now **fails**, while valid Pods with/without init-containers **pass**. Pinned in CI (a dedicated assertion) |
+
+Walk 16 lessons:
+- **A Pod is more than `spec.containers`.** Any policy over images/security must also cover `initContainers` and `ephemeralContainers`, or it is bypassable by construction.
+- **Conditional anchors, not required fields.** `=(initContainers)` validates the list only when present; writing it as a plain required field would have rejected every Pod without init-containers. The good-Pod test (with and without init) is what proved that.
+- **Keep the two policy engines actually equivalent.** The claim "Kyverno and Gatekeeper enforce the same rule" (STATE §2) is only true if you re-check it — here they had drifted into the same gap, now both fixed.

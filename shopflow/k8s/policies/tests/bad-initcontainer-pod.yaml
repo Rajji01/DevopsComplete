@@ -1,0 +1,18 @@
+# Walk 16: the app container is VALID (pinned tag) but an initContainer uses :latest.
+# Before the fix, disallow-latest-tag only looked at spec.containers, so this slipped through.
+# `kyverno apply` must now report a failure for this file (init-container coverage).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-initcontainer-pod
+  namespace: shopflow
+  labels:
+    app.kubernetes.io/name: bad-init
+    app.kubernetes.io/part-of: shopflow
+spec:
+  initContainers:
+    - name: setup
+      image: busybox:latest          # <- the sneaky one
+  containers:
+    - name: app
+      image: ghcr.io/rajji01/shopflow-order-service:abc1234   # valid, pinned

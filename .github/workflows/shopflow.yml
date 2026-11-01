@@ -119,6 +119,9 @@ jobs:
           ./kyverno apply $POLICIES --resource /tmp/prod.yaml
           if ./kyverno apply $POLICIES --resource k8s/policies/tests/bad-pod.yaml | grep -q 'fail: 0'; then
             echo "bad-pod.yaml should have been rejected"; exit 1; fi
+          # init-container coverage (Walk 16): a valid app container but a :latest initContainer must still fail
+          if ./kyverno apply k8s/policies/kyverno/disallow-latest-tag.yaml --resource k8s/policies/tests/bad-initcontainer-pod.yaml | grep -q 'fail: 0'; then
+            echo "bad-initcontainer-pod should have been rejected by disallow-latest-tag"; exit 1; fi
       - name: "Prometheus rules: syntax + unit tests; Alertmanager config"
         run: |
           docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v3.5.0 \

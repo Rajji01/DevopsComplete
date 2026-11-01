@@ -13,15 +13,22 @@ spec:
       rego: |
         package k8sdisallowlatesttag
 
+        # all container types in one set so init/ephemeral containers can't sneak a :latest past us
+        # (Walk 16 — this matched the Kyverno policy, which only checked spec.containers before).
+        # Absent initContainers/ephemeralContainers simply contribute nothing.
+        all_containers[c] { c := input.review.object.spec.containers[_] }
+        all_containers[c] { c := input.review.object.spec.initContainers[_] }
+        all_containers[c] { c := input.review.object.spec.ephemeralContainers[_] }
+
         violation[{"msg": msg}] {
-          container := input.review.object.spec.containers[_]
-          endswith(container.image, ":latest")
-          msg := sprintf("container %v uses ':latest' which cannot be rolled back", [container.name])
+          c := all_containers[_]
+          endswith(c.image, ":latest")
+          msg := sprintf("container %v uses ':latest' which cannot be rolled back", [c.name])
         }
 
         violation[{"msg": msg}] {
-          container := input.review.object.spec.containers[_]
-          not contains(container.image, ":")
-          not contains(container.image, "@")
-          msg := sprintf("container %v has no tag or digest", [container.name])
+          c := all_containers[_]
+          not contains(c.image, ":")
+          not contains(c.image, "@")
+          msg := sprintf("container %v has no tag or digest", [c.name])
         }

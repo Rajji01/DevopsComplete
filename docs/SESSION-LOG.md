@@ -6,6 +6,14 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-01 — CLI (Opus 4.8) — Walk 15+16 (quiet-files sweep + policy init-container gap)
+**Branch:** `master` (in-sync).
+**Walk 15 (sweep, no-change clean):** docker-compose (`localhost:host-gateway` trick correct — multi-address fallback), Jenkinsfile (casing-trap se bacha — `ghcr.io/rajji01` lowercase, `.trivyignore` root pe), argocd prod (sound). Trivial: prod external-secret comment "three keys"→"four keys".
+**Walk 16 (real finding, verified):** `disallow-latest-tag` (Kyverno **aur** Gatekeeper) sirf `spec.containers` check karta tha → `:latest` **initContainer/ephemeralContainer** bypass. **Fix:** Kyverno mein `=(initContainers)`/`=(ephemeralContainers)` conditional anchors (absent → skip, valid pods safe); Gatekeeper Rego mein `all_containers` set (teeno types). **Verified** `kyverno apply` v1.19.1 Docker: naya `bad-initcontainer-pod` (valid app + `:latest` init) ab **FAIL**, valid pods (init ke saath/bina) **PASS**. CI mein dedicated assertion se pin kiya.
+**Verify:** push → shopflow CI (kyverno apply step) confirm karega. Gatekeeper CI-run nahi hota (OPA nahi) — correct-by-construction + documented.
+
+---
+
 ## 2026-11-01 — CLI (Opus 4.8) — Labs system setup (interactive + organized)
 **Branch:** `master` (in-sync).
 **Context:** Abhishek wants labs har dimension pe (debugger/coder/DevOps/HLD/LLD/Java/prod-debug/React+Java/AWS/interview/scenario/comprehension), **break→samjho→tod→jod** method, interactive (Postman + React+Spring), aur **har cheez ki specific-honest entry md files mein** (ek file mein sab kuch nahi; intent sahi ho).

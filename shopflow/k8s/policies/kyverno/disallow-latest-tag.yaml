@@ -17,6 +17,12 @@ spec:
           spec:
             containers:
               - image: "*:*"
+            # =( ) is a conditional anchor: validate initContainers/ephemeralContainers only when present.
+            # Without these, a :latest/untagged initContainer slipped straight through (Walk 16).
+            "=(initContainers)":
+              - image: "*:*"
+            "=(ephemeralContainers)":
+              - image: "*:*"
     - name: disallow-latest
       match:
         any:
@@ -27,4 +33,8 @@ spec:
         pattern:
           spec:
             containers:
+              - image: "!*:latest"
+            "=(initContainers)":
+              - image: "!*:latest"
+            "=(ephemeralContainers)":
               - image: "!*:latest"
