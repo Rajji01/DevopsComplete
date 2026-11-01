@@ -3,6 +3,8 @@ package com.shopflow.outbox;
 import java.time.Instant;
 import java.util.UUID;
 
+import org.springframework.data.domain.Persistable;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -12,10 +14,15 @@ import jakarta.persistence.Table;
  * Transactional outbox: the event is written in the SAME database transaction as the order,
  * so "order saved but event lost" (or the reverse) cannot happen. A relay publishes rows
  * to Kafka afterwards. This replaces the unsafe "save to DB, then call kafka.send()" dual write.
+ *
+ * Implements Persistable so save() does a plain INSERT, not merge(): with an app-assigned @Id,
+ * Spring Data would otherwise treat the row as existing and issue a SELECT before every INSERT
+ * (Walk 21). Outbox rows are only ever inserted (the relay flips published_at via dirty checking,
+ * never save()), so isNew() is always true.
  */
 @Entity
 @Table(name = "outbox_event")
-public class OutboxEvent {
+public class OutboxEvent implements Persistable<UUID> {
 
     @Id
     private UUID id;
@@ -63,8 +70,14 @@ public class OutboxEvent {
         this.publishedAt = Instant.now();
     }
 
+    @Override
     public UUID getId() {
         return id;
+    }
+
+    @Override
+    public boolean isNew() {
+        return true;   // outbox rows are only inserted, so always persist() — never merge()+SELECT
     }
 
     public String getAggregateId() {

@@ -2,7 +2,7 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-11-01 (Walk 20: refund decline path — gateway Result was ignored; Walk 19 IRSA least-privilege; 18 Ansible; 16/17 policies). Prior: 14 (SLI), 13 (ci.yml), 12 (CI green). Branch: `master`.
+Last updated: 2026-11-01 (Walk 21: outbox save() persist-not-merge; Walk 20 refund decline; 19 IRSA; 18 Ansible; 16/17 policies). Prior: 14 (SLI), 13 (ci.yml), 12 (CI green). Branch: `master`.
 
 ## 1. What is in the repo
 
@@ -96,6 +96,7 @@ Refund decline (Walk 20): if payment-service's gateway declines the refund, it e
   - Basics `ci.yml` (Devops/microservice01, runs on every push) was **also red since it was added** (Walk 13): `docker build -t Devops:ci` → "repository name must be lowercase". Fixed by lowercasing the tag (`${SERVICE,,}`) + `fail-fast: false`. Both workflows now green.
 - **OutboxRelay (open, low priority):** `publishPending()` holds its `@Transactional` across the Kafka `send().get(5s)`; bounded (returns on first failure) but move broker I/O out of the DB transaction if the Hikari pool is ever pressured.
 - **Spring Boot 4 / Spring 7 upgrade (open):** the proper fix for the triaged `spring-webmvc` CVEs and a chance to drop the pom CVE-patch overrides. A major upgrade — plan and test deliberately.
+- **Persistable follow-up (Walk 21, low):** `OutboxEvent` now avoids `merge()`+SELECT on save via `Persistable`. `ProcessedEvent` (×2) and `Payment` share the assigned-UUID, insert-only pattern and could do the same; lower write volume, so deferred.
 
 ## 5. How to keep this file true
 1. Every walk: update sections 1–4 **in the same commit** as the change.

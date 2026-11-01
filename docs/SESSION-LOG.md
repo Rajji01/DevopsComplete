@@ -14,6 +14,11 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 **Verify:** push → shopflow CI (kyverno apply step) confirm karega. Gatekeeper CI-run nahi hota (OPA nahi) — correct-by-construction + documented.
 **Lesson:** gap mile to poora family grep karo — `spec.containers[*]` har jagah tha; jahan matter karta (image tag, privesc) fix, jahan nahi (probes) chhodo.
 
+## 2026-11-01 — CLI (Opus 4.8) — Walk 21 (outbox: persist, not merge+SELECT)
+**Branch:** `master`. **Found:** `OutboxEvent` app-assigned `@Id UUID` → Spring Data `save()` ise existing samajh ke `merge()` karta → **har INSERT se pehle SELECT**. Outbox high-write → wasteful. **Fix:** `implements Persistable<UUID>`, `isNew()=true` (outbox insert-only; relay `markPublished` dirty-check se, save() nahi) → single INSERT. Compile verified (Docker); behaviour CI pe (order/payment outbox tests). **Noted (deferred):** ProcessedEvent/Payment same pattern, lower-write → follow-up (STATE §4). **Lesson:** assigned `@Id` chup-chaap save()→merge() bana deta; insert-only ho to `Persistable.isNew()` se bolo.
+
+---
+
 ## 2026-11-01 — CLI (Opus 4.8) — Doc: HLD / system-design deep-dive
 **Branch:** `master`. Tumhara **HLD** goal → `docs/HLD-SYSTEM-DESIGN.md`: ShopFlow pe grounded — non-functional reqs, scaling (stateless+HPA, Kafka partitions, **asli DB pool budget math**, Redis cache), CAP/consistency (sync-strong reserve vs async-eventual saga, saga-not-2PC), bottlenecks+mitigations (hot-SKU row, connections, per-pod rate-limit), failure domains ("X mar gaya to"), capacity back-of-envelope (flash-sale 3/300), "100x pe kya badlega", 3 design-a-feature scenarios (order-history/search/flash-sale), HLD interview checklist. INDEX/README/labs-hub (HLD dimension ✅). docs-only.
 

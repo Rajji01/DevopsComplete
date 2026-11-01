@@ -414,3 +414,15 @@ Walk 20 lessons:
 - **Check the return value of anything that moves money.** `gateway.refund(...)` returned a `Result` that was dropped on the floor; the fake always-succeeds gateway hid it in every test until one deliberately declined.
 - **"Unmodelled failure path" often means "silently mishandled," not "absent."** The code did run on a declined refund — it just lied about the outcome.
 - **Reuse the limbo you already built.** No new alert was needed: REFUND_PENDING was already counted by `OrdersStuckConfirmed`, so a failed refund lands exactly where a stuck one does — a human with a runbook.
+
+## Walk 21: the outbox insert that did a SELECT first (Nov 1, 2026)
+
+Scope: a read of the persistence entities for JPA gotchas. `OutboxEvent` has an **app-assigned** `@Id UUID` (set in the constructor), no `@GeneratedValue`.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| With an assigned `@Id`, Spring Data's `save()` sees a non-null id and treats the row as existing → calls `merge()`, which issues a **`SELECT` before every `INSERT`**. The outbox is one of the most-written tables (a row per domain event), so every publish paid for an extra round-trip it never needed | Not wrong, but wasteful on the hot write path — doubled statements per event, more DB load exactly where throughput matters | `OutboxEvent implements Persistable<UUID>` with `isNew() == true`. Outbox rows are insert-only (the relay flips `published_at` via dirty checking, never `save()`), so `persist()` is always correct → a single `INSERT`, no `SELECT`. Compiles; existing outbox tests (`publishesOrderEventThroughTheOutbox`, `OutboxCleanupTest`) still pass in CI |
+
+Noted, not changed: `ProcessedEvent` and `Payment` share the assigned-UUID pattern and are also insert-only via `save()`; the same `Persistable` treatment would help, but they are lower-write than the outbox — a follow-up, recorded rather than changed blind.
+
+Walk 21 lesson: **an assigned `@Id` quietly turns `save()` into `merge()`.** If an entity is only ever inserted, say so with `Persistable.isNew()` — otherwise every "insert" is a SELECT + INSERT. Invisible in tests (correct, just extra SQL); you only see it in the query log.
