@@ -24,7 +24,7 @@ Ye ShopFlow repo ko ek **interactive learning lab** banata hai. Maqsad: har dime
 | **Prod debugging** | [`../docs/debugging/`](../docs/debugging/README.md) (D01–D06: symptom→root cause→fix) | Postman Lab 2/4 (oversell, rate-limit) | ✅ + aur scenario labs planned |
 | **Prod issues (break/fix)** | [`../docs/LABS.md`](../docs/LABS.md) (33 labs), [`../docs/SELF-WALK.md`](../docs/SELF-WALK.md) (real bugs found) | — | ✅ |
 | **HLD (system design)** | [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) §1 (architecture), §4/5 (saga/outbox) | — | ✅ diagrams; design-Q labs planned |
-| **LLD (class/patterns)** | [`../docs/START-HERE.md`](../docs/START-HERE.md) code-reading order, [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) | — | 🚧 LLD deep-dive (like the indexing one) planned |
+| **LLD (class/patterns)** | [`../docs/LLD-DESIGN-PATTERNS.md`](../docs/LLD-DESIGN-PATTERNS.md) (15 patterns + SOLID, grounded), code-reading order in START-HERE | — | ✅ |
 | **DevOps / CI-CD / k8s / IaC** | interview-notes [04–09], [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) §12/13, [`../docs/SELF-WALK.md`](../docs/SELF-WALK.md) Walks 8–14 | — | ✅ |
 | **Observability / SRE** | [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) §11, [`../docs/runbooks/`](../docs/runbooks/README.md) | — | ✅ |
 | **React + Java** | Spring APIs (order/inventory) | React lab-console (8 panels, live) | ✅ console live (dev CORS) |
@@ -44,7 +44,7 @@ Ye ShopFlow repo ko ek **interactive learning lab** banata hai. Maqsad: har dime
 ## Roadmap (incrementally banayenge, har ek apni specific entry ke saath)
 - ~~React lab-console (local CORS)~~ ✅ done (`lab-console.html`, 8 panels: idempotency, oversell, IDOR, rate-limit, validation, reserve-idem, optimistic-lock, saga-async).
 - ~~React+Spring **comprehension mode**~~ ✅ done (`comprehension.html`, 8 grounded questions → reveal the real code reason → live-lab link).
-- LLD deep-dive (INDEXING-HIBERNATE.md ki tarah) — design patterns + class-level.
+- ~~LLD deep-dive~~ ✅ done (`../docs/LLD-DESIGN-PATTERNS.md`, 15 patterns + SOLID).
 - HLD scenario labs (design a feature → trade-offs).
 - Aur prod-debugging scenario drills (debugging/ ke upar).
 

@@ -14,6 +14,11 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 **Verify:** push → shopflow CI (kyverno apply step) confirm karega. Gatekeeper CI-run nahi hota (OPA nahi) — correct-by-construction + documented.
 **Lesson:** gap mile to poora family grep karo — `spec.containers[*]` har jagah tha; jahan matter karta (image tag, privesc) fix, jahan nahi (probes) chhodo.
 
+## 2026-11-01 — CLI (Opus 4.8) — Doc: LLD / design-patterns deep-dive
+**Branch:** `master`. Tumhara **LLD** goal → `docs/LLD-DESIGN-PATTERNS.md`: 15 patterns **ShopFlow ke asli code se** (Strategy=PaymentGateway, Transactional Outbox, Choreography Saga+compensation, Aggregate+encapsulated state-machine=Order, Idempotent Receiver, @Version optimistic lock, Repository+atomic update, Template Method=GlobalExceptionHandler, DTO records, anti-corruption event-copy, reconciler, Resilience4j, DI, SOLID+ArchUnit) — har ek: kahan(`file`) + kyu + snippet + **interview line**. INDEX/README/labs-hub (LLD dimension ✅) linked. docs-only.
+
+---
+
 ## 2026-11-01 — CLI (Opus 4.8) — Lab: comprehension mode (Google-style)
 **Branch:** `master`. Bug-hunt genuinely exhausted (Walk 20 last real; notification/payment KafkaErrorConfig + ProcessedEvent swept **sound** — DLT backoff standard, DLT topics `*.events*` ARN-pattern se covered). Non-stop continue → genuine lab output. **Banaya:** `labs/comprehension.html` — single-file React, **8 grounded questions** (outbox, oversell, idempotency, saga-compensation, refund-fail/Walk20, IDOR, SLO-429/Walk14, Kafka at-least-once), har ek: passage → MCQ → reveal **asli code-reason** (file cited) → live-lab link. labs/README + roadmap updated (comprehension-mode ✅ live). labs/ only — no CI risk.
 
