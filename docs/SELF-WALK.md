@@ -286,3 +286,12 @@ Walk 12 lessons:
 - **`if:` does not defer action resolution.** Every `uses:` in a job is fetched at "Set up job"; a wrong tag on a conditional step breaks the job on branches where that step never runs. Pin actions to tags that exist.
 - **A matrix without `fail-fast: false` hides the blast radius.** One leg's setup error cancelled three healthy builds and made the cause look service-specific; it was shared.
 - **Green is the only proof.** Three of Walk 11's fixes were "verified locally," but only the `master` run proved the helm fix and the Java flaky-test fixes end to end — and surfaced this cosign tag, which no local run touches.
+
+### Walk 12 (cont.): two more, each unmasked by the previous fix
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| With `fail-fast: false` the image builds finally ran, and all four died at **Trivy scan** with `could not parse reference: ghcr.io/Rajji01/shopflow-…` — **not a CVE, a casing bug**. OCI references must be lowercase, but `env.IMAGE` used `github.repository_owner` verbatim (`Rajji01`). `metadata-action` lowercases its own tags, so the build passed, but the Trivy/SBOM/ECR steps read `$IMAGE` raw and got an invalid uppercase ref | A scanner that can't parse the ref scans nothing — a green-looking gate that never inspected the image, or (here) a hard failure | A first step sets `IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/shopflow-<svc>` (bash lowercase) so every step shares one lowercase ref |
+| Boring-file sweep (migrations, NetworkPolicies, backup CronJob). Migrations and NetworkPolicies were sound. The **nightly `pg_dump`** wrote straight to `/backups/$db.dump`; a dump that fails midway (DB blip) leaves a **truncated `*.dump`** that a restore would happily pick as a good backup | A backup you can't trust is worse than none — you find out during the restore, mid-incident | Dump to `$db.dump.part`, `mv` to `.dump` only on success (atomic); sweep stale `.part` files. A failed dump now never appears as a backup |
+
+Also confirmed sound this sweep (no change): Flyway migrations use the expand pattern with backfill + defaults (safe on a live table, H2-parseable); NetworkPolicies are default-deny ingress+egress with per-service allow-lists and correct ports (8081/8082/8083/8084, 5432, 9092, 6379, 8180, DNS). Open note for a later walk: `OutboxRelay.publishPending()` holds its `@Transactional` across the Kafka `send().get(5s)` for the whole batch — bounded (it returns on the first failure) but worth moving the broker I/O out of the DB transaction if the pool is ever pressured.

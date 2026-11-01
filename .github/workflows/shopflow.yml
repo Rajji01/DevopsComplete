@@ -165,10 +165,14 @@ jobs:
       fail-fast: false   # independent per-service builds; one leg's problem shouldn't cancel the rest
       matrix:
         service: [order-service, inventory-service, notification-service, payment-service]
-    env:
-      IMAGE: ghcr.io/${{ github.repository_owner }}/shopflow-${{ matrix.service }}
     steps:
       - uses: actions/checkout@v7
+      # OCI image references must be lowercase, but github.repository_owner keeps its original case
+      # (Rajji01). metadata-action lowercases its own tags, but the Trivy/SBOM/ECR steps read
+      # $IMAGE verbatim -> Trivy got `ghcr.io/Rajji01/...` and died with "could not parse reference".
+      # Build $IMAGE from a lowercased owner so every step agrees.
+      - name: Lowercase image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/shopflow-${{ matrix.service }}" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v4
       - name: Image tags
         id: meta

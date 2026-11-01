@@ -33,9 +33,13 @@ spec:
               args:
                 - |
                   set -euo pipefail
+                  rm -f /backups/*.dump.part          # clear partials left by any interrupted run
                   ts=$(date +%Y%m%d-%H%M)
                   for db in orders inventory notifications payments; do
-                    pg_dump -h postgres -U postgres -Fc "$db" > "/backups/$db-$ts.dump"
+                    # dump to a .part, then rename only on success: a failed/truncated dump never
+                    # appears as a *.dump, so a restore can never pick a corrupt file as a good backup
+                    pg_dump -h postgres -U postgres -Fc "$db" > "/backups/$db-$ts.dump.part"
+                    mv "/backups/$db-$ts.dump.part" "/backups/$db-$ts.dump"
                   done
                   # keep 7 days; a failed dump above aborts before deleting anything (set -e)
                   find /backups -name '*.dump' -mtime +7 -delete

@@ -11,9 +11,13 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 **Pehle:** Walk 11 ke fixes **CI pe green confirm** (run `41214762574`): tests (flaky outbox fix ✅), lint/tflint ✅, k6 ✅, validate/helm ✅ (tar-collision fix landed), terraform ✅.
 **Naya finding (CI log se):** `image` job "Set up job" pe fail — `Unable to resolve action sigstore/cosign-installer@v4` (koi v4 tag hi nahi, max v3). `uses:` actions "Set up job" pe resolve hote hain chahe step `if: main` se skip ho → gated cosign step ne poora image job master pe tod diya; matrix fail-fast ne baaki 3 legs cancel kar diye.
 **Fix:** `cosign-installer@v4` → `@v3`; image matrix mein `fail-fast: false`.
-**Lesson:** `if:` action resolution ko defer nahi karta — har `uses:` setup pe download hota hai; galat tag wahan bhi todta hai jahan step chalta hi nahi.
-**Verify:** CI push se re-run (poll karke confirm karunga). Docs synced: STATE §4+header, SELF-WALK Walk 12, ye entry.
-**Pending:** CI green confirm; baaki STATE §4 items (rate-limit, Schema Registry, chaos, RefundFailed, orphaned-saga, SLI slow-4xx).
+
+**Cont. (cosign fix ke baad image job aage badha → 2 aur bugs, dono log se):**
+- **Image-ref casing:** cosign+fail-fast ke baad saare 4 image builds bane, par Trivy scan pe FATAL `could not parse reference: ghcr.io/Rajji01/...`. OCI ref lowercase hona chahiye; `env.IMAGE` ne `github.repository_owner` (`Rajji01`, capital) raw use kiya. Build to `metadata-action` ne lowercase kar diya, par Trivy/SBOM/ECR raw `$IMAGE` padhte the. **Fix:** ek step `IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/shopflow-<svc>` set karta hai.
+- **Backup atomicity (boring-file sweep):** nightly `pg_dump` seedha `$db.dump` likhta tha; fail hua dump truncated file chhod deta jise restore valid samajh le. **Fix:** `.part` pe dump → success pe `mv` to `.dump` (atomic). Migrations + NetworkPolicies sweep: sound (no change). Note: `OutboxRelay` @Transactional Kafka I/O ke across hold karta hai (bounded; low-pri open item).
+**Lesson:** har fix agle red ko unmask karta hai — pipeline tabhi "green" jab poora chale. Casing: `github.repository_owner` case preserve karta hai, OCI refs lowercase maangte hain.
+**Verify:** sab push → CI re-run poll. Docs synced: STATE §4+header, SELF-WALK Walk 12 (+cont.), ye entry.
+**Pending:** CI green confirm (image jobs ab Trivy paar karein); baaki STATE §4 items.
 
 ---
 
