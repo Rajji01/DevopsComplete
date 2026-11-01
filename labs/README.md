@@ -23,7 +23,7 @@ Ye ShopFlow repo ko ek **interactive learning lab** banata hai. Maqsad: har dime
 | **DB indexing** | [`../docs/INDEXING-HIBERNATE.md`](../docs/INDEXING-HIBERNATE.md) §1–8 | psql EXPLAIN labs A–D | ✅ |
 | **Prod debugging** | [`../docs/debugging/`](../docs/debugging/README.md) (D01–D06: symptom→root cause→fix) | Postman Lab 2/4 (oversell, rate-limit) | ✅ + aur scenario labs planned |
 | **Prod issues (break/fix)** | [`../docs/LABS.md`](../docs/LABS.md) (33 labs), [`../docs/SELF-WALK.md`](../docs/SELF-WALK.md) (real bugs found) | — | ✅ |
-| **HLD (system design)** | [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) §1 (architecture), §4/5 (saga/outbox) | — | ✅ diagrams; design-Q labs planned |
+| **HLD (system design)** | [`../docs/HLD-SYSTEM-DESIGN.md`](../docs/HLD-SYSTEM-DESIGN.md) (scaling/bottlenecks/CAP/failure/capacity/design-a-feature), [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) §1 | — | ✅ |
 | **LLD (class/patterns)** | [`../docs/LLD-DESIGN-PATTERNS.md`](../docs/LLD-DESIGN-PATTERNS.md) (15 patterns + SOLID, grounded), code-reading order in START-HERE | — | ✅ |
 | **DevOps / CI-CD / k8s / IaC** | interview-notes [04–09], [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) §12/13, [`../docs/SELF-WALK.md`](../docs/SELF-WALK.md) Walks 8–14 | — | ✅ |
 | **Observability / SRE** | [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) §11, [`../docs/runbooks/`](../docs/runbooks/README.md) | — | ✅ |
@@ -45,7 +45,7 @@ Ye ShopFlow repo ko ek **interactive learning lab** banata hai. Maqsad: har dime
 - ~~React lab-console (local CORS)~~ ✅ done (`lab-console.html`, 8 panels: idempotency, oversell, IDOR, rate-limit, validation, reserve-idem, optimistic-lock, saga-async).
 - ~~React+Spring **comprehension mode**~~ ✅ done (`comprehension.html`, 8 grounded questions → reveal the real code reason → live-lab link).
 - ~~LLD deep-dive~~ ✅ done (`../docs/LLD-DESIGN-PATTERNS.md`, 15 patterns + SOLID).
-- HLD scenario labs (design a feature → trade-offs).
+- ~~HLD scenario labs~~ ✅ done (`../docs/HLD-SYSTEM-DESIGN.md` — incl. design-a-feature scenarios + checklist).
 - Aur prod-debugging scenario drills (debugging/ ke upar).
 
 > **Rule:** har naya lab/topic ka ek **specific, honest entry** is table mein + sahi md file mein jata hai — "ek file mein sab kuch" nahi. Status (✅/🚧) sach batata hai, overclaim nahi.

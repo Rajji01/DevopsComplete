@@ -30,6 +30,7 @@ Kaam continue karna? → SESSION-LOG top entry → CLAUDE.md → kaam.
 | `docs/VISUAL-FLOWS.md` | har flow ka mermaid diagram + kya/kyu/kaise + code kahan (13 flows) | — |
 | `docs/INDEXING-HIBERNATE.md` | **one example topic** done as a full lab: DB indexing + Hibernate/JPA — notes + diagrams + real snippets + psql labs. Template for other topic deep-dives | — |
 | `docs/LLD-DESIGN-PATTERNS.md` | LLD deep-dive: 15 design patterns as used in ShopFlow (Strategy, Outbox, Saga, Aggregate, ...) — kahan + kyu + snippet + interview line + SOLID | — |
+| `docs/HLD-SYSTEM-DESIGN.md` | HLD deep-dive: scaling, bottlenecks, CAP/consistency choices, failure domains, capacity, "100x pe kya badlega", design-a-feature scenarios + checklist | — |
 | `labs/README.md` | **Labs & Mastery hub** — har dimension (Java/JPA, indexing, prod-debugging, HLD/LLD, DevOps, React+Java, AWS, interview, scenario) ka map + pedagogy (break→samjho→tod→jod). Interactive: Postman collection + React `lab-console.html` (8 panels) — dono live | — |
 | `docs/EASY-NOTES.md` | concept ka problem→kyu→kaise (Hinglish) | — |
 | `docs/LABS.md` | break/fix labs | — |

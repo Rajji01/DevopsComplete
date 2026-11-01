@@ -14,6 +14,11 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 **Verify:** push → shopflow CI (kyverno apply step) confirm karega. Gatekeeper CI-run nahi hota (OPA nahi) — correct-by-construction + documented.
 **Lesson:** gap mile to poora family grep karo — `spec.containers[*]` har jagah tha; jahan matter karta (image tag, privesc) fix, jahan nahi (probes) chhodo.
 
+## 2026-11-01 — CLI (Opus 4.8) — Doc: HLD / system-design deep-dive
+**Branch:** `master`. Tumhara **HLD** goal → `docs/HLD-SYSTEM-DESIGN.md`: ShopFlow pe grounded — non-functional reqs, scaling (stateless+HPA, Kafka partitions, **asli DB pool budget math**, Redis cache), CAP/consistency (sync-strong reserve vs async-eventual saga, saga-not-2PC), bottlenecks+mitigations (hot-SKU row, connections, per-pod rate-limit), failure domains ("X mar gaya to"), capacity back-of-envelope (flash-sale 3/300), "100x pe kya badlega", 3 design-a-feature scenarios (order-history/search/flash-sale), HLD interview checklist. INDEX/README/labs-hub (HLD dimension ✅). docs-only.
+
+---
+
 ## 2026-11-01 — CLI (Opus 4.8) — Doc: LLD / design-patterns deep-dive
 **Branch:** `master`. Tumhara **LLD** goal → `docs/LLD-DESIGN-PATTERNS.md`: 15 patterns **ShopFlow ke asli code se** (Strategy=PaymentGateway, Transactional Outbox, Choreography Saga+compensation, Aggregate+encapsulated state-machine=Order, Idempotent Receiver, @Version optimistic lock, Repository+atomic update, Template Method=GlobalExceptionHandler, DTO records, anti-corruption event-copy, reconciler, Resilience4j, DI, SOLID+ArchUnit) — har ek: kahan(`file`) + kyu + snippet + **interview line**. INDEX/README/labs-hub (LLD dimension ✅) linked. docs-only.
 
