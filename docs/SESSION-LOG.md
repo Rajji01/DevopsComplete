@@ -6,6 +6,16 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-01 — CLI (Opus 4.8) — Walk 14 (SLI jise uska apna rate limiter fool kar sakta tha)
+**Branch:** `master` (in-sync). STATE §4 ka documented open item band kiya (ab promtool Docker se chalta hai).
+**Found:** checkout SLI "bad" = `5xx + slow non-5xx`, denominator = **saare** POST. To flash-sale ke **429 burst** (rate limiter ka kaam) do tarah se galat: slow 429 → "bad" (budget falsely jalata), aur har 429 denominator mein (ratio dilute → real 5xx chhupata). SLI ko apni hi protection fool kar sakti thi — dono directions mein.
+**Fix:** valid events = sirf 2xx ya 5xx (`status=~"[25].."`), bad = `5xx + slow-2xx`; 4xx/429 **dono** (numerator+denominator) se excluded. Alert test **#7** add kiya (slow-429 burst, no 5xx → **no page**) — purane SLI pe fail hota, naye pe pass.
+**Verify:** `promtool check rules` + `test rules` **Docker mein green** (incl #7). CI validate-manifests job bhi promtool chalata hai → wahan bhi confirm hoga.
+**Lesson:** request-based SLI mein "valid events" define karo — client 4xx + apna 429 throttling dono sides se bahar — warna protection khud budget jalati ya chhupati hai.
+**Verify (CI):** push → shopflow CI poll.
+
+---
+
 ## 2026-11-01 — CLI (Opus 4.8) — Walk 13 (the other pipeline that was quietly red)
 **Branch:** `master` (in-sync). shopflow CI green confirm karne ke baad doosri workflow dekhi.
 **Found:** `ci.yml` (basics — Devops/microservice01, har push pe chalti hai) red thi. `Build & test Devops`: `mvn verify` pass, par `docker build -t Devops:ci .` → `invalid tag "Devops:ci": repository name must be lowercase`. Walk 12 wali hi casing class — ab matrix/dir naam `Devops` (capital) seedha docker tag ban raha tha. microservice01 (lowercase) pass hota par fail-fast ne cancel kiya. **Ye ci.yml banne se hi red thi** — dhyan shopflow pe tha isliye chhupi rahi.

@@ -122,3 +122,24 @@ tests:
       - eval_time: 70m
         alertname: CheckoutSLOBurnRateFast
         exp_alerts: []
+
+  # 7. SLO ignores rate limiting: a burst of slow 429s with NO 5xx must NOT page. (The old SLI counted
+  #    slow non-5xx as bad and put 429s in the denominator, so this would have falsely burned the budget.)
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="201"}'
+        values: '0+100x90'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="1.0"}'
+        values: '0+100x90'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="+Inf"}'
+        values: '0+100x90'
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="429"}'
+        values: '0+200x90'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="429", le="1.0"}'
+        values: '0+0x90'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="429", le="+Inf"}'
+        values: '0+200x90'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: CheckoutSLOBurnRateFast
+        exp_alerts: []

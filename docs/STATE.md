@@ -2,7 +2,7 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-11-01 (Walk 13: fixed the basics `ci.yml` too — both workflows green). Prior: Walk 12 (shopflow CI fully green — CI config, image-ref casing, 19 image CVEs). Branch: `master`.
+Last updated: 2026-11-01 (Walk 14: refined the checkout SLI so 429/4xx can't fool it). Prior: Walk 13 (basics `ci.yml` fixed — both workflows green); Walk 12 (shopflow CI fully green). Branch: `master`.
 
 ## 1. What is in the repo
 
@@ -82,7 +82,7 @@ Rule: a state where **no money has moved** (PENDING, FAILED) is safe to auto-can
 - Chaos experiments (kill a broker / RDS failover) under the k6 load test.
 - Refund gateway failures (real processor) — the fake one always succeeds; a `RefundFailed` path + alert is unmodelled.
 - Orchestrated saga timeout for genuinely orphaned CONFIRMED orders (currently alert-only, human decides).
-- SLO SLI (Walk 8): the latency term counts *any* slow non-5xx (incl. 4xx/429) as "bad"; a stricter SLI would only count slow 2xx. Minor — left for a walk that can run `promtool` + a live Prometheus to retune and re-pin the alert tests.
+- SLO SLI — **resolved (Walk 14):** it counted slow 4xx/429 as "bad" and had 429s in the denominator. Redefined valid events as 2xx-or-5xx (`status=~"[25].."`), bad = `5xx + slow-2xx`; 4xx/429 excluded from both. Pinned by alert test #7 (slow-429 burst → no page). `promtool` verified in Docker.
 - **CI pipeline — FULLY GREEN on `master`** (Walk 8 turned it on there; Walks 11–12 fixed it; run `41297074849`, 2026-11-01). All jobs pass: tests, lint/tflint, k6, validate (kustomize/kyverno/promtool/helm), terraform, 4 image builds + Trivy scan + SBOM. `Pin prod overlay` stays skipped (main-only). Fixes, in the order found — each unmasked the next:
   - `k6 inspect`: double path (`working-directory: shopflow` + `shopflow/loadtest/...`) → `loadtest/flash-sale.js`.
   - `tflint`: `elasticache.tf` used the uneditable `default.redis7` → owned `aws_elasticache_parameter_group`.

@@ -334,3 +334,15 @@ Scope: with `shopflow` finally green, check the repo's *other* workflow. `.githu
 Walk 13 lessons:
 - **Check every workflow, not just the loud one.** A repo can have more than one pipeline; a quiet one can sit red for weeks while a green badge elsewhere lulls you.
 - **The lowercase-tag rule bites anywhere a name with capitals becomes a Docker tag** — repo owner (Walk 12) or a matrix/dir name (here). Lowercase at the point of tagging.
+
+## Walk 14: the SLI that its own rate limiter could fool (Nov 1, 2026)
+
+Scope: close the documented open item "the checkout SLI counts any slow non-5xx (incl. 4xx/429) as bad" — now doable because `promtool` runs in Docker (CI's `prom/prometheus:v3.5.0`).
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The checkout SLI's "bad" term was `5xx + (non-5xx total − non-5xx under 1s)`, and its denominator was **all** POST requests. So a flash-sale burst of **429s** (the rate limiter doing its job) was counted two wrong ways: a *slow* 429 landed in "bad" (**falsely burning** the budget), and every 429 sat in the denominator (**diluting** the ratio, masking real 5xx). The SLI could be fooled by our own protection, in both directions | An SLO you can trip by rate-limiting — or hide a real outage behind — is not measuring availability | Redefined valid events as **2xx or 5xx only** (`status=~"[25].."`), "bad" as `5xx + slow-2xx`; 4xx and 429 are excluded from **both** numerator and denominator. Added alert test #7 (a slow-429 burst with no 5xx **must not page**) — it fails on the old SLI, passes on the new one. `promtool check rules` + `test rules` green in Docker |
+
+Walk 14 lessons:
+- **A request-based SLI must define "valid events."** Good / total only means something if `total` excludes what isn't the service's job — client 4xx and your own 429 throttling — from *both* sides. Otherwise your protection mechanism either burns or hides the error budget.
+- **Pin the intent with a test that fails on the old code.** Test #7 would have fired on the previous SLI; that is what makes it a regression guard, not decoration.
