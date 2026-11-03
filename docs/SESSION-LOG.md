@@ -21,7 +21,15 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 - comprehension **06 (SLO bug)**: SLI redefined Walk 14 — `non-5xx` → `2xx` (valid = `[25]..`, bad = 5xx + slow-2xx, 4xx/429 excluded). `le="1.0"` bucket lesson unchanged.
 - Committed local **D07** (duplicate-emails/charges drill) that was pending — grounded claims still valid (no refund-decline content).
 **Then Walk 22 (self-walk, SELF-WALK.md):** D05 SLI wording → `2xx` (Walk 14); added **reverse links** comprehension→debugging (9 topics + README sibling section) — pehle sirf ek taraf the; link-integrity pass over 40 files = all resolve; D03 breaker-slow claim verified (no slowCallRateThreshold); no stale counts. Other new docs (HLD/LLD/INDEXING/VISUAL-FLOWS, `labs/`) read — no conflict.
-**Verify:** docs only; not executed (test phase pending). Earlier sync (02/06/D07) pushed as `07761ba`; Walk 22 edits committed **locally, NOT pushed** (holding per Abhishek's "no push for an hour").
+**Walks 23–28 (continued self-walk, non-stop; details in SELF-WALK.md):**
+- **23:** topic 02 `notes.md` ko refund-decline se sync (comprehension.md Walk 22 mein hua tha, notes reh gaya); naya CORS code (`CorsConfig`/`WebCorsConfig`) review — localhost-only + allowCredentials false = safe; D04 heap claim verified (Dockerfile `MaxRAMPercentage=75`).
+- **24:** D07 har jagah index kiya (README/INDEX/STATE/labs = D01–D07) — file thi par listed nahi thi; `lab-console.html` endpoints code se match (verified).
+- **25:** LLD-DESIGN-PATTERNS.md verify (clean) — `@Version→409` real, poora error→status map (`GlobalExceptionHandler`) backed.
+- **26:** `VISUAL-FLOWS.md` state-machine mein refund-decline branch add (sirf happy-path tha).
+- **27:** INDEXING-HIBERNATE.md verify (clean, incl. `OutboxRepository` SKIP LOCKED); isse topic 01 ka gap mila → multi-pod relay + `FOR UPDATE SKIP LOCKED` add kiya (passage + naya Q10 + notes).
+- **28:** naye debugging drills **D08** (one-partition poison-pill stall), **D09** (401 after IdP migration), **D10** (Redis-down thundering-herd) — grounded + poora indexed; D08 ke draft mein apni hi invented-bug (unknown-SKU NPE; `priceOf` getOrDefault karta, null nahi) pakad ke fix ki.
+**Net:** debugging series ab **D01–D10**; comprehension 15 + sab synced/enriched. Link-check 43 files clean.
+**Verify/push:** sab **docs only, not executed** (test phase pending — Abhishek bolega). Earlier sync (02/06/D07) pushed as `07761ba`; Walks 22–28 ab tak **7 local commits, NOT pushed** (Abhishek ka "no push for an hour" hold). Hold hat-te hi ek `git push` sabko bhej dega.
 
 ---
 
