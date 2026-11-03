@@ -122,6 +122,20 @@ DELETE /orders/42  (status PAID)
 4. Choreography ka ek asli faida aur ek asli cost?
 5. Refund decline ho jaye to kya hota hai? (Walk 20: payment `CAPTURED` rehta, `PaymentRefundFailed`, order `REFUND_PENDING`, alert pages, redelivery retries — `REFUNDED` kabhi fake nahi hota.)
 
+## Test karo (UI + Postman + curl)
+- **React UI:** `lab-console.html` → **Saga-async** panel (order → CONFIRMED → PAID), aur cancel. **Postman:** Lab 3 cancel (DELETE).
+- **curl** (FakeGateway charge-limit 100000; PS5 54990×1 approve, ×2 decline):
+```bash
+ORD(){ curl -s -X POST http://localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" -d "$1"; }
+ID=$(ORD '{"sku":"PS5-SLIM","quantity":1}' | jq -r .id); sleep 3                        # → PAID
+curl -s -X DELETE http://localhost:8081/api/v1/orders/$ID -H "Authorization: Bearer $TOKEN" | jq .status  # REFUND_PENDING
+sleep 3; curl -s http://localhost:8081/api/v1/orders/$ID -H "Authorization: Bearer $TOKEN" | jq .status    # REFUNDED
+# payment-fail compensation: qty 2 (109980 > limit) → CONFIRMED then CANCELLED
+IDF=$(ORD '{"sku":"PS5-SLIM","quantity":2}' | jq -r .id); sleep 3
+curl -s http://localhost:8081/api/v1/orders/$IDF -H "Authorization: Bearer $TOKEN" | jq .status           # CANCELLED
+```
+
 ## Interview mein ye bolo
 *"Saga = local transactions + compensations, 2PC ke bina. ShopFlow choreography use karta hai: reserve REST se (sync answer chahiye), baaki Kafka se. PaymentFailed pe stock release + CANCELLED (compensation). PAID order cancel ek refund saga hai — PAID→REFUND_PENDING→REFUNDED — money pehle wapis phir stock, taaki fail refund stock leak na kare. Idempotency state se: payment sirf CAPTURED ho to refund hota hai. Agar gateway refund decline kare, payment CAPTURED hi rehta aur PaymentRefundFailed emit hota — order REFUND_PENDING pe atka rehta aur alert human ko bulata, hum kabhi fake REFUNDED nahi karte."*
 

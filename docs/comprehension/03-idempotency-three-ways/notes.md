@@ -101,6 +101,20 @@ rebalance → E9 REDELIVER
 4. Refund "by state" kab fail karega (kaunsa feature)?
 5. Email ko fully idempotent kyu nahi bana sakte?
 
+## Test karo (UI + Postman + curl)
+- **React UI:** `lab-console.html` → **Idempotency** panel (retry-safe create) + **Reserve-idem** panel. **Postman:** Lab 1, Lab 6.
+- **curl** (`make up` + `TOKEN=$(make -s token)`):
+```bash
+KEY=$(uuidgen)
+curl -si -X POST http://localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $KEY" -d '{"sku":"PIXEL-9","quantity":1}' | grep HTTP  # 201
+curl -si -X POST http://localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $KEY" -d '{"sku":"PIXEL-9","quantity":1}' | grep HTTP  # 200 (replay)
+# reserve idempotency (direct inventory): same orderRef → same reservation
+curl -s -X POST http://localhost:8082/api/v1/reservations -H 'Content-Type: application/json' \
+  -d '{"orderRef":"r-1","sku":"PIXEL-9","quantity":1}'   # repeat → wahi reservation, stock dobara ghatta nahi
+```
+
 ## Interview mein ye bolo
 *"At-least-once given hai to idempotency zaroori. Main natural key use karta hoon: client Idempotency-Key (ownership check ke saath, warna cross-user replay bug), Kafka consumer `processed_event` dedupe same transaction mein side-effect ke saath, aur payment row ka primary key hi eventId — PK race ko bhi pakadta hai jo existsById miss karta. Refund by-state idempotent hai, koi table nahi. Ek hi mechanism sab jagah isliye nahi kyunki har context ki apni natural key alag hai."*
 

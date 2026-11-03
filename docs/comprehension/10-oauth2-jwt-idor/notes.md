@@ -65,6 +65,20 @@ Office entry socho:
 4. Foreign order pe 404 kyu, 403 nahi?
 5. JWKS lazy kyu — kaunsa failure tolerate hota?
 
+## Test karo (UI + Postman + curl)
+- **React UI:** `lab-console.html` → **IDOR** · **Rate-limit** · **Validation** panels. **Postman:** Lab 3 (IDOR+cancel), Lab 4 (429), Lab 5 (400).
+- **curl** (alice + bob tokens):
+```bash
+TOKEN_BOB=$(curl -s -X POST http://localhost:8180/realms/shopflow/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=shopflow-web -d username=bob -d password=bob | jq -r .access_token)
+ID=$(curl -s -X POST http://localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"PIXEL-9","quantity":1}' | jq -r .id)
+curl -s -o /dev/null -w "no-token=%{http_code}\n"  http://localhost:8081/api/v1/orders                                  # 401
+curl -s -o /dev/null -w "bob-reads-alice=%{http_code}\n" http://localhost:8081/api/v1/orders/$ID -H "Authorization: Bearer $TOKEN_BOB"  # 404 (IDOR, not 403)
+curl -s -o /dev/null -w "bad-body=%{http_code}\n" -X POST http://localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"PIXEL-9","quantity":0}'              # 400 problem+json
+```
+
 ## Interview mein ye bolo
 *"order-service stateless OAuth2 resource server hai — no session, CSRF off. Token validation: issuer JWKS se `kid` pick, RS256 signature, exp, iss — aur audience bhi (aud/azp/client_id == configured), warna same issuer ka doosre API ka token pass kar jaata (confused deputy). RS256 isliye services ke paas sirf public key ho. RBAC roles se. IDOR ke liye har order JWT `sub` store karta aur `mayAccess` (owner|support) check hota; non-owner ko 404 deta — 403 id ki maujoodgi confirm kar deta aur enumerate ho jaata. JWKS lazy hai to IdP down pe bhi service start ho jaati."*
 

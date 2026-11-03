@@ -74,6 +74,26 @@ Har row mein do files: `comprehension.md` (round) + `notes.md` (concept).
 
 Mechanism samajhne ke baad usko **live debug** karna seekho: [`../debugging/`](../debugging/README.md) (D01–D15) — sirf symptom (alert/graph/log) milta hai, tujhe root cause nikalna hai. Jodi: 01↔[D02](../debugging/D02-201-but-silent-downstream.md) · 03↔[D07](../debugging/D07-duplicate-emails-charges.md) · 04↔[D01](../debugging/D01-orders-stuck-confirmed.md) · 05/12↔[D06](../debugging/D06-oversold-flash-sale.md) · 06↔[D05](../debugging/D05-alert-that-didnt-fire.md) · 07↔[D11](../debugging/D11-readiness-cascade.md)/[D10](../debugging/D10-redis-down-thundering-herd.md) · 09/13↔[D03](../debugging/D03-latency-spike-no-errors.md) · 10↔[D09](../debugging/D09-401-after-idp-change.md) · 11↔[D01](../debugging/D01-orders-stuck-confirmed.md)/[D02](../debugging/D02-201-but-silent-downstream.md)/[D08](../debugging/D08-one-partition-stalled.md)/[D12](../debugging/D12-dlt-filling-up.md) · 12↔[D10](../debugging/D10-redis-down-thundering-herd.md) · 15/18↔[D14](../debugging/D14-deploy-drops-requests.md)/[D15](../debugging/D15-hpa-flapping.md) · 15↔[D13](../debugging/D13-rollout-stuck-or-paused.md). (Comprehension = "kaise kaam karta"; debugging = "toota to kahan dekhun".)
 
+## Test karo — 3 tarah (React UI · Postman · curl)
+
+Har API-testable topic ko teen tarah se chala ke dekh sakte ho. Pehle stack uthao: `make up` + `TOKEN=$(make -s token)`.
+
+**1. React lab-console (UI, no build):** `cd labs && python -m http.server 5500` → `http://localhost:5500/lab-console.html` → **Login alice** → panel pe **Run**. Panels: idempotency · oversell · IDOR · rate-limit · validation · reserve-idem · optimistic-lock · saga-async. (dev CORS order/inventory pe on hai.)
+**2. Postman:** `labs/ShopFlow.postman_collection.json` import → `0. Auth > Get token` → phir `Lab 1..6` hit karo (concurrency labs Runner x50).
+**3. curl:** har topic ke `notes.md` mein ab ek **"Test karo"** block hai — ready curl (Postman mein paste bhi kar sakte).
+
+Topic ↔ lab mapping:
+
+| Topic | React panel | Postman | Endpoint |
+|---|---|---|---|
+| 03 idempotency | Idempotency, Reserve-idem | Lab 1, Lab 6 | `POST /api/v1/orders` (+`Idempotency-Key`), `POST /api/v1/reservations` |
+| 05 overselling | Oversell (concurrency) | Lab 2 (Runner×50) | `POST /api/v1/orders` `PS5-SLIM` |
+| 10 OAuth/IDOR | IDOR, Rate-limit, Validation | Lab 3, 4, 5 | `GET/DELETE /api/v1/orders/{id}`, rapid POST, bad body |
+| 02 saga/cancel | Saga-async, (cancel) | Lab 3 cancel | `DELETE /api/v1/orders/{id}` |
+| 01/04/06/09/11/12/13 | — (infra-level) | — | `notes.md` "Test karo" + topic "Tod ke dekho" (docker/kubectl/psql) |
+
+> Infra topics (outbox, reconciler, SLO, tracing, Kafka, caching, k8s) UI se nahi — unke `notes.md`/"Tod ke dekho" mein docker/psql/kubectl commands hain.
+
 ## Isme aur `interview-notes/` mein farak
 
 `interview-notes/` = **answer pata hai, revise karo** (Q -> model answer). Yeh folder = **naya passage, reason karo + tod ke dekho** — wahi jo round mein hota hai. Dono source of truth: [`../STATE.md`](../STATE.md).

@@ -111,6 +111,17 @@ public Reservation reserve(String orderRef, String sku, int quantity) {
 4. `SELECT FOR UPDATE`/`@Version` ke muqable conditional UPDATE kab behtar?
 5. Rate limiter "per pod" kya bound nahi karta, global ke liye kya?
 
+## Test karo (UI + Postman + curl)
+- **React UI:** `lab-console.html` → **Oversell** panel (concurrency). **Postman:** Lab 2 (Collection Runner ×50 iterations).
+- **curl** (fresh stack, PS5 stock=3; 20 parallel reserves → exactly 3×201, baaki 409):
+```bash
+{ for i in $(seq 1 20); do
+    curl -s -X POST http://localhost:8082/api/v1/reservations -H 'Content-Type: application/json' \
+      -d "{\"orderRef\":\"r-$i\",\"sku\":\"PS5-SLIM\",\"quantity\":1}" -o /dev/null -w "%{http_code}\n" &
+  done; wait; } | sort | uniq -c   # -> 3× 201, 17× 409, kabhi oversell nahi
+# ya k6 flash-sale (300 buyers / 3 units):  make loadtest TOKEN=$TOKEN   -> orders_confirmed == 3
+```
+
 ## Interview mein ye bolo
 *"Overselling lost-update race hai. Main check aur decrement ek atomic SQL mein karta hoon — `update … set quantity = quantity - :qty where quantity >= :qty`; DB row lock concurrent buyers ko serialise karta aur WHERE stock dobara check karta, rows-affected 0 matlab out-of-stock. reserve idempotent hai (orderRef pe). Front pe 50/s/pod rate limiter (429). Guarantee ko k6 test `orders_confirmed == 3` threshold se CI mein lock kiya — 300 buyers, 3 units. Stock decision kabhi cache se nahi."*
 
