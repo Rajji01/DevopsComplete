@@ -22,7 +22,7 @@ Users aren't seeing errors; they're seeing a spinner. Conversion is dropping.
 - order-service RED: Rate normal, **Errors normal**, **Duration p99 ~4s** (was 250ms).
 - A trace for a slow order (Tempo): total ~3.9s, of which the **`reserve` HTTP span to inventory-service = ~3.7s**; the DB spans are a few ms.
 - inventory-service RED: its own p99 is also elevated (~3.5s); error rate normal.
-- inventory-service → Postgres: `HikariCP` active connections pinned at **max (10/10)**, `pending` threads > 0; DB CPU moderate.
+- inventory-service → Postgres: `HikariCP` active connections pinned at **max (5/5 per pod)**, `pending` threads > 0; DB CPU moderate.
 - A marketing email blast went out ~20 min ago; inventory request Rate is **3× normal**.
 - No deploys. order-service circuit breaker for inventory: **CLOSED** (calls are succeeding, just slow).
 </details>
@@ -33,7 +33,7 @@ Users aren't seeing errors; they're seeing a spinner. Conversion is dropping.
 
 1. Errors are normal but p99 is 4s. In the trace, **which span owns the latency**, and what does that tell you about where to look next?
 2. The order-service→inventory breaker is **CLOSED**, not open. Why is that *consistent* with this symptom (and why didn't the breaker save you)?
-3. inventory-service's DB pool is pinned at 10/10 with pending threads. Translate that into **why each request is slow** using USE (utilization/saturation).
+3. inventory-service's DB pool is pinned at 5/5 (per pod) with pending threads. Translate that into **why each request is slow** using USE (utilization/saturation).
 4. "What changed?" points at a 3× traffic blast. Give two different fixes — one that treats the **symptom** fast, one that treats the **cause** — and the risk of each.
 5. The connect/read timeouts on the inventory client are 1s/2s. Given a 3.7s span, what does that tell you — and is something misconfigured?
 
@@ -48,11 +48,11 @@ Users aren't seeing errors; they're seeing a spinner. Conversion is dropping.
 
 **Breaker CLOSED is consistent (Q2).** The circuit breaker opens on **failures**, not slowness — these calls are **succeeding**, just slowly, so the failure rate stays under threshold and the breaker stays closed. A plain failure-rate breaker doesn't protect against a "slow but up" dependency (that's what a **slow-call-rate threshold** or a tighter timeout is for). So the breaker correctly didn't fire; it's not the tool for this.
 
-**USE on inventory's DB pool (Q3).** HikariCP at **10/10 active** = the pool is **fully utilized**; **pending threads > 0** = **saturation** (requests are *queuing* for a connection). So each inventory request now spends most of its time **waiting to get a DB connection**, not doing DB work — that's the ~3.5s. The DB itself isn't the bottleneck (moderate CPU); the **connection pool** is the bottleneck, starved by 3× the normal concurrency.
+**USE on inventory's DB pool (Q3).** HikariCP at **5/5 active** (per pod) = the pool is **fully utilized**; **pending threads > 0** = **saturation** (requests are *queuing* for a connection). So each inventory request now spends most of its time **waiting to get a DB connection**, not doing DB work — that's the ~3.5s. The DB itself isn't the bottleneck (moderate CPU); the **connection pool** is the bottleneck, starved by 3× the normal concurrency.
 
-**"What changed?" (Q4).** The marketing blast tripled inventory traffic. With a fixed pool of 10, 3× concurrency means lots of requests queue for a connection → latency balloons while throughput caps out.
+**"What changed?" (Q4).** The marketing blast tripled inventory traffic. With a fixed pool of 5 per pod (`DB_POOL_SIZE=5`), 3× concurrency means lots of requests queue for a connection → latency balloons while throughput caps out.
 
-**Root cause:** a traffic surge saturated inventory-service's DB connection pool (10/10, queueing), so reserve calls are slow, so checkout p99 is slow — a **saturation** problem, not an error or a code bug.
+**Root cause:** a traffic surge saturated inventory-service's DB connection pool (5/5 per pod, queueing), so reserve calls are slow, so checkout p99 is slow — a **saturation** problem, not an error or a code bug.
 
 **Two fixes (symptom vs cause, Q4):**
 - **Symptom, fast:** scale inventory-service out (more pods = more total pool capacity) and/or raise the pool size — *if* Postgres has headroom (`max_connections`!). **Risk:** raising pool size or pod count too far can **overwhelm Postgres** (connections are a DB-side limit too); you can move the bottleneck from the app pool to the DB.

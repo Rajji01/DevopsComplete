@@ -12,7 +12,7 @@ Every checkout request to order-service does **blocking IO**: a JDBC call to Pos
 
 ShopFlow runs on **Java 21** with `spring.threads.virtual.enabled: true`. Now each request runs on a **virtual thread** — a lightweight thread managed by the **JVM**, not the OS. Virtual threads are cheap (a few hundred bytes, grow on demand) and you can have **millions**. When a virtual thread hits blocking IO, the JVM **unmounts** it from its carrier (platform) thread and parks it; the carrier is freed to run another virtual thread; when the IO completes, the virtual thread is remounted and continues. So 1,000 requests all blocked on inventory no longer need 1,000 OS threads — a handful of carriers serve them all. The **thread-per-request** model stays (simple, debuggable, blocking code), but the **thread is nearly free**.
 
-Two caveats the notes stress. First, **pinning**: inside a `synchronized` block (or a native/foreign call), a virtual thread **cannot unmount** — it stays pinned to its carrier for the duration, so if you block on IO *inside* `synchronized`, you lose the benefit (use `ReentrantLock` instead). Second, **virtual threads don't remove real limits** — they move the bottleneck. order-service's blocking work still needs a **database connection** (HikariCP pool size 10) and inventory still has finite capacity. A million virtual threads all wanting a DB connection just means a million threads **waiting on a pool of 10**. Virtual threads make *waiting* cheap; they don't make the *resource* bigger.
+Two caveats the notes stress. First, **pinning**: inside a `synchronized` block (or a native/foreign call), a virtual thread **cannot unmount** — it stays pinned to its carrier for the duration, so if you block on IO *inside* `synchronized`, you lose the benefit (use `ReentrantLock` instead). Second, **virtual threads don't remove real limits** — they move the bottleneck. order-service's blocking work still needs a **database connection** (HikariCP pool is just **5 per pod** — `DB_POOL_SIZE=5` in k8s, budgeted against Postgres `max_connections`; the app default is 10) and inventory still has finite capacity. A million virtual threads all wanting a DB connection just means a million threads **waiting on that small pool**. Virtual threads make *waiting* cheap; they don't make the *resource* bigger.
 
 The design point: virtual threads let you keep **simple blocking code** (no reactive/async complexity) while scaling to many concurrent **IO-bound** requests — the shape of almost everything order-service does.
 
@@ -56,7 +56,7 @@ The design point: virtual threads let you keep **simple blocking code** (no reac
 <summary>B — Inference</summary>
 
 4. The 800 are queued because all ~200 platform threads are **held by requests that are merely waiting on IO** (inventory/DB), doing no CPU work — the threads are blocked, not busy, so CPU is idle while the pool is exhausted. Virtual threads fix exactly this: a virtual thread waiting on IO is **unmounted**, so it doesn't hold a carrier; the few carriers stay busy mounting *runnable* virtual threads, and all 1,000 requests can be "in flight" (parked on IO) at once. The waste was threads blocked on IO; virtual threads make blocked threads nearly free.
-5. Because the DB work needs a **connection from HikariCP (pool of 10)**, and that pool is a hard, finite resource. A million virtual threads can all *try* to do DB work, but only 10 can hold a connection at a time; the rest **wait for the pool**. Virtual threads make the *waiting* cheap (no OS-thread cost), but they don't enlarge the pool — the DB connection count is still the real ceiling on concurrent DB work.
+5. Because the DB work needs a **connection from HikariCP (pool of **5 per pod**)**, and that pool is a hard, finite resource. A million virtual threads can all *try* to do DB work, but only 5 can hold a connection at a time; the rest **wait for the pool**. Virtual threads make the *waiting* cheap (no OS-thread cost), but they don't enlarge the pool — the DB connection count is still the real ceiling on concurrent DB work.
 </details>
 
 <details>
@@ -101,7 +101,7 @@ export default function () {
 }
 JS
 # watch: order-service stays responsive at 500 concurrent VUs even though each blocks on inventory+DB;
-# the real limiter you'll hit is the HikariCP pool (10) / inventory capacity, NOT an OS-thread ceiling.
+# the real limiter you'll hit is the HikariCP pool (5/pod; 10 local default) / inventory capacity, NOT an OS-thread ceiling.
 docker compose -f shopflow/docker-compose.yml exec postgres psql -U orders -d orders \
   -c "select count(*) from pg_stat_activity where datname='orders';"   # DB connections stay ~pool size, not ~500
 ```
@@ -124,5 +124,5 @@ docker compose -f shopflow/docker-compose.yml exec postgres psql -U orders -d or
 
 **Interviewer's lens:** "virtual threads se unlimited concurrency?" ka sahi jawab — **nahi, bottleneck DB pool pe shift hota**. Aur pinning (`synchronized` + IO) ka trap. Ye Java-21 round ka signature hai.
 
-> Interview line: *"ShopFlow Java 21 pe `spring.threads.virtual.enabled:true` chalata hai — har request ek virtual thread pe, jo blocking IO (inventory HTTP, JDBC) pe JVM se unmount ho jaata, carrier free, millions threads cheap. Thread-per-request ka simple blocking code rehta, par OS-thread ceiling hat jaata. Do catch: `synchronized`+IO se pinning (ReentrantLock use karo), aur real limit ab HikariCP pool (10) / downstream capacity hai — virtual threads waiting sasta karte, resource bada nahi. CPU-bound kaam inse scale nahi hota, sirf IO-bound."*
+> Interview line: *"ShopFlow Java 21 pe `spring.threads.virtual.enabled:true` chalata hai — har request ek virtual thread pe, jo blocking IO (inventory HTTP, JDBC) pe JVM se unmount ho jaata, carrier free, millions threads cheap. Thread-per-request ka simple blocking code rehta, par OS-thread ceiling hat jaata. Do catch: `synchronized`+IO se pinning (ReentrantLock use karo), aur real limit ab HikariCP pool (5/pod) / downstream capacity hai — virtual threads waiting sasta karte, resource bada nahi. CPU-bound kaam inse scale nahi hota, sirf IO-bound."*
 </content>

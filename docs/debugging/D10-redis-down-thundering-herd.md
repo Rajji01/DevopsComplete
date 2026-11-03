@@ -19,7 +19,7 @@ Redis (the inventory-service cache) crashed. Nothing returned an error — no 5x
 
 - Redis pod: `CrashLoopBackOff`. inventory-service logs: repeated `WARN … cache 'products' GET failed … falling back` (not errors — warnings).
 - inventory-service readiness: **UP** (Redis is excluded from the readiness group). Error rate normal; **latency** way up.
-- Postgres: CPU ~95%, HikariCP active connections 10/10 with a growing wait queue, lots of identical `SELECT … FROM product WHERE sku = ?` queries.
+- Postgres: CPU ~95%, HikariCP active connections 5/5 per pod (`DB_POOL_SIZE=5`) with a growing wait queue, lots of identical `SELECT … FROM product WHERE sku = ?` queries.
 - Traffic is **unchanged** from an hour ago — same request rate, same SKUs (a few hot ones dominate: the sale items).
 - When Redis was up, cache hit rate was ~98%, so Postgres saw ~2% of product reads.
 </details>
@@ -43,11 +43,11 @@ Redis (the inventory-service cache) crashed. Nothing returned an error — no 5x
 
 **Why no errors + still Ready (Q1).** inventory-service's cache is **fail-open**: `CacheConfig` uses a `LoggingCacheErrorHandler`, so a Redis failure is **logged and the read falls through to Postgres** instead of erroring — and Redis is **excluded from the readiness group**, so a cache outage doesn't pull the pods from the load balancer. This is the *correct* design: a cache must never be a hard dependency of a read path (otherwise a Redis blip becomes a full outage, and readiness would cascade — see topic 07). The price of that correctness is exactly what you're seeing: when the cache vanishes, **load shifts to the DB** instead of failing. Fail-open protects *correctness and availability*, not *capacity*.
 
-**The arithmetic (Q2, root cause).** With a ~98% hit rate, Postgres was serving ~2% of product reads. Redis down ⇒ hit rate 0% ⇒ Postgres now serves **100%** — roughly a **50× jump** in read queries, at unchanged user traffic. The DB's connection pool (10) saturates, queries queue, latency balloons, CPU pegs. The root cause isn't the DB — it's that **the cache outage removed the 98% shield** and the DB was never sized for the unshielded load. This is a **cache stampede / thundering herd**.
+**The arithmetic (Q2, root cause).** With a ~98% hit rate, Postgres was serving ~2% of product reads. Redis down ⇒ hit rate 0% ⇒ Postgres now serves **100%** — roughly a **50× jump** in read queries, at unchanged user traffic. The DB's connection pool (just 5 per pod, `DB_POOL_SIZE=5`) saturates, queries queue, latency balloons, CPU pegs. The root cause isn't the DB — it's that **the cache outage removed the 98% shield** and the DB was never sized for the unshielded load. This is a **cache stampede / thundering herd**.
 
 **Hot keys make it worse (Q3).** A few hot SKUs (the sale items) got almost all the traffic. When the cache was up, each was one Redis key served in microseconds. Cache gone, **every** request for a hot SKU now hits Postgres for the *same* row simultaneously — many identical `SELECT … WHERE sku = ?` in flight at once, all contending for connections. Concentrated keys turn a 50× average into a much sharper spike on the few rows everyone wants.
 
-**RED vs USE (Q4).** RED on inventory-service shows **normal errors, high duration** — "slow, not broken", so it's saturation or a slow dependency, not a crash. Switch to **USE** on the **Postgres connection pool**: **Utilization** 10/10, **Saturation** a growing wait queue, **Errors** none. That localizes it precisely: the bottleneck is the **DB connection pool**, starved because the cache stopped absorbing reads. (The missing Redis is the *trigger*; the saturated pool is the *mechanism*.)
+**RED vs USE (Q4).** RED on inventory-service shows **normal errors, high duration** — "slow, not broken", so it's saturation or a slow dependency, not a crash. Switch to **USE** on the **Postgres connection pool**: **Utilization** 5/5 per pod, **Saturation** a growing wait queue, **Errors** none. That localizes it precisely: the bottleneck is the **DB connection pool**, starved because the cache stopped absorbing reads. (The missing Redis is the *trigger*; the saturated pool is the *mechanism*.)
 
 **Fixes (Q5):**
 - **Restore Redis** — the real fix; hit rate recovers, DB load drops back to ~2%. But bring it back carefully: a cold cache means the first wave still hits Postgres, so you may need to warm it or ramp traffic.

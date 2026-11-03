@@ -16,7 +16,7 @@ Catch: virtual threads resource limit nahi badhate — real bottleneck (DB conne
 1. **Config:** `spring.threads.virtual.enabled: true` (Java 21). Spring har request ko virtual thread pe chalata.
 2. **Unmount/mount:** virtual thread blocking IO (JDBC, `restClient.reserve`) pe JVM se **unmount**, carrier platform thread free → doosra virtual thread mount. IO complete → **remount**, resume.
 3. **Pinning:** `synchronized` block / native call ke andar unmount **nahi** hota → carrier pinned. IO inside `synchronized` = benefit gaya → `ReentrantLock` use karo.
-4. **Real limit:** DB kaam ke liye HikariCP connection (pool 10) chahiye. Million virtual threads → 10 connection pe wait. Pool chhota jaanbujh ke (`10/pod × ~10 pods < max_connections=200`).
+4. **Real limit:** DB kaam ke liye HikariCP connection (pool **5/pod**, k8s) chahiye. Million virtual threads → 5 connection pe wait. Pool chhota jaanbujh ke (`5/pod × ~10 pods × services < max_connections=200`; app default 10).
 5. **IO vs CPU:** IO-bound → virtual threads help (waiting sasta). CPU-bound → nahi (core chahiye, thread count se parallelism nahi badhta).
 
 ## Flow diagram (platform vs virtual)
@@ -31,7 +31,7 @@ Catch: virtual threads resource limit nahi badhate — real bottleneck (DB conne
         few carriers (≈cores) keep mounting runnable VTs
    → all 1000 "in flight", OS threads ≈ cores, no queue
         │
-   real limit now: HikariCP pool (10) / inventory capacity
+   real limit now: HikariCP pool (5/pod) / inventory capacity
         (VTs wait cheaply for the pool; pool stays small)
 ```
 
@@ -63,7 +63,7 @@ lock.lock(); try { restClient.call(); dbRead(); } finally { lock.unlock(); }   /
    req1..1000 → 1000 virtual thread
    har ek inventory/DB IO pe → UNMOUNT from carrier → park; carrier free → agla VT mount
    few carriers (≈cores) sab ka wait sambhal lete → 1000 "in flight", no queue
-   REAL limit: HikariCP pool(10) → 1000 VT 10 connection pe cheaply wait (OS-thread cost nahi)
+   REAL limit: HikariCP pool(5/pod) → 1000 VT 5 connection pe cheaply wait (OS-thread cost nahi)
 ```
 **Seekh:** virtual threads waiting sasta karte (IO-bound scale), resource (DB pool) bada nahi; CPU-bound se scale nahi; synchronized+IO = pinning.
 
@@ -83,7 +83,7 @@ lock.lock(); try { restClient.call(); dbRead(); } finally { lock.unlock(); }   /
 5. CPU-bound endpoint virtual threads se scale hoga? Kyu/kyu nahi?
 
 ## Interview mein ye bolo
-*"ShopFlow Java 21 pe `spring.threads.virtual.enabled:true` chalata — har request virtual thread pe, blocking IO (inventory HTTP, JDBC) pe JVM se unmount, carrier free, millions cheap. Thread-per-request ka simple blocking code rehta par OS-thread ceiling hat jaata. Do catch: `synchronized`+IO = pinning (ReentrantLock use karo), aur real limit ab HikariCP pool (10) / downstream — virtual threads waiting sasta karte, resource bada nahi. CPU-bound kaam inse scale nahi, sirf IO-bound. Reactive se farak: simple blocking code vs callbacks/backpressure."*
+*"ShopFlow Java 21 pe `spring.threads.virtual.enabled:true` chalata — har request virtual thread pe, blocking IO (inventory HTTP, JDBC) pe JVM se unmount, carrier free, millions cheap. Thread-per-request ka simple blocking code rehta par OS-thread ceiling hat jaata. Do catch: `synchronized`+IO = pinning (ReentrantLock use karo), aur real limit ab HikariCP pool (5/pod) / downstream — virtual threads waiting sasta karte, resource bada nahi. CPU-bound kaam inse scale nahi, sirf IO-bound. Reactive se farak: simple blocking code vs callbacks/backpressure."*
 
 > Related: [`../09-resilience-breaker-retry/`](../09-resilience-breaker-retry/) (blocking inventory call), [`../03-idempotency-three-ways/`](../03-idempotency-three-ways/). Debug: [`../../debugging/D03-latency-spike-no-errors.md`](../../debugging/D03-latency-spike-no-errors.md) (pool saturation).
 </content>

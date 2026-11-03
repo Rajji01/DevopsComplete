@@ -597,3 +597,18 @@ Walk 32 lesson: **enrichment written at speed is exactly where a D08 hides.** Th
 
 ### Honest status (Walks 22–32)
 - Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Comprehension **01–20** (01–17 Code+dry-run verified, 02/03/05/10 Test-karo); debugging **D01–D15**; all synced/enriched/verified; links clean. Local commits ahead of `origin/master`, **not pushed** (per "local hi, push mat karna").
+
+## Walk 33: the DB connection pool was "10" in three places — it's 5 (Nov 4, 2026)
+
+Scope: audit the debugging drills (D01–D15) and the new topics (18–20) against source for any claim that drifted — and cross-check **numbers** between docs (the easiest kind of inconsistency to ship).
+
+Verified correct (no change): D12's `@JsonIgnoreProperties(ignoreUnknown = true)` is real on all three event copies (notification `OrderEvent`, order `PaymentEvent`, payment `OrderEvent`) — so its "ignore-unknown tolerates adds, not renames" reasoning is grounded; `JwtRolesConverter` really reads `cognito:groups` else `realm_access.roles` → `ROLE_*` (D09); `hpa.yaml` (min 2 / max 6 / CPU 70 / stabilization 300) and `deployment.yaml` (maxUnavailable 0 / grace 45 / preStop) match D14/D15/topic-18; `backup-cronjob.yaml` and `irsa.tf` match topics 19/20.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **The DB connection pool was cited as "10" in topic 16, D03 and D10, but every service ships `DB_POOL_SIZE=5` in k8s** (`k8s/base/*/deployment.yaml`), and `HLD-SYSTEM-DESIGN.md` states "pool **5**/pod × HPA 10 × services ≈ 100 < max_connections 200". The app *default* is 10 (`application.yml` `${DB_POOL_SIZE:10}`, used only in local compose), so "10" wasn't nonsense — but it **contradicted the architecture doc and the deployed config**, and the "budget" math only works at 5 | A reader quoting "pool of 10" would mismatch both the HLD and the real manifests — and the connection-budget reasoning (why the pool is *small*) falls apart at 10×10×services | Changed the canonical number to **5 per pod** across topic 16 (passage/answers/hands-on/notes/interview-line), D03 (`5/5` saturation), and D10 (`5/5`), each noting the app default is 10 (local compose). Now consistent with `HLD`, `EASY-NOTES`, `SELF-WALK` Walk 2 |
+
+Walk 33 lesson: **numbers are the easiest thing to get inconsistent across many docs, and the easiest to grep.** One config value (`DB_POOL_SIZE=5`) is the source of truth; three docs had drifted to the framework default (10). When a value appears in the architecture doc, make every other doc cite *that*, not the library default.
+
+### Honest status (Walks 22–33)
+- Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). All claims re-verified against source; DB-pool number now consistent (5/pod) across all docs; links clean.
