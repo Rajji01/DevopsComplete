@@ -35,6 +35,7 @@
 | 28 | **Concurrency control** | Lost-update ke 3 ilaj, teeno repo mein: **atomic UPDATE** (stock `where qty>=:qty`, no lock, rows-affected) · **optimistic `@Version`** (orders, Hibernate `WHERE version=?`, loser→409) · **pessimistic `FOR UPDATE SKIP LOCKED`** (relay, `@Lock(PESSIMISTIC_WRITE)`+timeout `-2`). Rare→optimistic (warna retry-storm), hot-row→pessimistic (warna convoy/deadlock), 1-col→atomic. Isolation READ-COMMITTED default (2-stmt RMW=lost update), write-skew→SERIALIZABLE SSI, big read→MVCC snapshot not `FOR UPDATE`. **Lock + remote call = pool-starve outage (D16)**; cross-service=saga not lock. |
 | 29 | **Silent data bugs** | **No exception ≠ correct.** Full-row overwrite (no `@DynamicUpdate` → bina `@Version` partial-edits silently revert) · enum **ORDINAL bomb** (ShopFlow `STRING`=safe) · **index cliff** (un-indexed/implicit-cast → seq scan; dev 2ms/prod 4s → `EXPLAIN ANALYZE`) · `@Transactional` **self-invocation** (proxy bypass=no txn) + **`readOnly=true`** (no flush) · **stale read-your-writes** (replica lag, intermittent). Detect: primary pe re-read (lost-write vs stale-read), EXPLAIN, node-tagged traces. |
 | 30 | **Replication / topology** | **Data boundary = failure mode.** DB-per-service (4 alag DB → no cross-service txn/JOIN → outbox/saga, eventual) · many-pods-1-DB (concurrency DB pe + `pods×pool≤max_connections`) · **sync standby** (Multi-AZ, HA/zero-loss, read ke liye nahi) vs **async replica** (read-scale, **lag→read-your-writes**) vs **CDC** vs **multi-primary** (conflict/split-brain). Payments sync, counter async. Idempotency=replay safe, conflict-resolution nahi. |
+| 31 | **JPA at scale** | ORM chhupa cost: **OSIV** (`open-in-view` default true → conn held poore request; ShopFlow **false**) · **N+1** (lazy loop; flat entities→none; `join fetch`/DTO) · **OFFSET vs keyset** (OFFSET n rows scan+discard+`count(*)`; 50M→keyset seek; ShopFlow OFFSET=limitation) · unbounded **`findAll()`** (whale-customer OOM) · big-loop **flush/clear** (relay 100-bounded). **Generated SQL dekho** (query-count ∝ rows = N+1). |
 
 ## 2. Symptom → cause → fix (debugging, 2am wala)
 | Symptom | Likely cause | Fix / check | Drill |
@@ -58,6 +59,7 @@
 | Flash sale: 409 storm, p99 up, data still correct | **optimistic `@Version` on hot row** → conflict/retry storm | atomic `UPDATE…WHERE qty>=` (no lock, rows-0=cleansoldout) | D17 |
 | "Placed order, list empty" — 1-3%, staging clean | **async replica lag** → read-your-writes miss (no error) | fresh reads → primary (pin/LSN-wait), not a sleep | D18 |
 | 2ms staging, 4s prod, same SQL, no deploy | missing/defeated index → **Seq Scan** at volume | `EXPLAIN (ANALYZE)`; add index / fix implicit cast | D19 |
+| Random `deadlock detected`, only under load | two-row writes in **opposite lock order** (A→B vs B→A) | lock in consistent order (min id first) + retry | D20 |
 
 ## 3. Quick-fire facts
 - **Status codes** (`GlobalExceptionHandler`): 404 not-found/IDOR · 409 not-cancellable / dup-key / **@Version optimistic-lock** · 422 Idempotency-Key cross-user · 429 rate-limit · 503 inventory-unavailable(+orderId) · 400 validation(problem+json).

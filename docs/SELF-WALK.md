@@ -719,3 +719,22 @@ Walk 41 lesson: the "tagde" prod bugs are the **no-exception** ones, and teachin
 
 ### Honest status (Walks 22–41)
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–30** (25/26/27 capstone trilogy; 28 concurrency; 29 silent-data; 30 replication/topology); debugging **D01–D19**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims source-verified; links clean. Committed **locally**, push pending Abhishek's word.
+
+## Walk 42: two-row deadlock drill (D20) + JPA-at-scale (31) (Nov 4, 2026)
+
+Self-walk continuation of the data/concurrency thread. Source audit first:
+- **No entity relationships** anywhere (`grep @OneToMany/@ManyToOne` = none) — `Order` is flat (`sku`/`quantity` columns) → **N+1 is structurally absent** (a design choice, not luck).
+- **`open-in-view: false`** in all four services (`application.yml`, comment "no lazy loading in the web layer") → OSIV anti-pattern deliberately off.
+- List pagination is **OFFSET `Page`**: `OrderController` `PageRequest.of(page, size, Sort DESC createdAt)` + `OrderRepository.findByCustomerId(... Pageable)` → the deep-page cliff the HLD §5 already flags for 50M orders (keyset is the fix).
+- `ProductController.findAll()` unbounded (fine for small catalog, trap if it grows).
+
+**D20 — two-row deadlock:** random `deadlock detected` only under load, unreproducible single-threaded. Mirror-image transactions (A→B vs B→A) lock two rows in **opposite order** → cycle; Postgres aborts one. Primary fix = **consistent global lock order** (min id first, cycle impossible); secondary = **retry on deadlock**; anti-fix = a table/global lock (removes deadlock, creates a serialization convoy). Reproduce block uses two psql sessions on `product` rows. `[NEW]` transfer scenario (ShopFlow has none) — lock-ordering lesson applies to any multi-row write.
+
+**Topic 31 — JPA/Hibernate at scale:** the ORM traps that bite only in prod — **OSIV** (ShopFlow off; links to D16 pool), **N+1** (flat entities → none; `[TRAP]` if you add a lazy collection), **OFFSET-vs-keyset** (real current limitation; OFFSET scans+discards + `count(*)`, keyset seeks via `idx_orders_customer_created`), **unbounded `findAll`** (whale-customer OOM via data skew), **first-level cache in big loops** (relay is bounded-100 + `clear/flush`). Thesis: **see the generated SQL** — Java reads innocent while SQL does O(n); N+1's signature is "query-count ∝ rows."
+
+Indexed 31 + D20 everywhere (comprehension README row+pairings, debugging README row+status D01–D20, RAPID-REVISION §1 row 31 + §2 D20, INDEX 01..31/D01..D20, STATE). Fixed a botched sed on STATE's topic-30 description (restored + appended 31). Link checks clean.
+
+Walk 42 lesson: ShopFlow's data layer is a *positive* teaching asset — OSIV-off, flat entities, bounded relay are the "done right" baseline, and the one genuine limitation (OFFSET pagination) is stated honestly against the HLD's own keyset recommendation. Deadlocks and N+1 are the two canonical "load-only, unreproducible, no-corruption" prod bugs — both diagnosed by their *shape* (timing-dependence; query-count ∝ rows), not by an error message.
+
+### Honest status (Walks 22–42)
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–31** (25/26/27 capstones; 28 concurrency; 29 silent-data; 30 replication; 31 JPA-scale); debugging **D01–D20**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims source-verified; links clean. Committed **locally**, push pending Abhishek's word.
