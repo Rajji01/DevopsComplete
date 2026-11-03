@@ -60,6 +60,16 @@ Support tickets: a batch of customers received **two identical "order confirmed"
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+# a true dup needs a rebalance mid-processing (timing). Instead PROVE the guard that makes dups safe:
+make up && TOKEN=$(make -s token)
+ID=$(curl -s -X POST localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"AIRPODS-PRO","quantity":1}' | jq -r .orderRef); sleep 3
+docker compose -f shopflow/docker-compose.yml exec postgres psql -U payments -d payments -c "select count(*) from payment where order_ref='$ID';"  # exactly 1 (PK=eventId)
+# payments_duplicates_total increments on a redelivery WITHOUT a 2nd payment row.
+```
+
 ## The pattern
 
 - **Under at-least-once, a duplicate *delivery* is normal; a duplicate *effect* is the bug.** Don't chase "why did Kafka redeliver" — chase "why wasn't the consumer idempotent."

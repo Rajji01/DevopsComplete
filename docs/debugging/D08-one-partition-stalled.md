@@ -56,6 +56,18 @@
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+make up
+echo 'not-json-at-all' | docker compose -f shopflow/docker-compose.yml exec -T kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 --topic payments.events        # poison pill
+sleep 12   # order-service retries (10s) then dead-letters
+docker compose -f shopflow/docker-compose.yml exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic payments.events.DLT --from-beginning --timeout-ms 5000   # the record landed here
+docker compose -f shopflow/docker-compose.yml exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+  --describe --group order-service          # per-partition LAG column (one partition, not all)
+```
+
 ## The pattern
 
 - **Per-partition lag = a per-partition cause.** One partition hot, others cold, consumers healthy ⇒ a stuck record (poison pill), not a broker/consumer/dependency problem. Always read lag **per partition**, not just the group total.

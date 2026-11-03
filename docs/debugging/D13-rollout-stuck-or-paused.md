@@ -58,6 +58,17 @@ The status line is the whole diagnosis; don't guess from "it's been a while."
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+# minikube + Argo Rollouts
+make k8s-dev && kubectl create ns argo-rollouts
+kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+kubectl apply -k shopflow/k8s/rollouts
+kubectl argo rollouts get rollout order-service -n shopflow --watch   # read Status: Paused vs Degraded vs Progressing
+# trigger a version: kubectl argo rollouts set image order-service order-service=<tag> -n shopflow
+# promote past a pause (if analysis is passing): kubectl argo rollouts promote order-service -n shopflow
+```
+
 ## The pattern
 
 - **"Slow" is not "stuck" for a progressive rollout.** Pauses and analysis windows are *designed* latency; read the status before reacting.

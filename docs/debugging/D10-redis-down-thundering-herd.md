@@ -57,6 +57,18 @@ Redis (the inventory-service cache) crashed. Nothing returned an error — no 5x
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+make up
+curl -s localhost:8082/api/v1/products/PS5-SLIM -o /dev/null -w "warm=%{http_code}\n"
+docker compose -f shopflow/docker-compose.yml stop redis                             # cache gone
+curl -s localhost:8082/api/v1/products/PS5-SLIM -o /dev/null -w "cold=%{http_code}\n"  # 200 (fail-open, logs a WARN)
+curl -s localhost:8082/actuator/health/readiness | jq            # UP (Redis excluded from readiness)
+docker compose -f shopflow/docker-compose.yml exec postgres psql -U inventory -d inventory -c \
+  "select count(*) from pg_stat_activity where datname='inventory';"  # read load now on Postgres
+docker compose -f shopflow/docker-compose.yml start redis                            # FIX: hit rate recovers, DB load drops
+```
+
 ## The pattern
 
 - **"No errors, service Ready, but slow and the DB is hot" = fail-open cache outage.** The absence of errors is the clue: a correctly fail-open cache converts a Redis outage into DB *load*, not failures.

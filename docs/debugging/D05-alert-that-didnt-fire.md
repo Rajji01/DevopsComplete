@@ -63,6 +63,17 @@ Your job: figure out **why the alert didn't fire**, not what caused the latency.
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+make up && TOKEN=$(make -s token)
+for i in $(seq 1 20); do curl -s -X POST localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"PIXEL-9","quantity":1}' -o /dev/null; done
+# the fix in action: the le=1.0 bucket the SLI depends on MUST exist
+curl -s localhost:8081/actuator/prometheus | grep http_server_requests_seconds_bucket | grep 'le="1.0"' | grep /api/v1/orders
+cd shopflow && promtool check rules monitoring/*.yml && promtool test rules monitoring/tests/*.yml
+# remove management.metrics.distribution.slo line, rebuild -> that grep goes empty -> sli:checkout_bad loses latency signal
+```
+
 ## The pattern
 
 - **To debug an alert that didn't fire, evaluate it bottom-up: inputs → rule → routing.** Check the data the rule reads *first*; most "silent alert" bugs are empty/renamed inputs, not bad thresholds.

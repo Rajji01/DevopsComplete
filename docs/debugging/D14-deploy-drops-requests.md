@@ -54,6 +54,15 @@ Since last week, **every** order-service rollout produces a short burst of **502
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+# minikube: show the preStop race. With a steady client hitting the Service during a rollout:
+kubectl -n shopflow get deploy order-service -o yaml | grep -A3 preStop   # the sleep 5 that buys the dereg window
+# remove the lifecycle.preStop block, apply, then: while true; do curl -s -o /dev/null -w "%{http_code} " <svc-url>; done
+kubectl -n shopflow rollout restart deploy/order-service   # -> brief 502/connection-reset bursts per pod
+# restore preStop -> clean rollout, no drops.
+```
+
 ## The pattern
 
 - **5xx only during a rollout = the termination path, not the app.** And **502/reset ≠ 500**: the request died at the connection, not in the code.

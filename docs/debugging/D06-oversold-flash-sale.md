@@ -67,6 +67,15 @@ A flash sale listed **3** PS5 units. After it ended, ops finds **5** orders in `
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+make up && TOKEN=$(make -s token)
+make loadtest TOKEN=$TOKEN                 # 300 buyers / 3 PS5 -> threshold orders_confirmed == 3
+docker compose -f shopflow/docker-compose.yml exec postgres psql -U inventory -d inventory -c \
+  "select sku, quantity from product where sku='PS5-SLIM';"   # 0, kabhi negative nahi
+# break it: swap decrementStock for a read-check-write in Java, re-run -> confirmed jumps above 3.
+```
+
 ## The pattern
 
 - **"Only under concurrency, never sequential" = a race / lost update.** Look for a read-then-write on shared state with no lock or atomicity.

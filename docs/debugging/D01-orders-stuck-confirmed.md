@@ -74,6 +74,17 @@ Check the payment-service logs. Here: repeated `could not process … retrying` 
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+make up && TOKEN=$(make -s token)
+docker compose -f shopflow/docker-compose.yml stop payment-service                 # consumer (group) down
+for i in $(seq 1 5); do curl -s -X POST localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"PIXEL-9","quantity":1}' -o /dev/null; done
+docker compose -f shopflow/docker-compose.yml exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+  --describe --group payment-service      # LAG > 0; those orders sit CONFIRMED (stock reserved, unpaid)
+docker compose -f shopflow/docker-compose.yml start payment-service                 # FIX: lag drains -> orders flow CONFIRMED->PAID
+```
+
 ## The pattern
 
 - **A flat success metric + a climbing pending metric = a consumer/worker behind, not the producer.** The thing producing work is fine; the thing consuming it has stopped making progress.

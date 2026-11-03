@@ -54,6 +54,15 @@ order-service's replica count is **oscillating**: 2 → 4 → 2 → 5 → 3, cha
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+# minikube + metrics-server (minikube addons enable metrics-server)
+kubectl -n shopflow get hpa order-service        # Targets / MINPODS / MAXPODS / REPLICAS
+kubectl -n shopflow get hpa order-service -w      # watch REPLICAS move with CPU
+# to induce flapping: remove behavior.scaleDown.stabilizationWindowSeconds, apply a bursty CPU load ->
+#   REPLICAS oscillate; restore the 300s window -> it settles.
+```
+
 ## The pattern
 
 - **Flapping + flat traffic = a tuning/damping problem, not a load problem.** The metric is oscillating around the target; the autoscaler faithfully chases it.

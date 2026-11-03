@@ -65,6 +65,14 @@ Users aren't seeing errors; they're seeing a spinner. Conversion is dropping.
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+# approximate (full repro needs sustained ~3x load): drive load + watch inventory saturation
+make up && TOKEN=$(make -s token) && make loadtest TOKEN=$TOKEN
+curl -s localhost:8082/actuator/prometheus | grep -E 'hikaricp_connections_(active|pending)'   # pending > 0 = pool saturated
+# a slow order's trace (Tempo, localhost:3000) shows the reserve span owning the latency, not order-service.
+```
+
 ## The pattern
 
 - **Slow ≠ broken.** Normal errors + high latency points at **saturation or a slow dependency**, not a crash or a bug. Different signals, different tools.

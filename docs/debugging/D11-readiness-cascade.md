@@ -54,6 +54,17 @@ inventory-service had a 90-second blip (a slow restart). During it, **order-serv
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+make up
+# CORRECT config: a downstream outage does NOT flip readiness
+docker compose -f shopflow/docker-compose.yml stop inventory-service
+curl -s localhost:8081/actuator/health/readiness | jq            # UP (group = readinessState,db only)
+docker compose -f shopflow/docker-compose.yml start inventory-service
+# SEE the cascade bug: point the readiness probe at /actuator/health (aggregate, includes inventory),
+# stop inventory -> readiness DOWN -> (minikube) kubectl -n shopflow get endpoints order-service = empty.
+```
+
 ## The pattern
 
 - **All replicas unhealthy at once + each replica fine = shared config, not instance failure.** Staggered = per-pod; simultaneous = something they all read the same way.

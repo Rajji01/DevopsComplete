@@ -55,6 +55,20 @@ Finance flags that ~1% of `PAID` orders over the last three days were **never em
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+make up
+# produce a few malformed records (like D08) and watch the DLT depth grow while main-group lag stays 0:
+for i in 1 2 3; do echo "bad-$i" | docker compose -f shopflow/docker-compose.yml exec -T kafka /opt/kafka/bin/kafka-console-producer.sh \
+  --bootstrap-server localhost:9092 --topic payments.events; done
+sleep 12
+docker compose -f shopflow/docker-compose.yml exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic payments.events.DLT --from-beginning --timeout-ms 5000   # records piling up here
+docker compose -f shopflow/docker-compose.yml exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 \
+  --describe --group order-service          # LAG ~0 (the escape hatch keeps the main topic flowing)
+# the gap: there is no DLT-depth alert -> add one (alert on the escape hatch).
+```
+
 ## The pattern
 
 - **A growing DLT with zero lag = the error handler is silently eating a systematic failure.** Lag watches the main topic; the DLT is a separate graveyard you must watch separately.

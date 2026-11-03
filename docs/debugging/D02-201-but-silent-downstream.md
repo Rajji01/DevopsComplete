@@ -67,6 +67,17 @@ Here the signals point squarely at **Kafka down** (CrashLoop broker, `kafka-topi
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+make up && TOKEN=$(make -s token)
+docker compose -f shopflow/docker-compose.yml stop kafka                            # publish leg down (write path still fine)
+curl -s -X POST localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $(uuidgen)" -d '{"sku":"PIXEL-9","quantity":1}' -o /dev/null -w "POST=%{http_code}\n"  # 201 (order safe)
+docker compose -f shopflow/docker-compose.yml exec postgres psql -U orders -d orders -c \
+  "select count(*) from outbox_event where published_at is null;"   # > 0 (outbox_unpublished climbs; see 9090)
+docker compose -f shopflow/docker-compose.yml start kafka                           # FIX: relay drains, count -> 0, notification arrives
+```
+
 ## The pattern
 
 - **Healthy sync path + dead async effects = look at the queue/relay between them**, not at the API. The 201 only proves the first DB write committed.

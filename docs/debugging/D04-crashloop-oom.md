@@ -62,6 +62,14 @@ A pod crash-loop alert fires for one `order-service` pod (the platform's `KubePo
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+# the SIGNAL is what to learn (forcing a real OOM locally is fiddly):
+kubectl -n shopflow describe pod <order-pod> | grep -A3 "Last State"   # Reason: OOMKilled, Exit Code: 137
+kubectl -n shopflow logs <order-pod> --previous | tail                 # log just STOPS (SIGKILL, no stack trace)
+# force it (minikube): lower the memory limit a lot + add load -> OOMKilled; raise limit only delays an unbounded leak.
+```
+
 ## The pattern
 
 - **137 = SIGKILL; with `OOMKilled` it's the cgroup limit, not the JVM.** `describe` → Last State + exit code is the first read for any CrashLoop.

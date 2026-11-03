@@ -56,6 +56,18 @@ The team migrated the identity provider (Keycloak → a new Keycloak realm / Cog
 
 ---
 
+## Reproduce / test (apne haath se)
+```bash
+make up && TOKEN=$(make -s token)          # valid token from the REAL realm
+# point order-service at a WRONG issuer (simulate the migration mistake):
+docker compose -f shopflow/docker-compose.yml stop order-service
+# in shopflow/docker-compose.yml set JWT_ISSUER_URI to a wrong realm, e.g. .../realms/WRONG, then:
+docker compose -f shopflow/docker-compose.yml up -d order-service && sleep 20
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8081/api/v1/orders -H "Authorization: Bearer $TOKEN"  # 401
+docker compose -f shopflow/docker-compose.yml logs order-service | grep -iE "iss|jwt|jwk"   # "The iss claim is not valid" / JWKS fetch fail
+# FIX: restore the correct JWT_ISSUER_URI -> 200
+```
+
 ## The pattern
 
 - **Blanket 401 = authentication layer; blanket 403 = authorization layer.** The status code tells you which half of security to open first — don't debug roles when the token is being rejected.
