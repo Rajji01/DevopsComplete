@@ -1,7 +1,7 @@
 # 12 · Caching: cache-aside, evict-not-update, fail-open — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `inventory-service/…/product/ProductController.java` (`@Cacheable`), `reservation/ReservationService.java` (`@CacheEvict`), `config/CacheConfig.java` (fail-open, JSON).
-> **Debug it live:** [D06](../../debugging/D06-oversold-flash-sale.md) — isi mechanism ka symptom-se-root-cause drill.
+> **Debug it live:** [D06](../../debugging/D06-oversold-flash-sale.md) · [D10](../../debugging/D10-redis-down-thundering-herd.md) — isi mechanism ka symptom-se-root-cause drill.
 
 ---
 

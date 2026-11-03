@@ -1,6 +1,7 @@
 # 10 · JWTs, audience, and the 404-not-403 trick — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `order-service/…/security/SecurityConfig.java`, `JwtDecoderConfig.java` (audience), `order/Caller.java`, `OrderService.get/list` (IDOR).
+> **Debug it live:** [D09](../../debugging/D09-401-after-idp-change.md) — isi mechanism ka symptom-se-root-cause drill.
 
 ---
 

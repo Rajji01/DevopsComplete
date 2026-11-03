@@ -520,3 +520,20 @@ Walk 27 lesson: **reviewing someone else's doc is also a mirror.** The fastest w
 
 ### Honest status (Walks 22–27)
 - Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Six local commits ahead of `origin/master`, **not pushed** (holding per "no push"). One `git push` ships Walks 22–27 together when the hold lifts.
+
+## Walk 28: three new debugging drills — and a bug I wrote into one (Nov 3, 2026)
+
+Scope: extend the debugging series with the three highest-value planned drills (the "real-time debugging" skill Abhishek is training for), grounded in shopflow, and index them properly this time (the D07 miss from Walk 24 is the counter-example).
+
+Built: **D08** (lag on one partition only → poison pill + a DLT topic that didn't exist → head-of-line blocking is *per-partition*), **D09** (blanket 401 after an IdP migration → wrong `JWT_ISSUER_URI`; teaches 401=auth-layer vs 403=authz-layer, lazy-JWKS "Ready but not working"), **D10** (Redis down → DB on fire → fail-open cache converts a cache outage into DB *load*, not errors; hit-rate `1/(1−h)` = blast radius, hot-key stampede, RED-to-triage/USE-to-localize).
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **D08's first draft invented a bug that isn't in the code.** I wrote the poison pill as "unknown SKU → `priceOf` returns null → NPE in `charge()`". But `PriceList.priceOf` is `getOrDefault(sku, 999.00)` — it **never returns null**; there is no such NPE | A debugging drill whose "root cause" can't actually happen in the code teaches a fiction — the exact opposite of "grounded in real ShopFlow" | Re-grounded the pill to a **malformed payload** that `objectMapper.readValue` can't parse (a real poison pill the `DefaultErrorHandler` would dead-letter *if the DLT topic existed*), and pointed the recurring fix at the Schema-Registry open item instead of a non-existent `priceOf` bug |
+
+Indexed in the same commit (the Walk-24 lesson applied): debugging `README` table + Status (now D01–D10, the three dropped from "planned"), `INDEX.md`, `STATE.md §1`, the comprehension README pairing line, and reverse "Debug it live" links on topics 07/10/11/12. Link-integrity re-run over 43 files: all resolve.
+
+Walk 28 lesson: **the fastest way to write a fake drill is to recall the code instead of reading it.** I "remembered" an unknown-SKU NPE; the actual `getOrDefault` default makes it impossible. Open the file the claim depends on *before* writing the claim, not after — the same discipline that catches someone else's stale doc catches your own fresh one.
+
+### Honest status (Walks 22–28)
+- Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Seven local commits ahead of `origin/master`, **not pushed** (holding per "no push"). One `git push` ships Walks 22–28 together when the hold lifts.
