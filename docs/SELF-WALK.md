@@ -610,5 +610,14 @@ Verified correct (no change): D12's `@JsonIgnoreProperties(ignoreUnknown = true)
 
 Walk 33 lesson: **numbers are the easiest thing to get inconsistent across many docs, and the easiest to grep.** One config value (`DB_POOL_SIZE=5`) is the source of truth; three docs had drifted to the framework default (10). When a value appears in the architecture doc, make every other doc cite *that*, not the library default.
 
-### Honest status (Walks 22–33)
-- Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). All claims re-verified against source; DB-pool number now consistent (5/pod) across all docs; links clean.
+## Walk 34–35: numeric sweep + citation + HLD audit (Nov 4, 2026)
+
+Scope: extend Walk 33's number check to the rest of the docs and the big study doc.
+- **Numeric sweep (clean):** Kafka partitions (3 local / 6 MSK), memory (512Mi/384Mi/~128Mi), rate-limit 50/s/pod, k6 flash-sale 3/300 / `orders_confirmed==3`, p95<800/p99<300, CI OIDC subject — all match source.
+- **Path-citation check (clean):** every `` `path.ext` `` citation in comprehension/debugging maps to a real file; the ones a strict resolver flagged (`config/CacheConfig.java`, `security/SecurityConfig.java`, `values/order-service.yaml`, `monitoring/grafana/.../datasources.yml`, …) are intentional **package-tail / ellipsis shorthand**, not broken — each resolves to an existing file.
+- **HLD-SYSTEM-DESIGN.md audit (clean):** its "asli numbers" all hold — `KAFKA_NUM_PARTITIONS=3`, pool **5**/pod × HPA 10 × 2 services ≈ 100 < `max_connections=200` (RDS 300), MSK `replication.factor=3`/`min.insync.replicas=2`/`num.partitions=6`, rate 50/s/pod, flash-sale 3/300. HLD was the **reliable reference** here — it's where the correct DB-pool (5) came from, against which topic 16/D03/D10 had drifted (Walk 33 fix).
+
+Walk 34–35 lesson: after one number drifts (the DB pool), **sweep the same class of claim everywhere** — partitions, memory, OIDC subjects, file citations — because a single drift usually means the habit (quoting the library default, abbreviating a path) repeated. This sweep found the suite otherwise consistent.
+
+### Honest status (Walks 22–35)
+- Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). All claims re-verified against source; DB-pool number consistent (5/pod); numbers/citations/HLD audited clean; links clean. In-sync with `origin/master` (pushed).
