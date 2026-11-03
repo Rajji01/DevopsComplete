@@ -660,3 +660,13 @@ Walk 37 lesson: **a correctness capstone needs a throughput capstone beside it**
 
 ### Honest status (Walks 22–37)
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–26** (25 = correctness capstone, 26 = scaling capstone); debugging **D01–D15**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims verified against source; links clean. Committed **locally** (push pending Abhishek's word).
+
+## Walk 38: debugging twin for topic 26 — D16 (connection exhaustion) (Nov 4, 2026)
+
+Scope: self-decided. Topic 26 (scaling) teaches the *mechanism*; the "real-time debugging" half of the goal needs a **live symptom** to diagnose. The debugging README itself had listed "Postgres connection-pool exhaustion" as a planned drill — built it.
+
+**D16 — "You scaled pods to fix load, now payment-service throws connection errors."** Operator bumps order-service HPA 6→60; at 50x, order-service 500s **and** untouched payment-service logs `too many clients already`, orders stuck CONFIRMED, yet pods sit at **30% CPU**. Root cause: 60 pods × `DB_POOL_SIZE 5` = 300 conns past the **shared Postgres `max_connections`** → cross-service starvation. Deliberately distinct from **D03** (D03 = organic surge saturates *one* service's pool → slow-not-broken; D16 = operator action → *shared* instance ceiling → refused *across* services, CPU idle). Fix: scale back now; PgBouncer (txn-pooling) + read replicas (decouple pods from conns) = component, not a knob. Includes a laptop Reproduce block (`max_connections=20` + `pg_stat_activity`). Fix-path marked architect-proposal (not in repo).
+
+Indexed: debugging `README.md` (row D16 + status D01–D16), comprehension `README.md` pairing (26↔D16), `RAPID-REVISION.md` symptom table (D16 row), `STATE.md` + `INDEX.md` (D01–D16). Link check clean.
+
+Walk 38 lesson: **every architect-level mechanism topic earns a debugging twin** — "know how it scales" (comp 26) and "recognize it failing at 2am" (D16) are different skills, and the strongest drill is the one where the *operator's own fix* (add pods) is the cause. Pattern reinforced: a service you didn't touch failing → hunt the **shared resource**, and CPU is a liar when the limit is a connection/lock.

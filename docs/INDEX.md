@@ -63,7 +63,7 @@ DevopsComplete/
 │   ├── runbooks/ .......... per-alert on-call steps
 │   ├── interview-notes/ ... 01..12 + README (Q → model answer)
 │   ├── comprehension/ ..... Google-style comprehension rounds: 01..26/ (25 = correctness capstone, 26 = scaling capstone){comprehension,notes}.md + README + ONLINE-LABS.md
-│   └── debugging/ ......... debugging drills (symptom → root cause → fix): D01..D15 + README
+│   └── debugging/ ......... debugging drills (symptom → root cause → fix): D01..D16 + README
 ├── shopflow/ ............... asli microservices project
 │   ├── order-service/  inventory-service/  payment-service/  notification-service/
 │   ├── shopflow-outbox/ ... shared outbox lib

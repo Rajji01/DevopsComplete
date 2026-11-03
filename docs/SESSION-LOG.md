@@ -209,3 +209,19 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 - Project padha + samjha (saga code + DevOps side). Memory save ki.
 
 **Pending / next (details STATE.md §4):** shared rate-limit · Schema Registry · Kyverno signature e2e · chaos experiments · `RefundFailed` path · orphaned-CONFIRMED saga timeout.
+
+---
+
+## 2026-11-04 — CLI (Opus 4.8) — architect capstones + debugging twin (autonomous self-walk)
+**Branch:** `master`
+**Hua (Walks 37–38):**
+- **Comprehension 25 (correctness capstone)** wired in fully: capstone reverse-links from 7 component topics (01/02/03/04/05/11/23), added to RAPID-REVISION; citations re-verified clean (`@Version`, atomic stock `UPDATE`, `TransactionTemplate` order+outbox one-txn, refund status-guard).
+- **Comprehension 26 (scaling capstone)** built — "Scaling 100x: where it breaks first": DB-connection ceiling, hot-row lock, per-pod limiter drift, outbox-relay SKIP LOCKED scale-seam. Core insight: **3 of 4 ceilings don't move when you add pods**; each fix tagged knob/component/redesign. Grounded (`DB_POOL_SIZE 5`, `OutboxRelay BATCH_SIZE=100/1s`, `@RateLimiter 50`, `num.partitions=6`); fixes marked architect-proposal (not in repo).
+- **Debugging D16** built (twin of 26) — "scaled pods → payment-service connection errors, CPU idle" → shared `max_connections` exhaustion; distinct from D03; laptop reproduce block included.
+- Indexed everywhere (comprehension/debugging README, RAPID-REVISION, INDEX, STATE). All link checks clean (0 broken).
+
+**Honest status:** docs/review only, **not executed** here (no Docker/JDK). Comprehension **01–26**, debugging **D01–D16**. All new claims source-verified.
+
+**Git:** committed **locally** (topic 26 + 25-wiring as one commit `6cbbbf8`; D16 + indexing pending commit this session). **NOT pushed** — push only when Abhishek says. Currently ahead of `origin/master`.
+
+**Pending / next:** push when told. Possible next deep topics (goal area): observability-driven debugging masterclass, flash-sale waiting-room HLD deep-dive, ingress/ALB path.

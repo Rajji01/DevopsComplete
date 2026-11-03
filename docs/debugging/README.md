@@ -46,8 +46,9 @@ Yahi Google/Meta/Amazon ka **debugging / SRE round** hai, aur yahi on-call ki as
 | D13 | [The deploy's been "in progress" 20 min — stuck?](D13-rollout-stuck-or-paused.md) | paused-by-design vs auto-aborted vs genuinely stuck | progressive delivery |
 | D14 | [Every deploy throws a few seconds of 502s](D14-deploy-drops-requests.md) | removed `preStop` → SIGTERM-vs-deregistration race | k8s / zero-downtime |
 | D15 | [The autoscaler flaps up and down all day](D15-hpa-flapping.md) | removed scaleDown stabilization window + twitchy CPU | k8s / autoscaling |
+| D16 | [You scaled pods to fix load — payment-service throws connection errors](D16-scaled-pods-connections-exhausted.md) | scaled stateless tier past shared `max_connections` → cross-service starvation (CPU idle) | capacity / scaling |
 
-**Status:** D01–D15 built; har drill ke ant mein ek **"Reproduce / test (apne haath se)"** block hai — symptom-induce command → observe → fix (docker-compose/kubectl/make se grounded; D03/D04/D14/D15 advanced hain to approximate/observe note). Aage (ideas): a `FAILED`-order storm the reconciler can't drain, Keycloak/Postgres connection-pool exhaustion, a Terraform drift surprise.
+**Status:** D01–D16 built; har drill ke ant mein ek **"Reproduce / test (apne haath se)"** block hai — symptom-induce command → observe → fix (docker-compose/kubectl/make se grounded; D03/D04/D14/D15 advanced hain to approximate/observe note). D16 pairs with comprehension 26 (scaling capstone) — "scaled the wrong tier" live. Aage (ideas): a `FAILED`-order storm the reconciler can't drain, a Terraform drift surprise.
 
 ## In sab ka rishta
 - **Mechanism samajhna** → [`../comprehension/`](../comprehension/) (har drill wahan ke topic se link karta).

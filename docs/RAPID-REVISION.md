@@ -50,6 +50,7 @@
 | Deploy "in progress" 20m | **paused-by-design** vs auto-aborted vs stuck | read `argo rollouts get`; don't rollback a passing canary | D13 |
 | 502s every deploy | removed **preStop** (SIGTERM vs dereg race) | restore preStop (stop-new) + graceful (finish-old) | D14 |
 | Replicas flap on flat traffic | removed scaleDown **stabilization window** | restore `stabilizationWindowSeconds:300` | D15 |
+| Scaled pods, payment-svc conn-errors, CPU idle | pods×`5` > shared **`max_connections`** (wrong-tier scale) | scale back; **PgBouncer**+replicas (pods≠conns) | D16 |
 
 ## 3. Quick-fire facts
 - **Status codes** (`GlobalExceptionHandler`): 404 not-found/IDOR · 409 not-cancellable / dup-key / **@Version optimistic-lock** · 422 Idempotency-Key cross-user · 429 rate-limit · 503 inventory-unavailable(+orderId) · 400 validation(problem+json).
