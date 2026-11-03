@@ -57,10 +57,12 @@ DevopsComplete/
 │   ├── START-HERE.md ...... onboarding map
 │   ├── GLOSSARY.md ........ shabd-matlab
 │   ├── VISUAL-FLOWS.md ..... har flow ka diagram + kya/kyu/kaise
+│   ├── ARCHITECTURE.md ..... poora system ek page: C4 (context/container/component) + flows + who-talks-to-whom + dev→prod
+│   ├── RAPID-REVISION.md .... ek-page cheat-sheet: har topic 1-line + symptom→cause→fix (drills) + quick-fire facts/numbers
 │   ├── EASY-NOTES.md / LABS.md / PRACTICE-LABS.md / ROADMAP.md / SELF-WALK.md
 │   ├── runbooks/ .......... per-alert on-call steps
 │   ├── interview-notes/ ... 01..12 + README (Q → model answer)
-│   ├── comprehension/ ..... Google-style comprehension rounds: 01..20/{comprehension,notes}.md + README + ONLINE-LABS.md
+│   ├── comprehension/ ..... Google-style comprehension rounds: 01..24/{comprehension,notes}.md + README + ONLINE-LABS.md
 │   └── debugging/ ......... debugging drills (symptom → root cause → fix): D01..D15 + README
 ├── shopflow/ ............... asli microservices project
 │   ├── order-service/  inventory-service/  payment-service/  notification-service/

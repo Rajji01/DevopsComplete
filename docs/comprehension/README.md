@@ -63,8 +63,12 @@ Har row mein do files: `comprehension.md` (round) + `notes.md` (concept).
 | 18 | [Scaling to load, surviving a node drain: HPA + PDB](18-hpa-pdb-autoscaling/) · [notes](18-hpa-pdb-autoscaling/notes.md) | HPA owns replicas, PDB voluntary-disruption budget, voluntary vs involuntary | Kubernetes / capacity |
 | 19 | [Backups, RPO/RTO, and a secretly-corrupt backup](19-backups-rpo-rto/) · [notes](19-backups-rpo-rto/notes.md) | RPO vs RTO, pg_dump vs RDS PITR, atomic backup hygiene, restore-test | SRE / data |
 | 20 | [AWS perms with no access key (IRSA)](20-eks-irsa-least-privilege/) · [notes](20-eks-irsa-least-privilege/notes.md) | IRSA/OIDC/STS, least-privilege IAM, resource-ARN scoping, Walk-19 wildcard trap | AWS / security |
+| 21 | [Where the DB password lives (External Secrets)](21-external-secrets/) · [notes](21-external-secrets/notes.md) | literals vs ESO ← Secrets Manager, rotation, IRSA, git-is-forever | security / platform |
+| 22 | [Cognito in prod: auth-code + PKCE](22-cognito-prod-auth/) · [notes](22-cognito-prod-auth/notes.md) | managed IdP vs Keycloak, PKCE, token lifetimes, groups→roles, config-not-code | AWS / security |
+| 23 | [MSK in prod: acks=all, RF3/minISR2, IAM auth](23-msk-kafka-prod/) · [notes](23-msk-kafka-prod/notes.md) | managed Kafka, durability (acks/RF/minISR), idempotent producer, IAM auth | AWS / Kafka |
+| 24 | [Zero-trust pod networking (NetworkPolicies)](24-network-policies-zero-trust/) · [notes](24-network-policies-zero-trust/notes.md) | default-deny + allow-list, lateral-movement containment, CNI-enforced | security / k8s |
 
-**Status:** 01–20 built (har ek: comprehension + notes + local & online hands-on). Aage aur topics isi shape mein add ho sakte (HPA/PDB/autoscaling, Terraform/EKS prod + IRSA, backups RPO/RTO, External Secrets...).
+**Status:** 01–24 built (har ek: comprehension + notes + local & online hands-on). Aage aur topics isi shape mein add ho sakte (HPA/PDB/autoscaling, Terraform/EKS prod + IRSA, backups RPO/RTO, External Secrets...).
 
 ## Shared
 

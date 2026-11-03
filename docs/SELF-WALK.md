@@ -621,3 +621,18 @@ Walk 34–35 lesson: after one number drifts (the DB pool), **sweep the same cla
 
 ### Honest status (Walks 22–35)
 - Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). All claims re-verified against source; DB-pool number consistent (5/pod); numbers/citations/HLD audited clean; links clean. In-sync with `origin/master` (pushed).
+
+## Walk 36: audit the newest fast-built docs + make them discoverable (Nov 4, 2026)
+
+Scope: self-improve pass over the same-day additions — `ARCHITECTURE.md`, `RAPID-REVISION.md`, and comprehension **21–24** (External Secrets, Cognito, MSK, NetworkPolicies), all written fast and grounded-while-building. Verify, then improve.
+
+Verified correct (no change): `RAPID-REVISION.md`'s dense facts table matches source exactly — DB pool **5/pod**, `max_connections` 200, Kafka 3/6, mem 512/384, rate 50/s, breaker **50%/10/10s**, retry **3×/200ms**, cache TTL 60s, HPA **2–6/70%/300s**, k6 3/300. Topics 21–24's config claims match the manifests they cite — ESO `refreshInterval 1h` + IRSA read-one-secret-ARN (`external-secret.yaml`/`irsa.tf`), Cognito `generate_secret=false` + access **15m**/refresh **30d** + `cognito:groups` (`cognito.tf`), MSK **RF3/minISR2/6-part/auto-create-false** + producer `acks=all` (`msk.tf`/`application.yml`), NetworkPolicy `default-deny-ingress` + per-service allows + CNI-enforced (`network-policies.yaml`).
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **The summary docs stopped at topic 20.** `RAPID-REVISION.md`'s per-topic table and `ARCHITECTURE.md`'s prod section didn't list the newer topics 21–24, so a reader revising from the one-pager would miss External-Secrets/Cognito/MSK/NetworkPolicies entirely | A rapid-revision sheet that omits a quarter of the security/prod topics is a silent gap exactly where it's used last-minute | Added rows 21–24 to the RAPID table and linked bullets (secrets/auth/kafka/network) into the ARCHITECTURE prod section. 24-topic link check clean. |
+
+Walk 36 lesson: **a summary doc goes stale the moment you add a topic it doesn't list.** When the content grows, sweep the aggregators (rapid-revision, architecture, index tables) — the same "the thing that enumerates the series must be updated with the series" rule as the D07 indexing miss (Walk 24).
+
+### Honest status (Walks 22–36)
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–24**; debugging **D01–D15** (each with Reproduce/test); + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All claims verified against source; links clean (0 broken across all docs). Walks 22–35 + drills pushed; the newest batch (ARCHITECTURE/RAPID/21–24 + this record) committed **locally** (push pending Abhishek's word).
