@@ -457,3 +457,19 @@ Verified clean (reviewed, no change needed):
 - **debugging D04 heap claim:** the Dockerfile sets `-XX:MaxRAMPercentage=75` (+ `-XX:+ExitOnOutOfMemoryError`), so heap ≈ 384Mi of a 512Mi limit — D04's "~384Mi, the other ~128Mi is non-heap" is correct, and the explicit `ExitOnOutOfMemoryError` reinforces the drill's "crash, don't limp" point.
 
 Walk 23 lesson: **a two-file topic rots one file at a time.** When a paired doc (`comprehension.md` + `notes.md`) describes the same thing, a sync fix has to touch both — grep the sibling, not just the file you opened. And when you review new security code, name what you *checked for* (origins `*` + credentials), so "no finding" is a verdict, not a shrug.
+
+## Walk 24: the lab console's endpoints, and a drill that existed but nothing listed (Nov 3, 2026)
+
+Scope: the new `labs/` folder is what Abhishek will actually click during the "test phase", so verify the console's API calls against the real controllers; and close the loop on debugging **D07** (added + pushed earlier, `07761ba`) whose index entries were never updated.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **D07 (duplicate-emails drill) existed as a file but no index referenced it.** `docs/debugging/README.md` (table + Status), `docs/INDEX.md`, `docs/STATE.md §1`, and `labs/README.md` all still said "D01–D06" — and worse, the debugging README listed "duplicate charges" as a *future* drill when D07 **is** exactly that, already written | An un-indexed doc is an invisible doc; the reader never reaches D07, and the "Aage (planned)" line promises something that's already done — an overclaim-in-reverse | Added the D07 row to the debugging index, moved it out of the "planned" list, and bumped "D01–D06" → "D01–D07" in INDEX, STATE §1 and labs/README |
+
+Verified clean (reviewed, no change):
+- **`labs/lab-console.html`** API calls all match the code: `http://localhost:8081` `/api/v1/orders` (+ `/{id}`), `http://localhost:8082` `/api/v1/reservations` (+ `/{orderRef}`), Keycloak `8180` `/realms/shopflow/protocol/openid-connect/token`, the `Idempotency-Key` header. Ports and paths are correct, so the console will actually talk to the stack when Abhishek runs it. No change.
+
+Walk 24 lesson: **"built and pushed" isn't "discoverable."** A doc added without updating every index that enumerates its series is stranded — and a "planned" list that still names the thing you just built quietly lies. When you add item N, grep the ranges (`D01–D0x`, counts) the same way you grep file links.
+
+### Honest status (Walks 22–24)
+- All three walks are **docs only**, reviewed against current source, **not executed** (no Docker/JDK; GUIDED-STUDY). Committed locally, **not pushed** (holding per Abhishek's "no push for an hour"); origin is ahead-counter clean once pushed later.

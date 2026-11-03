@@ -37,8 +37,9 @@ Yahi Google/Meta/Amazon ka **debugging / SRE round** hai, aur yahi on-call ki as
 | D04 | [Pods restart in a loop, exit 137](D04-crashloop-oom.md) | OOMKilled (heap vs limit) | k8s / memory |
 | D05 | [The outage happened but the SLO alert never fired](D05-alert-that-didnt-fire.md) | missing histogram bucket (monitor the monitor) | observability |
 | D06 | [Flash sale sold 5 of 3 units](D06-oversold-flash-sale.md) | non-atomic stock decrement / cache in write path | concurrency |
+| D07 | [Two confirmation emails (did charges double?)](D07-duplicate-emails-charges.md) | idempotency gap: dedupe recorded after the side effect | idempotency / Kafka |
 
-**Status:** D01–D06 built. Aage: duplicate charges (idempotency gap), poison-pill one-partition stall, 401s after IdP change, Redis down thundering herd, readiness cascade, DLT filling up.
+**Status:** D01–D07 built. Aage: poison-pill one-partition stall, 401s after IdP change, Redis down thundering herd, readiness cascade, DLT filling up.
 
 ## In sab ka rishta
 - **Mechanism samajhna** → [`../comprehension/`](../comprehension/) (har drill wahan ke topic se link karta).

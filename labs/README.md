@@ -21,7 +21,7 @@ Ye ShopFlow repo ko ek **interactive learning lab** banata hai. Maqsad: har dime
 |---|---|---|---|
 | **Java / JPA concepts** | [`../docs/INDEXING-HIBERNATE.md`](../docs/INDEXING-HIBERNATE.md), [`../docs/interview-notes/02-java-spring-boot.md`](../docs/interview-notes/02-java-spring-boot.md) | Postman Lab 1/6 (idempotency), psql locks/oversell | ✅ (indexing/JPA done as the first full example) |
 | **DB indexing** | [`../docs/INDEXING-HIBERNATE.md`](../docs/INDEXING-HIBERNATE.md) §1–8 | psql EXPLAIN labs A–D | ✅ |
-| **Prod debugging** | [`../docs/debugging/`](../docs/debugging/README.md) (D01–D06: symptom→root cause→fix) | Postman Lab 2/4 (oversell, rate-limit) | ✅ + aur scenario labs planned |
+| **Prod debugging** | [`../docs/debugging/`](../docs/debugging/README.md) (D01–D07: symptom→root cause→fix) | Postman Lab 2/4 (oversell, rate-limit) | ✅ + aur scenario labs planned |
 | **Prod issues (break/fix)** | [`../docs/LABS.md`](../docs/LABS.md) (33 labs), [`../docs/SELF-WALK.md`](../docs/SELF-WALK.md) (real bugs found) | — | ✅ |
 | **HLD (system design)** | [`../docs/HLD-SYSTEM-DESIGN.md`](../docs/HLD-SYSTEM-DESIGN.md) (scaling/bottlenecks/CAP/failure/capacity/design-a-feature), [`../docs/VISUAL-FLOWS.md`](../docs/VISUAL-FLOWS.md) §1 | — | ✅ |
 | **LLD (class/patterns)** | [`../docs/LLD-DESIGN-PATTERNS.md`](../docs/LLD-DESIGN-PATTERNS.md) (15 patterns + SOLID, grounded), code-reading order in START-HERE | — | ✅ |
