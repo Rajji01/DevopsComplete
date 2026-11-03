@@ -62,8 +62,8 @@ DevopsComplete/
 │   ├── EASY-NOTES.md / LABS.md / PRACTICE-LABS.md / ROADMAP.md / SELF-WALK.md
 │   ├── runbooks/ .......... per-alert on-call steps
 │   ├── interview-notes/ ... 01..12 + README (Q → model answer)
-│   ├── comprehension/ ..... Google-style comprehension rounds: 01..28/ (25-27 architect capstones, 28 concurrency-control){comprehension,notes}.md + README + ONLINE-LABS.md
-│   └── debugging/ ......... debugging drills (symptom → root cause → fix): D01..D17 + README
+│   ├── comprehension/ ..... Google-style comprehension rounds: 01..30/ (25-27 capstones, 28 concurrency, 29 silent-data-bugs, 30 replication){comprehension,notes}.md + README + ONLINE-LABS.md
+│   └── debugging/ ......... debugging drills (symptom → root cause → fix): D01..D19 + README
 ├── shopflow/ ............... asli microservices project
 │   ├── order-service/  inventory-service/  payment-service/  notification-service/
 │   ├── shopflow-outbox/ ... shared outbox lib

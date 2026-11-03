@@ -695,3 +695,27 @@ Topic 28 teaches the three lock families; D17 is its **live** twin (as D16 is to
 Indexed: debugging README (row D17 + status D01–D17 + pairing note), comprehension README (28↔D17/D06), RAPID-REVISION symptom table, INDEX (D01..D17), STATE (D01–D17). Reproduce block uses the real 20-parallel-reserve burst (3×201/17×409, zero optimistic-lock errors on the shipped design). Links clean.
 
 Walk 40 lesson: the most memorable concurrency drill is the one where a **plausible "hardening" PR de-scales the system** — "correct but thrashing" is a distinct signal from "wrong data," and recognizing a flood of optimistic-lock failures on one hot row as *wrong-tool-for-contention* is the skill. Pairs the whole 28 theory to a 2am symptom.
+
+## Walk 41: silent-data-bug + replication/topology cluster (29, 30, D18, D19) (Nov 4, 2026)
+
+Scope: Abhishek's ask — (a) prod scenarios where data silently goes wrong / can't be debugged even in prod (JPA/index/lock), (b) replication strategies at DB level, multi-microservice DB updates, multi-instance same-DB/diff-DB issues. Built two topics + two drills, grounded in what ShopFlow does **right** (so the trap is "if you didn't").
+
+Source audit first (honest grounding):
+- Enums all `@Enumerated(EnumType.STRING)` (Order/Payment/Reservation) → ORDINAL-bomb is a `[TRAP]`, not present.
+- **No `@DynamicUpdate` anywhere** → Hibernate full-row UPDATE; `Order` relies on `@Version`. Real latent lesson.
+- `OrderService.saveWithEvent` uses `TransactionTemplate` *on purpose* with a "bypasses the proxy" comment → self-invocation trap is one ShopFlow consciously dodged.
+- Indexes are thoughtful: `idx_orders_customer_created (customer_id, created_at desc)`, `idx_orders_status_updated`, `idx_orders_created_at`, `idx_outbox_pending (published_at, created_at)` (comment notes a partial index would be better but H2 can't parse it).
+- Topology: dev = 4 logical DBs (orders/payments/inventory/notifications) on one Postgres; prod = RDS Multi-AZ + PITR (`ARCHITECTURE.md`); HLD §5 = read-replicas/multi-region as scale steps.
+
+**Topic 29 — silent wrong-updates & prod Heisenbugs:** 5 no-exception bugs — full-row overwrite (lost update w/o `@Version`), enum ORDINAL bomb, index cliff, `@Transactional` self-invocation + `readOnly=true` no-flush, stale read-your-writes. Central skill = **detection-first** (primary re-read splits lost-write vs stale-read; `EXPLAIN` for the cliff; node-tagged traces).
+
+**Topic 30 — replication / DB-per-service / multi-instance:** data boundary = failure mode. DB-per-service → no cross-service txn/JOIN → outbox/saga (the data-side *why* of 01/25); many-pods-one-DB → concurrency at DB + connection ceiling (28/26); replication strategies — **sync standby (Multi-AZ, HA/zero-loss, not for reads)** vs **async replica (read-scale, lag→read-your-writes)** vs **logical/CDC (Debezium)** vs **multi-primary (conflict/split-brain)**; sync-vs-async = the Kafka minISR dial (23) / CAP (25). Match mode to data (payments sync, counter async); idempotency = replay-safe, not conflict-resolution.
+
+**D18 — stale read-your-writes** (replica lag): "placed order, list empty, ~1-3%, staging clean, no error" → async replica behind; fix = primary-pin / LSN-wait, not a sleep. The archetypal undiagnosable-in-prod Heisenbug (needs replica + sub-second race, which single-node staging structurally can't show). **D19 — index cliff**: 2ms staging / 4s prod / same SQL → Seq Scan from missing-or-defeated index; `EXPLAIN (ANALYZE, BUFFERS)` is the one command; index-present-but-unused traps (implicit cast, function, composite leading column, stale stats, low selectivity).
+
+Indexed 29/30 + D18/D19 everywhere (comprehension README rows+pairings, debugging README rows+status D01–D19, RAPID-REVISION §1 rows + §2 symptom rows, INDEX 01..30/D01..D19, STATE). All link checks clean.
+
+Walk 41 lesson: the "tagde" prod bugs are the **no-exception** ones, and teaching them demands pairing a *mechanism* topic with a *detection* drill — the fix is often one line, but the skill is **how you'd even see it** (primary re-read, EXPLAIN, node-tagged traces, lag gauges). Honesty mattered doubly here: ShopFlow's data layer is well-built, so most bugs are `[TRAP]`/`[NEW]` "if you didn't" — clearly labelled against the three it genuinely guards (`@Version`, `STRING`, `TransactionTemplate`, real indexes).
+
+### Honest status (Walks 22–41)
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–30** (25/26/27 capstone trilogy; 28 concurrency; 29 silent-data; 30 replication/topology); debugging **D01–D19**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims source-verified; links clean. Committed **locally**, push pending Abhishek's word.

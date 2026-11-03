@@ -48,8 +48,10 @@ Yahi Google/Meta/Amazon ka **debugging / SRE round** hai, aur yahi on-call ki as
 | D15 | [The autoscaler flaps up and down all day](D15-hpa-flapping.md) | removed scaleDown stabilization window + twitchy CPU | k8s / autoscaling |
 | D16 | [You scaled pods to fix load — payment-service throws connection errors](D16-scaled-pods-connections-exhausted.md) | scaled stateless tier past shared `max_connections` → cross-service starvation (CPU idle) | capacity / scaling |
 | D17 | [After "make it safe", the flash sale throws a storm of 409s](D17-optimistic-lock-409-storm.md) | optimistic `@Version` on the hottest row → conflict/retry storm (correct but thrashing) | concurrency / locking |
+| D18 | [I placed an order but my list is empty — only sometimes](D18-stale-read-your-writes.md) | async read-replica lag → read-your-writes miss (no error, unreproducible in staging) | replication / consistency |
+| D19 | [2ms in staging, 4s in prod, same SQL](D19-index-cliff-seq-scan.md) | missing/defeated index → Seq Scan; data-volume cliff (EXPLAIN) | indexing / query plans |
 
-**Status:** D01–D17 built; har drill ke ant mein ek **"Reproduce / test (apne haath se)"** block hai — symptom-induce command → observe → fix (docker-compose/kubectl/make se grounded; D03/D04/D14/D15 advanced hain to approximate/observe note). D16 pairs with comprehension 26 (scaling capstone) — "scaled the wrong tier" live; D17 pairs with comprehension 28 (concurrency) — "wrong lock for the contention profile" live. Aage (ideas): a `FAILED`-order storm the reconciler can't drain, a two-row deadlock, a Terraform drift surprise.
+**Status:** D01–D19 built; har drill ke ant mein ek **"Reproduce / test (apne haath se)"** block hai — symptom-induce command → observe → fix (docker-compose/kubectl/make se grounded; D03/D04/D14/D15 advanced hain to approximate/observe note). D16 pairs with comprehension 26 (scaling capstone) — "scaled the wrong tier" live; D17 pairs with comprehension 28 (concurrency); D18 (replica lag / read-your-writes) + D19 (index cliff) pair with comprehension 29/30 — the "no-error / undiagnosable-in-prod" class. Aage (ideas): a `FAILED`-order storm the reconciler can't drain, a two-row deadlock, a Terraform drift surprise.
 
 ## In sab ka rishta
 - **Mechanism samajhna** → [`../comprehension/`](../comprehension/) (har drill wahan ke topic se link karta).
