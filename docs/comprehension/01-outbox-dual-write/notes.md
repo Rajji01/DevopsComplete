@@ -18,6 +18,7 @@ Bina outbox ke koi bhi "DB + message-broker dono update karo" wala flow silently
 1. **Write (one txn):** `OrderService.saveWithEvent` ek `TransactionTemplate` mein — order row save + `outbox.publish(topic, "Order", orderRef, type, event)` (ye `outbox_event` row insert karta hai). Dono ek transaction → saath commit.
    - `@Transactional` **nahi** use kiya kyunki wo proxy-based hai aur same-class private method call pe silently bina transaction chal jaata → isliye `TransactionTemplate` (comment OrderService mein likha hai).
 2. **Relay (async):** `OutboxRelay.publishPending` — `@Scheduled(1s)`, `@Transactional`. `findUnpublished` se 100 ka batch; har row pe `kafkaTemplate.send(topic, aggregateId, payload).get(5, SECONDS)` — **broker ack ka wait** — phir `markPublished()`. Fail hua to log karke `return` (batch rok do, order bache, agli run retry).
+   - **Multi-pod safe:** `findUnpublished` `@Lock(PESSIMISTIC_WRITE)` + `lock.timeout=-2` → Postgres **`FOR UPDATE SKIP LOCKED`**. HPA se kai pods relay chalate; har pod locked rows skip karke **disjoint batch** leta → ek row do baar publish nahi, aur pods ek doosre ka wait nahi karte.
 3. **Key = aggregateId = orderRef** → ek order ke events ek partition mein, order mein.
 4. **At-least-once:** send ke baad par markPublished se pehle pod mara → row dobara publish hogi → duplicate. Isliye **har consumer idempotent** (`processed_event` eventId pe, ya payment PK = eventId).
 5. **Housekeeping:** published rows 7 din baad cron se delete; unpublished kabhi nahi. Gauge `outbox_unpublished = countByPublishedAtIsNull` → alert `OutboxBacklogGrowing` (>100 for 5m) = "publish leg down" jabki API abhi 201 de raha.
@@ -77,9 +78,10 @@ Kafka DOWN:  write txn still commits → 201 → relay send() fails → row stay
 3. `outbox_unpublished` badh raha hai par `POST /orders` 201 de raha — kya toota, kya nahi?
 4. At-least-once ka seedha natija consumer pe kya requirement banata hai?
 5. `@Transactional` private same-class method pe kyu fail hota, aur ShopFlow ne iski jagah kya use kiya?
+6. 3 pods pe relay chal rahi hai — same row 3 baar publish hone se kya rokta, aur pods block kyu nahi karte?
 
 ## Interview mein ye bolo
-*"Dual-write problem: DB aur Kafka ek saath atomically update nahi ho sakte. ShopFlow order aur uska event ek hi Postgres transaction mein `outbox_event` table mein likhta hai (TransactionTemplate se, @Transactional ke proxy trap se bachne ke liye). `OutboxRelay` har second unpublished rows padh ke Kafka pe bhejta hai, broker ack ka wait karke mark karta hai — delivery at-least-once hai, isliye consumers `eventId` pe dedupe karte hain. Kafka down ho to order phir bhi save hota hai aur event backlog mein ruk ke recovery pe chala jaata hai; ek gauge us backlog pe alert karta hai."*
+*"Dual-write problem: DB aur Kafka ek saath atomically update nahi ho sakte. ShopFlow order aur uska event ek hi Postgres transaction mein `outbox_event` table mein likhta hai (TransactionTemplate se, @Transactional ke proxy trap se bachne ke liye). `OutboxRelay` har second unpublished rows padh ke Kafka pe bhejta hai, broker ack ka wait karke mark karta hai — delivery at-least-once hai, isliye consumers `eventId` pe dedupe karte hain. Relay har pod pe chalti, par `findUnpublished` `FOR UPDATE SKIP LOCKED` use karta (pessimistic lock + timeout -2), to har pod disjoint rows leta — multi-pod pe bhi double-publish nahi. Kafka down ho to order phir bhi save hota hai aur event backlog mein ruk ke recovery pe chala jaata hai; ek gauge us backlog pe alert karta hai."*
 
 > Next: [`../02-saga-cancel-refund/`](../02-saga-cancel-refund/) — ye events aage saga banate hain.
 </content>

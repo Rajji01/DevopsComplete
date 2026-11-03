@@ -23,6 +23,8 @@ The team replaced it with a **transactional outbox**. `OrderService.saveWithEven
 
 A separate component, `OutboxRelay`, is `@Scheduled` to run every second. It reads up to 100 unpublished rows, and for each one calls `kafkaTemplate.send(...).get(5, SECONDS)` — it **waits for the broker ack** before calling `markPublished()`. If a send fails, it logs and **returns immediately**, so the rest of the batch is retried on the next run, and events keep their order per key. A nightly job deletes published rows older than 7 days; unpublished rows are never deleted. A gauge, `outbox_unpublished`, counts rows where `published_at IS NULL`; an alert fires if it stays above 100 for 5 minutes.
 
+Because order-service runs several replicas (an HPA scales it), the relay runs on **every pod at once**. To stop two pods publishing the same row, `findUnpublished` locks the rows it reads with `PESSIMISTIC_WRITE` and a lock timeout of `-2`, which Postgres renders as **`FOR UPDATE SKIP LOCKED`**: each pod takes a *disjoint* batch of unpublished rows (anything already locked by another pod is skipped, not waited on), so the relays run in parallel with zero overlap and never block each other.
+
 The relay guarantees **at-least-once** delivery: if the pod dies between a successful `send` and `markPublished`, that row is published again next run. The design doc notes this is deliberate, and adds one line: *"therefore every consumer must be idempotent."*
 
 ---
@@ -46,8 +48,10 @@ The relay guarantees **at-least-once** delivery: if the pod dies between a succe
 8. Your teammate proposes dropping the outbox and instead using **Debezium** to stream the `orders` table's commit log straight to Kafka. Give one concrete advantage and one cost of that versus the polling relay.
 9. A new `OrderCancelled` event must also reach notification-service. Using only what the passage describes, what is the **complete** change needed in the producing service — and what must you check on the consumer side?
 
+10. The service scales to 3 replicas and the `@Scheduled` relay runs on **each** — three relays polling the same `outbox_event` table every second. What stops the same row from being published three times, and why don't the three relays just block each other?
+
 ### E — Spot-the-flaw
-10. A junior rewrites `saveWithEvent` to use `@Transactional` on a **private** method in the same class, called from `placeOrder()` in that same class. The code compiles and tests on the happy path pass, but in production the order and outbox rows sometimes commit separately. What is the bug, and why did happy-path tests miss it?
+11. A junior rewrites `saveWithEvent` to use `@Transactional` on a **private** method in the same class, called from `placeOrder()` in that same class. The code compiles and tests on the happy path pass, but in production the order and outbox rows sometimes commit separately. What is the bug, and why did happy-path tests miss it?
 
 ---
 
@@ -80,12 +84,13 @@ The relay guarantees **at-least-once** delivery: if the pod dies between a succe
 
 8. **Debezium (log-based CDC) advantage:** no polling and no application code in the write path — it tails Postgres's WAL, so there's near-zero added latency and nothing to mark/clean up; the "event" is just the committed row. **Cost:** operational weight — you run Kafka Connect + Debezium, manage connector offsets/schemas, and your events now mirror table shape (or need an outbox-table pattern anyway via the Debezium *outbox router*). The polling relay is a few lines of app code with no extra infra; Debezium is a platform component. (Both are at-least-once; both still need idempotent consumers.)
 9. **Producer side (complete change):** nothing structural — call `saveWithEvent` (or the same `outbox.publish(...)`) with event type `OrderCancelled` inside the same local transaction that flips the order's status. The relay already publishes **any** row generically (topic, key, payload), so it needs no change. **Consumer side:** notification-service must (a) handle the new `type` in its switch, and (b) because delivery is at-least-once, **dedupe** it (it already keys `processed_event` by `eventId`), so a redelivered `OrderCancelled` doesn't email twice.
+10. `findUnpublished` reads its batch under `PESSIMISTIC_WRITE` with lock timeout `-2`, which Postgres renders as **`FOR UPDATE SKIP LOCKED`**. Each relay locks the unpublished rows it selects; the other two relays, running the same query, find those rows already locked and **skip** them (they don't wait), so every pod gets a **disjoint** set of rows. No row is handed to two relays, so the producers never double-publish, and because locked rows are skipped rather than blocked on, the three relays run fully in parallel with no contention. (This stops *concurrent* double-publish; the crash-after-`send` window still causes at-least-once redelivery, which is why consumers stay idempotent.)
 </details>
 
 <details>
 <summary>E — Spot-the-flaw</summary>
 
-10. `@Transactional` is **proxy-based**. Spring wraps the bean in a proxy that opens the transaction; a **self-invocation** (one method in the class calling another method *in the same class*) bypasses the proxy, so the annotation does nothing and the inner method runs **without a transaction** — the order `save` and the outbox `save` can then commit independently. Happy-path tests missed it because with no crash the two saves still both happen and look committed together; the gap only shows under a failure **between** them. This is precisely why ShopFlow uses a **`TransactionTemplate`** (works regardless of how it's called) and not `@Transactional`, and the code comment says so.
+11. `@Transactional` is **proxy-based**. Spring wraps the bean in a proxy that opens the transaction; a **self-invocation** (one method in the class calling another method *in the same class*) bypasses the proxy, so the annotation does nothing and the inner method runs **without a transaction** — the order `save` and the outbox `save` can then commit independently. Happy-path tests missed it because with no crash the two saves still both happen and look committed together; the gap only shows under a failure **between** them. This is precisely why ShopFlow uses a **`TransactionTemplate`** (works regardless of how it's called) and not `@Transactional`, and the code comment says so.
 </details>
 
 ---
@@ -143,6 +148,7 @@ Laptop pe Docker nahi? → [`ONLINE-LABS.md`](../ONLINE-LABS.md) **section A (Gi
 - **"Exactly-once" myth** — DB/email loop mein exactly-once nahi hota; at-least-once + idempotency hi real answer.
 - **Head-of-line blocking & ordering per key** — stop-on-failure se order bachta hai par poison row sabko rok sakta hai → DLT.
 - **Backlog alerting** — `outbox_unpublished` gauge → "publish leg down" ka early signal jabki API abhi bhi 201 de raha.
+- **Multi-pod relay safety (`FOR UPDATE SKIP LOCKED`)** — har replica pe relay chalti; `findUnpublished` pessimistic-lock + `lock.timeout=-2` se Postgres `FOR UPDATE SKIP LOCKED` banta → har pod disjoint rows leta, no double-publish, no blocking.
 
 **Interviewer's lens:** wo dekh raha hai ki tu (a) crash window identify kar pata hai, (b) "at-least-once isliye consumer idempotent" ka link khud banata hai, (c) Debezium jaisa alternative weigh kar pata hai bina "better/worse" ke — "kab kaunsa" bol pata hai.
 

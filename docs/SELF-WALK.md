@@ -502,3 +502,21 @@ Walk 26 lesson: **one code change fans out across every doc that drew the old pi
 
 ### Honest status (Walks 22–26)
 - Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Five local commits ahead of `origin/master`, **not pushed** (holding per "no push for an hour"). When Abhishek lifts the hold, one `git push` ships Walks 22–26 together.
+
+## Walk 27: the study doc was right, and it exposed a gap in mine (Nov 3, 2026)
+
+Scope: review `INDEXING-HIBERNATE.md` (the other session's 420-line DB/JPA doc) against the code, and act on anything it surfaces.
+
+Verified correct (no change to the study doc — its checkable claims all hold):
+- The whole §3 index table against the migrations: `orders` PK/`order_ref`/`idempotency_key`/`idx_orders_created_at` (V1), `idx_orders_customer_created`/`idx_orders_status_updated` (V3), `payment` PK `event_id` + unique `order_ref` (V1), `outbox_event idx_outbox_pending` (V2), `processed_event` PK (V5).
+- **§11's SKIP LOCKED claim** — the load-bearing one: `OutboxRepository.findUnpublished` really is `@Lock(PESSIMISTIC_WRITE)` + `@QueryHints(lock.timeout = "-2")` over `where publishedAt is null order by createdAt`, and its own Javadoc says "renders as FOR UPDATE SKIP LOCKED … several order-service pods can run the relay … without publishing the same row twice." Accurate.
+- §10 `@Version` → 409 (already confirmed Walk 25), §12 `decrementStock` flush/clear, §13 `TransactionTemplate` self-invocation.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **My comprehension 01 (outbox) never mentioned the multi-pod relay / `SKIP LOCKED`.** The passage described a single relay; it omitted that the HPA runs the relay on every replica and `FOR UPDATE SKIP LOCKED` is what stops concurrent double-publish | It's an interview-gold detail (pessimistic lock + SKIP LOCKED, multi-consumer safety) that the grounded code has and the comprehension didn't teach — a hole exactly where a follow-up question lands | Added a passage paragraph, a new Transfer question (Q10: "3 replicas each run the relay — what stops triple-publish, and why no blocking?") with its answer (renumbered the spot-the-flaw to Q11), an interview-concepts bullet, and the `Kaise`/understanding-check/interview-line in `notes.md` |
+
+Walk 27 lesson: **reviewing someone else's doc is also a mirror.** The fastest way to find what *your* material is missing is to read a parallel doc on the same system — INDEXING taught SKIP LOCKED thoroughly, which made the silence in comprehension 01 obvious. Cross-read, don't just self-read.
+
+### Honest status (Walks 22–27)
+- Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Six local commits ahead of `origin/master`, **not pushed** (holding per "no push"). One `git push` ships Walks 22–27 together when the hold lifts.
