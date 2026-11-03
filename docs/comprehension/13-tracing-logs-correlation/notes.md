@@ -47,6 +47,37 @@ Courier tracking socho — ek **tracking number (trace id)** parcel ke saath har
  (un-sampled? fall back to logs by orderRef + RED metrics)
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli config:**
+```yaml
+# application.yml — context HTTP + Kafka ke paar travel kare
+spring.kafka.template.observation-enabled: true      # producer: trace → message headers
+spring.kafka.listener.observation-enabled: true      # consumer: headers → continue trace
+management.tracing.sampling.probability: ${TRACING_SAMPLE:1.0}   # prod ~0.1
+management.otlp.tracing.endpoint: .../v1/traces       # spans → Tempo
+LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs                 # logs JSON + trace.id
+```
+```yaml
+# grafana datasources.yml — dono taraf jump
+Tempo.tracesToLogsV2: { datasourceUid: loki, filterByTraceID: true }   # span → logs
+Loki.derivedFields:  [{ matcherRegex: '"trace\.id":"(\w+)"', datasourceUid: tempo }]  # log → trace
+```
+
+**Dry run — ek order ki trace:**
+```
+ POST /orders  → trace-id T1 banta
+   span: POST /orders
+   span: HTTP reserve ──traceparent header──► inventory-service (span, T1)
+   span: kafka produce ──trace in msg headers──► payment-service consume+charge (span, T1)
+                                               ──headers──► order-service PaymentEventListener (span, T1)
+   sab spans → Tempo (ek trace T1)
+ logs (ECS JSON, har line "trace.id":"T1") → Loki
+ debug: Loki {app} |= orderRef → log line → derivedField → Tempo trace T1
+        → span dekho: reserve 1.9s? payment span missing? → root cause
+```
+**Seekh:** async (Kafka) ke paar trace tabhi judi rehti jab observation-enabled; trace.id precise join-key (timestamp nahi).
+
 ## Alternate approaches (kab kaunsa)
 | Choice | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|

@@ -48,6 +48,38 @@ Ab galti: tumne shutter ko supplier se jod diya — "agar supplier ne maal nahi 
    DB in LIVENESS         → NEVER (DB blip = mass restart)
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli config:**
+```yaml
+# application.yml — readiness group: SIRF apni dependency
+management.endpoint.health:
+  probes.enabled: true
+  group.readiness.include: readinessState, db   # inventory/Redis/Kafka NAHI
+# deployment.yaml — probes
+livenessProbe:  { httpGet: { path: /actuator/health/liveness }, failureThreshold: 3 }   # fail → RESTART
+readinessProbe: { httpGet: { path: /actuator/health/readiness }, failureThreshold: 3 }  # fail → NO TRAFFIC
+startupProbe:   { httpGet: { path: /actuator/health/liveness }, periodSeconds: 2, failureThreshold: 30 }  # ~60s
+```
+
+**Dry run — inventory down (downstream):**
+```
+ inventory DOWN
+ → order-service readiness check = readinessState(UP) + db(UP)  → READINESS UP ✅
+ → traffic aata rehta; inventory call fast-fail (breaker) → order FAILED; reconciler baad mein
+ → 1 outage CONTAINED (cascade nahi)
+ [GALAT config: readiness = /actuator/health (aggregate) → inventory DOWN → readiness DOWN
+   → saare order pods NotReady → Service endpoints EMPTY → clients connection-refused → 2 outage]
+```
+
+**Dry run — order ka OWN Postgres down:**
+```
+ postgres DOWN → readiness group mein db hai → db(DOWN) → READINESS DOWN
+ → K8s traffic rokta (endpoints se remove) par pod RESTART nahi (liveness UP) → sahi
+ (DB liveness mein daalte to blip pe saare pods ek saath restart = mass-restart)
+```
+**Seekh:** readiness = "main serve kar sakta?" (own process + own DB); downstream readiness mein daalna = cascade.
+
 ## Alternate approaches (kab kaunsa)
 | Choice | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|

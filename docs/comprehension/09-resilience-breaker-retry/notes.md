@@ -50,6 +50,46 @@ Sabse bada point: **timeout sabse pehle zaroori** — kyunki retry/breaker dono 
  bulkhead  : caps concurrent calls          (isolate the pool)      [not used here, related]
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli code + config:**
+```java
+// InventoryClient — Retry(CircuitBreaker(call)), timeouts config se
+@Retry(name = "inventory")
+@CircuitBreaker(name = "inventory")
+public void reserve(String orderRef, String sku, int quantity) {
+    restClient.post().uri("/api/v1/reservations").body(...)
+        .onStatus(CONFLICT, (req,res) -> { throw new InventoryRejectedException(...); })  // 409 = business
+        .toBodilessEntity();
+}
+```
+```yaml
+# application.yml  (connect 1s / read 2s)
+resilience4j:
+  retry.instances.inventory:          { max-attempts: 3, wait-duration: 200ms, enable-exponential-backoff: true,
+                                        retry-exceptions: [ResourceAccessException, HttpServerErrorException] }  # transient only
+  circuitbreaker.instances.inventory: { sliding-window-size: 10, minimum-number-of-calls: 5,
+                                        failure-rate-threshold: 50, wait-duration-in-open-state: 10s,
+                                        ignore-exceptions: [InventoryRejectedException] }   # 409 breaker mein nahi
+```
+
+**Dry run — inventory down:**
+```
+ order #1: reserve() → connect/read timeout → retry 200ms → 400ms → (3 attempts, ~sec) → fail
+ ... breaker last-10 calls ≥50% fail  →  OPEN
+ order #7: reserve() → CallNotPermittedException IMMEDIATELY (no network wait) → FAST
+ → placeOrder catch → order.fail() → status FAILED, readiness UP; reconciler baad mein CANCELLED
+ 10s baad: HALF-OPEN → 2 trial call → success → CLOSED (normal) / fail → OPEN
+```
+
+**Dry run — business reject (breaker NAHI chhedta):**
+```
+ order PS5 qty 100 (stock 3): reserve() → inventory 409 → InventoryRejectedException
+ → retry NAHI (list mein nahi), breaker count NAHI (ignore-exceptions) → order REJECTED
+ (warna flash sale ke 409s breaker khol ke healthy calls fail kar dete)
+```
+**Seekh:** timeout (call bound) + retry (transient blip) + breaker (down service fast-fail) — teen alag kaam; hanging call ko sirf timeout bachata.
+
 ## Alternate approaches (kab kaunsa)
 | Choice | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|

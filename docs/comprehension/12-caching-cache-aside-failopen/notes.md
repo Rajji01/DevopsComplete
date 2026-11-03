@@ -43,6 +43,43 @@ Dukaan ke bahar ek **blackboard** hai jahan aaj ka rate likha (cache). Grahak ra
  cache down                                         → FAIL-OPEN to DB (not a hard dependency)
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli code:**
+```java
+// ProductController — cache-aside read (DTO, entity nahi)
+@GetMapping("/{sku}")
+@Cacheable(cacheNames = "products", key = "#sku")
+public ProductResponse get(@PathVariable String sku) { return productRepository.findBySku(sku).map(ProductResponse::from)...; }
+
+// ReservationService — write EVICT (update nahi); stock DB se, cache se nahi
+@CacheEvict(cacheNames = "products", key = "#sku")        // reserve: us sku ko evict
+public Reservation reserve(...) { productRepository.decrementStock(sku, qty); ... }   // ATOMIC (cache nahi padha)
+@CacheEvict(cacheNames = "products", allEntries = true)   // release: sab (sku baad mein pata)
+public void release(...) { ... }
+
+// CacheConfig — FAIL-OPEN (Redis down → DB se padho, error nahi)
+public CacheErrorHandler errorHandler() { return new LoggingCacheErrorHandler(); }
+// application.yml: spring.cache.redis.time-to-live: 60s  (staleness backstop)
+```
+
+**Dry run — read + write:**
+```
+ GET /products/PS5  →  Redis miss → DB → DTO store "products::PS5"       (1st: miss)
+ GET /products/PS5  →  Redis HIT (fast)                                  (2nd: hit)
+ reserve(PS5)       →  decrementStock (DB, atomic) → @CacheEvict "products::PS5"  (key gaya)
+ GET /products/PS5  →  miss → DB fresh quantity → store                  (stale kabhi >1 write nahi)
+```
+
+**Dry run — Redis DOWN (fail-open):**
+```
+ Redis CRASH
+ GET /products/PS5 → cache GET throws → LoggingCacheErrorHandler: WARN + fall through to Postgres → 200
+ readiness: UP (Redis group mein nahi) → no cascade
+ ⚠️ saara read load ab Postgres pe (98% hit-rate gaya → ~50× DB queries) → thundering herd (dekho D10)
+```
+**Seekh:** stock decision kabhi cache se nahi (isliye no oversell); write pe evict (drift nahi); Redis down pe fail-open (availability bachta, capacity nahi).
+
 ## Alternate approaches (kab kaunsa)
 | Choice | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|

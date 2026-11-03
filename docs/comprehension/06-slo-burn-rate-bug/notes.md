@@ -43,6 +43,44 @@ Ab bug: tumhara "late delivery" detector ek **ghadi** pe depend karta tha jo lag
  guard test (NEW)         → real /actuator/prometheus mein le="1.0" hai? assert    → CATCH
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli config (recording rule + alert):**
+```yaml
+# recording-rules.yml — "bad" = 5xx + slow-2xx (le=1.0 bucket pe depend)
+- record: sli:checkout_bad:rate5m
+  expr: |
+    sum(rate(http_server_requests_seconds_count{...,status=~"5.."}[5m]))
+    + ( sum(rate(http_server_requests_seconds_count{...,status=~"2.."}[5m]))
+      - sum(rate(http_server_requests_seconds_bucket{...,status=~"2..",le="1.0"}[5m])) )  # ← le=1.0 chahiye
+- record: sli:checkout_error_ratio:rate5m
+  expr: sli:checkout_bad:rate5m / sli:checkout_requests:rate5m
+# slo-rules.yml — multi-window burn rate
+- alert: CheckoutSLOBurnRateFast
+  expr: sli:checkout_error_ratio:rate1h > (14.4*0.005) and sli:checkout_error_ratio:rate5m > (14.4*0.005)
+# application.yml — THE FIX: bucket ko guarantee karo
+management.metrics.distribution.slo.http.server.requests: 1s   # → http_server_requests_seconds_bucket{le="1.0"}
+```
+
+**Dry run — bug (bucket missing, alert dead):**
+```
+ percentiles-histogram: true  → Micrometer apne buckets banata, le="1.0" guaranteed NAHI
+ prod: query bucket{le="1.0"} → EMPTY vector
+ sli:checkout_bad = 5xx + (2xx_total − <EMPTY>)  →  slow-term collapse → bad = no-data
+ sli:checkout_error_ratio = no-data
+ alert expr: no-data > 0.072  →  kabhi TRUE nahi  →  25-min outage, 0 page
+ par promtool test rules: test khud le="1.0" inject karta → GREEN (jhooth)
+```
+
+**Dry run — fix (bucket forced):**
+```
+ distribution.slo … 1s  →  bucket{le="1.0"} ab EXPORT hota
+ sli:checkout_bad = 5xx + (2xx_total − 2xx_within_1s)  →  real number
+ outage: slow 2xx badhe → ratio > threshold (rate1h AND rate5m) for 2m → PAGE ✅
+ guard test: /actuator/prometheus mein le="1.0" hai? assert → dependency chup-chaap gayab na ho
+```
+**Seekh:** alert ek metric pe tika hai; wo metric prod mein exist karta hai ya nahi — alag se test karo (formula nahi, assumption).
+
 ## Alternate approaches (kab kaunsa)
 | Approach | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|

@@ -47,6 +47,37 @@ Ek hi line (partition) mein log khade hain, counter ek-ek ko serve karta ( order
    note: changing partition count breaks key→partition ordering mapping
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli code:**
+```java
+// KafkaErrorConfig — retry with backoff, phir dead-letter
+@Bean
+DefaultErrorHandler kafkaErrorHandler(KafkaOperations<Object,Object> template) {
+    var backOff = new ExponentialBackOff(500L, 2.0); backOff.setMaxElapsedTime(10_000L);  // 0.5s×2, cap 10s
+    return new DefaultErrorHandler(new DeadLetterPublishingRecoverer(template), backOff);  // fail → <topic>.DLT
+}
+// consumer (application.yml): enable-auto-commit: false, isolation.level: read_committed, auto-offset-reset: earliest
+// listener @Transactional: existsById(eventId) dedupe + save in same txn
+```
+
+**Dry run — poison pill (partition-scoped):**
+```
+ partition-2: [r41][r42][BAD][r44]...   consumer order mein padhta
+ BAD: readValue/handle fail → retry 0.5s,1s,2s... (≤10s) → still fail
+ → DeadLetterPublishingRecoverer → payments.events.DLT + offset commit past BAD
+ → r44.. flow continue   (partition-0,1 bilkul fine → sirf partition-2 ka lag tha)
+```
+
+**Dry run — consumer down → lag → stuck orders:**
+```
+ payment-service DOWN → orders.events consume ruk gaya → OrderConfirmed pile up (group lag ↑)
+ → wo orders CONFIRMED pe atke (stock reserved, unpaid) → KafkaConsumerLagHigh + OrdersStuckConfirmed
+ → payment-service UP → lag drain → CONFIRMED→PAID khud
+ lag kam karne ka order: consumers ≤ partitions → faster processing → more partitions (par poison-loop pehle check)
+```
+**Seekh:** DLT = quarantine (partition bachao), consumer idempotent (at-least-once); lag = business delay.
+
 ## Alternate approaches (kab kaunsa)
 | Choice | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|
