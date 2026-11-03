@@ -687,3 +687,11 @@ Walk 39 lesson: topic 28 is the one where **ShopFlow already demonstrates all th
 
 ### Honest status (Walks 22–39)
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–28** (25/26/27 capstone trilogy, 28 concurrency); debugging **D01–D16**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims source-verified; links clean. Committed **locally**, push pending Abhishek's word.
+
+## Walk 40: D17 — the concurrency debugging twin (Nov 4, 2026)
+
+Topic 28 teaches the three lock families; D17 is its **live** twin (as D16 is to 26). **D17 — "after a 'make it safe' change, the flash sale throws a storm of 409s":** someone replaces the atomic stock `UPDATE` with load-modify-save guarded by `@Version`; under 300-buyers/3-units the hot row sees a flood of `OptimisticLockingFailureException` — **correct data, collapsed throughput** (O(crowd) read-compute-fail-retry per sold unit, high DB CPU, low goodput). Distinct from D06 (that = *oversold* from too-little control; D17 = *thrash* from the **wrong** control). Fix: restore the atomic conditional `UPDATE` (check inside the write, µs row lock, rows-affected-0 = clean sold-out, no exception). Teaches topic 28's thesis live: **the contention profile, not the table, picks the concurrency control** — and `@Version` (rare admin edit) + atomic `UPDATE` (hot reserve) can coexist on one row.
+
+Indexed: debugging README (row D17 + status D01–D17 + pairing note), comprehension README (28↔D17/D06), RAPID-REVISION symptom table, INDEX (D01..D17), STATE (D01–D17). Reproduce block uses the real 20-parallel-reserve burst (3×201/17×409, zero optimistic-lock errors on the shipped design). Links clean.
+
+Walk 40 lesson: the most memorable concurrency drill is the one where a **plausible "hardening" PR de-scales the system** — "correct but thrashing" is a distinct signal from "wrong data," and recognizing a flood of optimistic-lock failures on one hot row as *wrong-tool-for-contention* is the skill. Pairs the whole 28 theory to a 2am symptom.
