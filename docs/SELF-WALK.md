@@ -443,3 +443,17 @@ Walk 22 lesson: **when you don't own the whole branch, your docs rot silently.**
 
 ### Honest status (Walk 22)
 - Docs only; **not executed** here (no Docker/JDK — STATE §3, and the standing GUIDED-STUDY note). Fixes come from reading the current source, not a terminal. Not pushed (holding per Abhishek's "no push for an hour").
+
+## Walk 23: the new CORS code, the heap claim, and a notes file the last walk missed (Nov 3, 2026)
+
+Scope: review the code the pull added that touches security (`CorsConfig`, `WebCorsConfig` — CORS is a classic footgun), verify a specific number a debugging drill asserts, and finish the Walk-22 refund sync into the file it missed.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **comprehension 02 `notes.md` still showed only the happy refund path** — the component diagram listed `PaymentCaptured/PaymentFailed/PaymentRefunded` (no `PaymentRefundFailed`), the `Kaise` step and understanding-check Q5 read as if the decline path were unbuilt. Walk 22 fixed `comprehension.md` but not its sibling `notes.md` | A split-brain topic — one file says "implemented", the other says "where would you add it" — is worse than either alone | Added `PaymentRefundFailed` to the event diagram, the decline branch to the `Kaise` refund step, reframed Q5, and extended the interview line (payment stays `CAPTURED`, no fake `REFUNDED`, redelivery retries) |
+
+Verified clean (reviewed, no change needed):
+- **CORS (`CorsConfig` order-service, `WebCorsConfig` inventory-service):** both default to `allowed-origin-patterns: http://localhost:*,http://127.0.0.1:*` (localhost only, **not** `*`), `allowCredentials` left **false** (Bearer tokens, no cookies), overridable via `APP_CORS_ALLOWED_ORIGIN_PATTERNS`, documented "dev only". This is the *safe* shape — it avoids the `allowedOrigins:"*"` + `allowCredentials:true` combination that would let any site ride a session. No finding. (It correctly uses `setAllowedOriginPatterns`, required when a pattern has a wildcard port.)
+- **debugging D04 heap claim:** the Dockerfile sets `-XX:MaxRAMPercentage=75` (+ `-XX:+ExitOnOutOfMemoryError`), so heap ≈ 384Mi of a 512Mi limit — D04's "~384Mi, the other ~128Mi is non-heap" is correct, and the explicit `ExitOnOutOfMemoryError` reinforces the drill's "crash, don't limp" point.
+
+Walk 23 lesson: **a two-file topic rots one file at a time.** When a paired doc (`comprehension.md` + `notes.md`) describes the same thing, a sync fix has to touch both — grep the sibling, not just the file you opened. And when you review new security code, name what you *checked for* (origins `*` + credentials), so "no finding" is a verdict, not a shrug.

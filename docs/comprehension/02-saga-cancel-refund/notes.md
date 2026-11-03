@@ -22,7 +22,7 @@ Aur PAID order ka cancel seedha delete/release isliye galat hai kyunki **paisa c
 
 **Refund saga (PAID cancel):**
 4. `OrderService.cancel`: order PAID hai → `requestRefund()` → `REFUND_PENDING` + `OrderRefundPending` event.
-5. payment-service `refund`: `findByOrderRef`, sirf `CAPTURED` ho to gateway refund → `markRefunded` → `PaymentRefunded`. **(state guard = idempotency)**
+5. payment-service `refund`: `findByOrderRef`, sirf `CAPTURED` ho to gateway refund. Approve → `markRefunded` → `PaymentRefunded`. **Decline → payment `CAPTURED` hi rehta → `PaymentRefundFailed`** (Walk 20: fake REFUNDED nahi; redelivery retry karega). **(state guard = idempotency)**
 6. order-service `onPaymentRefunded`: sirf `REFUND_PENDING` ho to `release` stock + `REFUNDED`. **Money pehle, stock baad mein.**
 
 **Non-PAID cancel:** `CONFIRMED`/`FAILED` → `release` + `CANCELLED` turant (no money moved). `PENDING`/already-cancelling → not cancellable.
@@ -46,8 +46,8 @@ Aur PAID order ka cancel seedha delete/release isliye galat hai kyunki **paisa c
  order-service ──OrderConfirmed──►  Kafka orders.events ──►  payment-service
       ▲                                                          │ charge / refund
       │                                                          ▼
-      └────────── Kafka payments.events ◄── PaymentCaptured / PaymentFailed / PaymentRefunded
-   (PaymentEventListener: processed_event dedupe by eventId)
+      └────────── Kafka payments.events ◄── PaymentCaptured / PaymentFailed / PaymentRefunded / PaymentRefundFailed
+   (PaymentEventListener: processed_event dedupe by eventId; PaymentRefundFailed → onRefundFailed, order stays REFUND_PENDING)
 
  Choreography: koi central orchestrator nahi. Har service apne topic ke events pe react.
  Visibility: distributed tracing (traceparent HTTP + Kafka headers se travel karta).
@@ -66,10 +66,10 @@ Aur PAID order ka cancel seedha delete/release isliye galat hai kyunki **paisa c
 2. "Release stock first, then refund" se exactly kya bura ho sakta hai agar refund fail ho?
 3. Refund idempotency "by state" kaise kaam karti hai — guard kahan hai?
 4. Choreography ka ek asli faida aur ek asli cost?
-5. `RefundFailed` path kahan add karega taaki kuch na khoye?
+5. Refund decline ho jaye to kya hota hai? (Walk 20: payment `CAPTURED` rehta, `PaymentRefundFailed`, order `REFUND_PENDING`, alert pages, redelivery retries — `REFUNDED` kabhi fake nahi hota.)
 
 ## Interview mein ye bolo
-*"Saga = local transactions + compensations, 2PC ke bina. ShopFlow choreography use karta hai: reserve REST se (sync answer chahiye), baaki Kafka se. PaymentFailed pe stock release + CANCELLED (compensation). PAID order cancel ek refund saga hai — PAID→REFUND_PENDING→REFUNDED — money pehle wapis phir stock, taaki fail refund stock leak na kare. Idempotency state se: payment sirf CAPTURED ho to refund hota hai."*
+*"Saga = local transactions + compensations, 2PC ke bina. ShopFlow choreography use karta hai: reserve REST se (sync answer chahiye), baaki Kafka se. PaymentFailed pe stock release + CANCELLED (compensation). PAID order cancel ek refund saga hai — PAID→REFUND_PENDING→REFUNDED — money pehle wapis phir stock, taaki fail refund stock leak na kare. Idempotency state se: payment sirf CAPTURED ho to refund hota hai. Agar gateway refund decline kare, payment CAPTURED hi rehta aur PaymentRefundFailed emit hota — order REFUND_PENDING pe atka rehta aur alert human ko bulata, hum kabhi fake REFUNDED nahi karte."*
 
 > Related: idempotency ki teen shaklein → [`../03-idempotency-three-ways/`](../03-idempotency-three-ways/).
 </content>
