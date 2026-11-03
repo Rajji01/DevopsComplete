@@ -636,3 +636,27 @@ Walk 36 lesson: **a summary doc goes stale the moment you add a topic it doesn't
 
 ### Honest status (Walks 22–36)
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–24**; debugging **D01–D15** (each with Reproduce/test); + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All claims verified against source; links clean (0 broken across all docs). Walks 22–35 + drills pushed; the newest batch (ARCHITECTURE/RAPID/21–24 + this record) committed **locally** (push pending Abhishek's word).
+
+## Walk 37: capstone sync + topic 26 (scaling-100x) — the throughput capstone (Nov 4, 2026)
+
+Scope: self-decided. After building topic 25 (correctness capstone), the natural pair was missing — **correctness ≠ throughput**. A Google-architect comprehension round asks *both* "is it correct?" and "where does it break at scale?". Topic 25 answered the first; nothing answered the second. So: (a) finish wiring 25 into the aggregators, (b) build 26 as the scaling capstone, grounded in the repo's **real** limits.
+
+Sync first (25 wiring that was pending):
+- Added a **Capstone reverse-link** from the 7 component topics (01/02/03/04/05/11/23 comprehension.md) up to 25, so a reader on any piece finds the synthesis.
+- Added **topic 25 row** to `RAPID-REVISION.md` (its per-topic table had stopped at 24).
+- Re-verified 25's citations against source (clean): `Order.java:58 @Version`, `ProductRepository` atomic `UPDATE ... WHERE quantity >= :qty`, `OrderService` `TransactionTemplate` (order+outbox one txn), `OrderConfirmedListener` refund `filter(status==CAPTURED)` + stays-CAPTURED-on-decline.
+
+Built **topic 26 — Scaling 100x: where it breaks first** (`comprehension.md` + `notes.md`). Grounded, with each ceiling file-cited:
+- **DB connections** — `DB_POOL_SIZE: 5`/pod (`k8s/base/order-service/deployment.yaml`) × pods vs `max_connections`; 60 pods = 300 conn → payment also starved, CPU idle (DB-wait). Fix = PgBouncer + read replicas (component, not more pods).
+- **Hot-row lock** — `ProductRepository.decrementStock` one row lock serializes a single-SKU flash sale; pods don't help. Fix = waiting-room + Redis admission-gate, **Postgres still final** (topic 05 rule intact; eventual consistency enters at the Redis↔PG gate).
+- **Per-pod limiter** — `limit-for-period: 50`/pod → cluster cap = 50×replicas, drifts with HPA (2–6). Global SLA → shared limiter.
+- **Relay** — `OutboxRelay` `BATCH_SIZE=100`, `fixedDelay 1s`, **SKIP LOCKED** = the multi-pod scale-out seam; knob→pods→Debezium CDC. Verified exact values in `shopflow-outbox/OutboxRelay.java`.
+- Plus: Kafka `num.partitions=6` caps consumer parallelism; `ProductController` `@Cacheable` has **no `sync=true`** → stampede (D10/D12).
+- **Honesty discipline:** every "fix" is explicitly marked **architect-proposal, not yet in the repo** — the comprehension's header, the notes' alternate table, and the interview line all say "aaj X / 100x pe Y (not built)". Matches CLAUDE.md "notes honest, don't exaggerate."
+
+Indexed 26 everywhere: comprehension `README.md` (row + status "25 correctness capstone + 26 scaling capstone"), `RAPID-REVISION.md` (row 26), `INDEX.md`, `STATE.md` §1. Topic-26 link check clean (0 broken).
+
+Walk 37 lesson: **a correctness capstone needs a throughput capstone beside it** — "is it right?" and "where does it break?" are the two halves of an architect round, and answering only one looks like you don't know the other exists. The strongest signal in 26 isn't any single fix — it's the framing "**3 of 4 ceilings don't move when you add pods**," which forces naming the bottleneck by number instead of reaching for "scale horizontally."
+
+### Honest status (Walks 22–37)
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–26** (25 = correctness capstone, 26 = scaling capstone); debugging **D01–D15**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims verified against source; links clean. Committed **locally** (push pending Abhishek's word).

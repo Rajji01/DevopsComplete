@@ -1,6 +1,7 @@
 # 23 · MSK in prod: acks=all, RF3/minISR2, IAM auth — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `infra/terraform/aws/msk.tf`, `order-service/application.yml` (`acks: all`, `enable.idempotence: true`), `irsa.tf` (kafka-clients role). Pairs with [comp 01](../01-outbox-dual-write/), [comp 11](../11-kafka-dlt-lag/).
+> **Capstone:** ye topic poore correctness-model mein kaise fit hota → [25 — the correctness model](../25-correctness-model-capstone/).
 
 ---
 

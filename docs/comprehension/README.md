@@ -68,8 +68,9 @@ Har row mein do files: `comprehension.md` (round) + `notes.md` (concept).
 | 23 | [MSK in prod: acks=all, RF3/minISR2, IAM auth](23-msk-kafka-prod/) · [notes](23-msk-kafka-prod/notes.md) | managed Kafka, durability (acks/RF/minISR), idempotent producer, IAM auth | AWS / Kafka |
 | 24 | [Zero-trust pod networking (NetworkPolicies)](24-network-policies-zero-trust/) · [notes](24-network-policies-zero-trust/notes.md) | default-deny + allow-list, lateral-movement containment, CNI-enforced | security / k8s |
 | **25** | ⭐ **[CAPSTONE — the correctness model](25-correctness-model-capstone/)** · [notes](25-correctness-model-capstone/notes.md) | **strong vs eventual consistency, CAP/PACELC, effectively-once, invariants — synthesizes 01/02/03/04/05/11/23** | **HLD / architect** |
+| **26** | ⭐ **[Scaling 100x: where it breaks first](26-scaling-100x-bottlenecks/)** · [notes](26-scaling-100x-bottlenecks/notes.md) | **throughput ceilings (DB connections, per-pod limiter, hot-row lock, relay) — which fixes are knob vs component vs redesign; 3/4 don't move with pods** | **HLD / architect** |
 
-**Status:** 01–24 + 25 (capstone) built (har ek: comprehension + notes + local & online hands-on). Aage aur topics isi shape mein add ho sakte (HPA/PDB/autoscaling, Terraform/EKS prod + IRSA, backups RPO/RTO, External Secrets...).
+**Status:** 01–24 + 25 (correctness capstone) + 26 (scaling capstone) built (har ek: comprehension + notes + local & online hands-on). 25 = correctness ka synthesis, 26 = throughput/scale ka — dono architect-level. Aage aur topics isi shape mein add ho sakte.
 
 ## Shared
 

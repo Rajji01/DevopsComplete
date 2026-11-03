@@ -29,6 +29,8 @@
 | 22 | **Cognito prod** | managed IdP (Keycloak dev). Public client + **auth-code+PKCE** (no secret, implicit nahi). Access 15m (leak window) + refresh 30d (revocable). `cognito:groups`→ROLE_*. Config not code. |
 | 23 | **MSK prod** | 3 brokers/3 AZ, **acks=all + RF3 + minISR2** → acked = 2 replicas → 1 broker/AZ loss pe 0 data loss. IAM auth (no password). `acks=1` = silent loss. 2 brokers down → write fail (intended). |
 | 24 | **NetworkPolicies** | zero-trust: **default-deny-ingress** + per-service allow-list (order←ingress/mon, inv←order, pg←services). Lateral-movement contain. **CNI (Calico/Cilium) enforce kare** warna decorative — test karo. |
+| 25 | ⭐ **Correctness model** (CAPSTONE) | **Strong** jahan ek node decide kar sakta (atomic stock `UPDATE`, order-state+outbox **1 txn**, `@Version`) · **eventual** jahan cross-service (Kafka **at-least-once + idempotency = effectively-once**, ordering-per-key + status-guards, progress-as-state + reconciler). CAP: saga>2PC (A chuno, C ko idempotency/compensation se kamao). Worst-case (relay crash + double-deliver + reorder) → invariants hold. |
+| 26 | ⭐ **Scaling 100x** (CAPSTONE) | Pehla ceiling naam do (number se), **4/4 mein 3 "pods add" se hilte nahi**: DB conn (pods×`5`>`max_connections`→payment bhi fail, CPU idle→PgBouncer+replicas) · hot-row lock (ek SKU serialize→queue+Redis-gate, final Postgres) · per-pod limiter (`50`→cap=50×replicas drift→shared limiter) · relay (`BATCH 100`/1s **SKIP LOCKED**=scale-seam→CDC). Fix = **knob/component/redesign** kaunsa. |
 
 ## 2. Symptom → cause → fix (debugging, 2am wala)
 | Symptom | Likely cause | Fix / check | Drill |

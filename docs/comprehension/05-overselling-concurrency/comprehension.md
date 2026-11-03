@@ -1,6 +1,7 @@
 # 05 · Overselling 3 PS5s to 300 buyers — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `inventory-service/…/ProductRepository.decrementStock`, `ReservationService.reserve`, `order-service/…/OrderController` (`@RateLimiter`), `loadtest/flash-sale.js`.
+> **Capstone:** ye topic poore correctness-model mein kaise fit hota → [25 — the correctness model](../25-correctness-model-capstone/).
 > **Debug it live:** [D06](../../debugging/D06-oversold-flash-sale.md) — isi mechanism ka symptom-se-root-cause drill.
 
 ---

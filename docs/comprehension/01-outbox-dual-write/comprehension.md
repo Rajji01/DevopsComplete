@@ -1,6 +1,7 @@
 # 01 · Dual write & the transactional outbox — comprehension
 
 > Companion concept notes: [`notes.md`](notes.md). Grounded in: `shopflow/shopflow-outbox/…/OutboxRelay.java`, `OutboxPublisher.java`, `order-service/…/OrderService.java` (`saveWithEvent`).
+> **Capstone:** ye topic poore correctness-model mein kaise fit hota → [25 — the correctness model](../25-correctness-model-capstone/).
 > **Debug it live:** [D02](../../debugging/D02-201-but-silent-downstream.md) — isi mechanism ka symptom-se-root-cause drill.
 > **How to use:** passage 2–3 min padho, phir answers likho, phir `<details>` kholo. Rubric: [`../README.md`](../README.md).
 

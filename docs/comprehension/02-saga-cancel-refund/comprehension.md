@@ -1,6 +1,7 @@
 # 02 · Cancelling a paid order: a refund saga — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `order-service/…/OrderService.java` (`cancel`, `onPaymentFailed`, `onPaymentRefunded`), `payment-service/…/OrderConfirmedListener.java` (`charge`, `refund`), `FakePaymentGateway.java`.
+> **Capstone:** ye topic poore correctness-model mein kaise fit hota → [25 — the correctness model](../25-correctness-model-capstone/).
 
 ---
 

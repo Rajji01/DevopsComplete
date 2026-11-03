@@ -1,6 +1,7 @@
 # 04 · Orders stuck in limbo — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `OrderService` (`placeOrder`, `reconcileFailedOrders`, `countStuckConfirmed`, `saveWithEvent`), `OrderReconciler`.
+> **Capstone:** ye topic poore correctness-model mein kaise fit hota → [25 — the correctness model](../25-correctness-model-capstone/).
 > **Debug it live:** [D01](../../debugging/D01-orders-stuck-confirmed.md) — isi mechanism ka symptom-se-root-cause drill.
 
 ---
