@@ -225,3 +225,9 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 **Git:** committed **locally** (topic 26 + 25-wiring as one commit `6cbbbf8`; D16 + indexing pending commit this session). **NOT pushed** — push only when Abhishek says. Currently ahead of `origin/master`.
 
 **Pending / next:** push when told. Possible next deep topics (goal area): observability-driven debugging masterclass, flash-sale waiting-room HLD deep-dive, ingress/ALB path.
+
+**Same session, continued (Walks 39–40):**
+- **Comprehension 27 (observability capstone)** — SLI = availability+latency (`le=1.0`), 4xx excluded, multi-window multi-burn, metric→trace→log. Verified vs `monitoring/*` + `alerts_test.yml`.
+- **Comprehension 28 (concurrency control)** — Abhishek's ask: locks/no-locks, DB vs JPA, per-API. Anchored on ShopFlow's three real mechanisms (atomic `UPDATE` / optimistic `@Version` / pessimistic `FOR UPDATE SKIP LOCKED`); JPA↔DB translation, isolation levels, contention-profile decision tree; `[NEW]` cases marked.
+- **Debugging D17** — concurrency twin: optimistic-lock 409 storm on a hot row (wrong tool for contention).
+- Comprehension **01–28**, debugging **D01–D17**. All indexed/synced, links clean. **7 commits ahead of origin, unpushed** (push on your word).
