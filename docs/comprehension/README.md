@@ -65,6 +65,10 @@ Har row mein do files: `comprehension.md` (round) + `notes.md` (concept).
 
 - [`ONLINE-LABS.md`](ONLINE-LABS.md) — laptop pe Docker/minikube/JDK na ho to **free online** pe poora stack chalana aur deploy karna: GitHub Codespaces, Google Cloud Shell, Killercoda, aur ek "sach mein internet pe deploy" path (Render + Neon + Upstash + Confluent Cloud free tiers). Har topic ka online hands-on yahin se link hota hai.
 
+## Sibling series: debugging drills
+
+Mechanism samajhne ke baad usko **live debug** karna seekho: [`../debugging/`](../debugging/README.md) — sirf symptom (alert/graph/log) milta hai, tujhe root cause nikalna hai. Jodi: 01↔[D02](../debugging/D02-201-but-silent-downstream.md) · 03↔[D07](../debugging/D07-duplicate-emails-charges.md) · 04↔[D01](../debugging/D01-orders-stuck-confirmed.md) · 05/12↔[D06](../debugging/D06-oversold-flash-sale.md) · 06↔[D05](../debugging/D05-alert-that-didnt-fire.md) · 09/13↔[D03](../debugging/D03-latency-spike-no-errors.md) · 11↔[D01](../debugging/D01-orders-stuck-confirmed.md)/[D02](../debugging/D02-201-but-silent-downstream.md). (Comprehension = "kaise kaam karta"; debugging = "toota to kahan dekhun".)
+
 ## Isme aur `interview-notes/` mein farak
 
 `interview-notes/` = **answer pata hai, revise karo** (Q -> model answer). Yeh folder = **naya passage, reason karo + tod ke dekho** — wahi jo round mein hota hai. Dono source of truth: [`../STATE.md`](../STATE.md).

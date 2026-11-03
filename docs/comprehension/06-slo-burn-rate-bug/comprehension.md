@@ -1,6 +1,7 @@
 # 06 · The SLO alert that never fired — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `monitoring/slo-rules.yml`, `monitoring/recording-rules.yml` (`sli:checkout_*`), `order-service application.yml` (metrics distribution), `docs/SELF-WALK.md` Walk 8.
+> **Debug it live:** [D05](../../debugging/D05-alert-that-didnt-fire.md) — isi mechanism ka symptom-se-root-cause drill.
 
 ---
 

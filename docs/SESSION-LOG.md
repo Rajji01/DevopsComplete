@@ -20,8 +20,8 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 - comprehension **02 (saga-refund)**: refund-decline is **no longer an open item** — implemented Walk 20. Updated Q8/answer + E10 to match: on decline payment stays `CAPTURED`, emits `PaymentRefundFailed`, order stays `REFUND_PENDING`, `OrdersStuckConfirmed` pages, redelivery retries (not a fake `REFUND_FAILED` status). Charge limit still 100000 so topic 02 hands-on unchanged.
 - comprehension **06 (SLO bug)**: SLI redefined Walk 14 — `non-5xx` → `2xx` (valid = `[25]..`, bad = 5xx + slow-2xx, 4xx/429 excluded). `le="1.0"` bucket lesson unchanged.
 - Committed local **D07** (duplicate-emails/charges drill) that was pending — grounded claims still valid (no refund-decline content).
-**Not yet synced (noted, low):** debugging D05 wording is generic (no `non-5xx`), fine. Other new docs (HLD/LLD/INDEXING/VISUAL-FLOWS, `labs/`) read — no conflict with mine.
-**Verify:** docs only; not executed (test phase pending — Abhishek will say). Pushed.
+**Then Walk 22 (self-walk, SELF-WALK.md):** D05 SLI wording → `2xx` (Walk 14); added **reverse links** comprehension→debugging (9 topics + README sibling section) — pehle sirf ek taraf the; link-integrity pass over 40 files = all resolve; D03 breaker-slow claim verified (no slowCallRateThreshold); no stale counts. Other new docs (HLD/LLD/INDEXING/VISUAL-FLOWS, `labs/`) read — no conflict.
+**Verify:** docs only; not executed (test phase pending). Earlier sync (02/06/D07) pushed as `07761ba`; Walk 22 edits committed **locally, NOT pushed** (holding per Abhishek's "no push for an hour").
 
 ---
 

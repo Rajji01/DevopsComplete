@@ -1,6 +1,7 @@
 # 09 · When inventory is down: retry, breaker, timeout — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `order-service/…/InventoryClient.java` (`@Retry` + `@CircuitBreaker`), `application.yml` (resilience4j config), `OrderService.placeOrder` (`CallNotPermittedException` → `FAILED`).
+> **Debug it live:** [D03](../../debugging/D03-latency-spike-no-errors.md) — isi mechanism ka symptom-se-root-cause drill.
 
 ---
 

@@ -426,3 +426,20 @@ Scope: a read of the persistence entities for JPA gotchas. `OutboxEvent` has an 
 Noted, not changed: `ProcessedEvent` and `Payment` share the assigned-UUID pattern and are also insert-only via `save()`; the same `Persistable` treatment would help, but they are lower-write than the outbox — a follow-up, recorded rather than changed blind.
 
 Walk 21 lesson: **an assigned `@Id` quietly turns `save()` into `merge()`.** If an entity is only ever inserted, say so with `Persistable.isNew()` — otherwise every "insert" is a SELECT + INSERT. Invisible in tests (correct, just extra SQL); you only see it in the query log.
+
+## Walk 22: keeping the comprehension/debugging docs true after the code moved (Nov 3, 2026)
+
+Scope: after a `git pull` fast-forwarded 31 commits (Walks 11–21 from another session), re-check that the `docs/comprehension/` (01–15) and `docs/debugging/` (D01–D07) material still matches the code it cites — because several of those walks changed code the docs describe. CLAUDE.md §2: a doc that disagrees with STATE gets fixed, not the other way round.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **comprehension 02 (saga-refund) said the `RefundFailed` path was "an open item in STATE §4."** Walk 20 *implemented* it, so the doc now contradicted both the code and STATE | A reader prepping for an interview would describe a gap that no longer exists, and would mis-state the design (it claimed a `REFUND_FAILED` status that was never added) | Rewrote Q8/answer + E10: on a declined refund the payment stays **`CAPTURED`** (retryable), payment-service emits **`PaymentRefundFailed`**, order stays **`REFUND_PENDING`**, `OrdersStuckConfirmed` pages, a redelivery retries. Verified against `OrderConfirmedListener.refund`, `OrderService.onRefundFailed`, `PaymentEventListener` (routes `PaymentRefundFailed`), and `PaymentServiceApplicationTests.declinedRefundPublishesRefundFailedAndKeepsPaymentCaptured` |
+| **comprehension 06 + debugging D05 described the SLI as `5xx + (non-5xx total − non-5xx within 1s)`.** Walk 14 redefined it: valid attempts are `status=~"[25].."`, bad = `5xx + slow-2xx`, with 4xx/429 excluded from both sides | The whole point of the SLO drill is a reader who can read the *actual* recording rule; "non-5xx" would now mismatch the file (`status=~"2.."`) | Replaced "non-5xx" with "2xx" throughout topic 06 (comprehension + notes) and D05; the `le="1.0"` empty-bucket lesson is unchanged |
+| **The two series were only linked one way.** `docs/debugging/` pointed to its matching comprehension topics, but no comprehension topic (nor its README) pointed back to the drill that debugs it live | For a study loop ("learn the mechanism → now debug it"), the missing reverse links break the natural next step | Added a "Debug it live → Dxx" line to the 9 topics with a matching drill (01→D02, 03→D07, 04→D01, 05/12→D06, 06→D05, 09/13→D03, 11→D01/D02) and a sibling-series section to the comprehension README |
+
+Verified clean (no change): a link-integrity pass over all 40 comprehension+debugging files — **every relative link resolves**; D03's claim that a *failure-rate* breaker can't catch "slow but up" — confirmed, the inventory breaker config has **no** `slowCallRateThreshold`; no stale test/alert/scenario **counts** in any of my docs; comprehension 04's "orchestrated saga timeout" is still correctly an open item in STATE §4.
+
+Walk 22 lesson: **when you don't own the whole branch, your docs rot silently.** Another session changing the code is exactly when grounded docs go stale — pull first, then diff your citations against the new source. The cheapest guard is to cite file + test names (so a mismatch is greppable) and to re-run a link check after any batch edit.
+
+### Honest status (Walk 22)
+- Docs only; **not executed** here (no Docker/JDK — STATE §3, and the standing GUIDED-STUDY note). Fixes come from reading the current source, not a terminal. Not pushed (holding per Abhishek's "no push for an hour").

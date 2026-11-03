@@ -1,6 +1,7 @@
 # 03 · Three kinds of idempotency — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `OrderService.placeOrder` (Idempotency-Key), `PaymentEventListener.onPaymentEvent` (`processed_event`), `OrderConfirmedListener.charge` (payment PK = eventId) and `refund` (by state).
+> **Debug it live:** [D07](../../debugging/D07-duplicate-emails-charges.md) — isi mechanism ka symptom-se-root-cause drill.
 
 ---
 

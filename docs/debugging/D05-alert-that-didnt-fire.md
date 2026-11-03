@@ -33,7 +33,7 @@ Your job: figure out **why the alert didn't fire**, not what caused the latency.
 
 1. An alert "didn't fire." Name the three layers where that can break, and which one `promtool test rules` passing **rules out** (and which it does **not**).
 2. The recording rule evaluates to **empty vector**, not a low number. Why is "no data" far more dangerous than "a wrong number" for an alert?
-3. The SLI's "bad" = 5xx + slow. The slow part needs `…bucket{le="1.0"}`, which returns nothing. Walk the PromQL: what does `5xx + (total − <empty>)` evaluate to, and why does that silence the alert?
+3. The SLI's "bad" = 5xx + slow-2xx. The slow part needs `…bucket{status=~"2..", le="1.0"}`, which returns nothing. Walk the PromQL: what does `5xx + (2xx total − <empty>)` evaluate to, and why does that silence the alert?
 4. The unit test is green but prod is blind. What exactly is the test testing, and what is it **not** testing?
 5. What two changes fix it so this class of "silent alert" can't recur?
 
@@ -48,7 +48,7 @@ Your job: figure out **why the alert didn't fire**, not what caused the latency.
 
 **"No data" > "wrong number" (Q2).** A wrong number might still cross a threshold sometimes; **an empty vector never crosses anything** — `empty > 0.072` is not true, it's *no result*, so the alert condition is never satisfied no matter how bad the outage. A metric that silently becomes empty turns an alert into decoration. This is why you alert on **absence** too (`absent()`), and why you test that the inputs exist.
 
-**Walk the PromQL (Q3).** `sli:checkout_bad = 5xx_rate + (nonall_rate − within_1s_rate)`, where `within_1s_rate` comes from `…bucket{le="1.0"}`. That bucket series is **empty**. In PromQL, an arithmetic op where one side is an empty vector yields an **empty result** for that term — so the "slow" contribution collapses, and `sli:checkout_bad` (hence `sli:checkout_error_ratio`) evaluates to **no data**. The burn-rate alert compares *no data* to its threshold → never fires. The latency half of the SLI was **structurally dead**.
+**Walk the PromQL (Q3).** `sli:checkout_bad = 5xx_rate + (2xx_rate − 2xx_within_1s_rate)`, where `2xx_within_1s_rate` comes from `…bucket{status=~"2..", le="1.0"}` (valid attempts are `status=~"[25].."`; 4xx/429 excluded — Walk 14). That bucket series is **empty**. In PromQL, an arithmetic op where one side is an empty vector yields an **empty result** for that term — so the "slow" contribution collapses, and `sli:checkout_bad` (hence `sli:checkout_error_ratio`) evaluates to **no data**. The burn-rate alert compares *no data* to its threshold → never fires. The latency half of the SLI was **structurally dead**.
 
 **Why the bucket is missing (root cause).** `percentiles-histogram: true` makes Micrometer emit its **own** exponential bucket boundaries, which are **not guaranteed to include exactly `le="1.0"`**. The recording rule hard-codes `le="1.0"`. In prod that boundary doesn't exist → empty series → dead SLI. (This is the real Walk 8 bug; here you're *debugging it from the symptom side*.)
 

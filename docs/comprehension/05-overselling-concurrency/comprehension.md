@@ -1,6 +1,7 @@
 # 05 · Overselling 3 PS5s to 300 buyers — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `inventory-service/…/ProductRepository.decrementStock`, `ReservationService.reserve`, `order-service/…/OrderController` (`@RateLimiter`), `loadtest/flash-sale.js`.
+> **Debug it live:** [D06](../../debugging/D06-oversold-flash-sale.md) — isi mechanism ka symptom-se-root-cause drill.
 
 ---
 

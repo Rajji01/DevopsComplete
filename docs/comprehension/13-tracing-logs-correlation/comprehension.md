@@ -1,6 +1,7 @@
 # 13 · Following one order across services: traces & logs — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `order-service application.yml` (`observation-enabled`, OTLP, ECS logs, sampling), `monitoring/grafana/.../datasources.yml` (Tempo↔Loki linking), `docker-compose.yml` (Tempo, Loki, Alloy, Grafana).
+> **Debug it live:** [D03](../../debugging/D03-latency-spike-no-errors.md) — isi mechanism ka symptom-se-root-cause drill.
 
 ---
 
