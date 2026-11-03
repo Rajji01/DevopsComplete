@@ -473,3 +473,17 @@ Walk 24 lesson: **"built and pushed" isn't "discoverable."** A doc added without
 
 ### Honest status (Walks 22–24)
 - All three walks are **docs only**, reviewed against current source, **not executed** (no Docker/JDK; GUIDED-STUDY). Committed locally, **not pushed** (holding per Abhishek's "no push for an hour"); origin is ahead-counter clean once pushed later.
+
+## Walk 25: verifying the new study docs tell the truth (Nov 3, 2026)
+
+Scope: the pull added big revision docs (`LLD-DESIGN-PATTERNS.md`, etc.) Abhishek will study from; spot-check their most *checkable* claims against the code, because a confidently-wrong interview line is worse than none. No fixes — a clean verification pass (recorded because the claims are interview-load-bearing).
+
+Verified correct (no change):
+- **LLD #7 "Optimistic Locking (@Version) → 409":** `orders` has a `version` column (V1 migration) and `GlobalExceptionHandler` maps `OptimisticLockingFailureException` → `HttpStatus.CONFLICT` with the exact "@Version mismatch … loser gets 409" comment. The claim holds end to end.
+- **The whole error→status map my comprehension/debugging docs lean on**, read off the one handler: `OrderNotFound`→404, `OrderNotCancellable`/`DataIntegrityViolation`/optimistic-lock→409, `InventoryUnavailable` & downstream `RestClient`/`CallNotPermitted`→503 (the 503 carries an `orderId` property, not an order body — consistent with D04/topic-04 observing via the DB), `IdempotencyKeyConflict`→422, `RequestNotPermitted`→429. Every status code the labs assert is backed by this handler.
+- **LLD #1/#4/#8/#15 vs code:** `PaymentGateway` Strategy + `charge`/`refund` `Result` (Walk 20), `onPaymentFailed` compensation, `decrementStock` atomic conditional UPDATE, and the OCP example (`PaymentRefundFailed` = one new switch case) all match.
+
+Walk 25 lesson: **a study doc is a set of claims, each one greppable.** The fastest way to trust (or break) "in my project, X does Y" is to open the one file that would make it false — here, the single `GlobalExceptionHandler` validates a dozen status-code lines at once.
+
+### Honest status (Walks 22–25)
+- Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Walks 22–25 committed **locally, not pushed** (holding per "no push for an hour") — 4 local commits ahead of `origin/master`.
