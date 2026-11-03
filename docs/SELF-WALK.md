@@ -670,3 +670,20 @@ Scope: self-decided. Topic 26 (scaling) teaches the *mechanism*; the "real-time 
 Indexed: debugging `README.md` (row D16 + status D01–D16), comprehension `README.md` pairing (26↔D16), `RAPID-REVISION.md` symptom table (D16 row), `STATE.md` + `INDEX.md` (D01–D16). Link check clean.
 
 Walk 38 lesson: **every architect-level mechanism topic earns a debugging twin** — "know how it scales" (comp 26) and "recognize it failing at 2am" (D16) are different skills, and the strongest drill is the one where the *operator's own fix* (add pods) is the cause. Pattern reinforced: a service you didn't touch failing → hunt the **shared resource**, and CPU is a liar when the limit is a connection/lock.
+
+## Walk 39: observability capstone (27) + concurrency-control (28) (Nov 4, 2026)
+
+**Topic 27 — observability SLI/incident-model** (3rd architect capstone; trilogy 25 correctness / 26 scale / 27 observability). The checkout SLI is availability+latency in one number: `bad = 5xx + (2xx − 2xx@le=1.0)` over `2xx+5xx` (4xx excluded), multi-window multi-burn (1h+5m > 14.4×0.005 → page). Verified against `monitoring/{recording-rules,slo-rules,alert-rules,tests}.yml` — `alerts_test.yml` case 7 (slow 429s, NO 5xx → **no page**) directly proves the 4xx-excluded claim; case 5/6 prove the fast-burn/latency thresholds. Adds metric→trace→log incident-reasoning + monitor-the-monitor (le=1.0 bucket must exist, the topic-06 bug).
+
+**Topic 28 — concurrency control (locks/no-locks, DB vs JPA)** — built on Abhishek's explicit ask ("millions of requests, different APIs, locks/no-locks, DB level vs JPA level, how they interact per case"). Anchored on ShopFlow's **three real** mechanisms (verified in source):
+- **No-lock atomic conditional UPDATE** — `inventory/ProductRepository.decrementStock` (`@Modifying`, `where quantity>=:qty`, rows-affected signal, `clearAutomatically/flushAutomatically`).
+- **Optimistic `@Version`** — `Order.java:58`; Hibernate `UPDATE ... WHERE version=?`; loser → `OptimisticLockException` → 409 (`GlobalExceptionHandler`).
+- **Pessimistic `FOR UPDATE SKIP LOCKED`** — `shopflow-outbox/OutboxRepository.findUnpublished` (`@Lock(PESSIMISTIC_WRITE)` + `jakarta.persistence.lock.timeout=-2`).
+Core teaching: a **JPA↔DB translation table** (annotation → actual SQL → lock → fail mode), a **contention-profile decision tree** (rare→optimistic/retry-storm, hot-row-short→pessimistic/convoy-deadlock, 1-col→atomic), **isolation levels** (READ COMMITTED default → 2-statement lost-update; SERIALIZABLE/SSI for write-skew; MVCC snapshot for big reads not `FOR UPDATE`), and a **per-API case table**. `[NEW]` cases (wallet debit, transfer deadlock + lock-ordering, reporting isolation) explicitly marked reasoned-not-in-repo. The E-question ties back to D16/topic-04: **holding a lock across a remote call = pool-starvation outage** (data correct, resource wrong).
+
+Indexed 27+28 everywhere (comprehension README trilogy+28 row, RAPID-REVISION rows 27/28, INDEX 01..28, STATE). Pairings 27↔D03/D05. Link checks clean.
+
+Walk 39 lesson: topic 28 is the one where **ShopFlow already demonstrates all three lock families** — so it teaches by pointing at real code (`@Version` / atomic `UPDATE` / `FOR UPDATE SKIP LOCKED`) and only *reasons* the gaps (wallet/transfer/SERIALIZABLE). The honesty discipline matters most here: the three are real, the `[NEW]` four are labelled — exactly the "in my project X does Y" vs "I'd design Z" split an interview rewards.
+
+### Honest status (Walks 22–39)
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–28** (25/26/27 capstone trilogy, 28 concurrency); debugging **D01–D16**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims source-verified; links clean. Committed **locally**, push pending Abhishek's word.

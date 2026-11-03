@@ -70,8 +70,9 @@ Har row mein do files: `comprehension.md` (round) + `notes.md` (concept).
 | **25** | ⭐ **[CAPSTONE — the correctness model](25-correctness-model-capstone/)** · [notes](25-correctness-model-capstone/notes.md) | **strong vs eventual consistency, CAP/PACELC, effectively-once, invariants — synthesizes 01/02/03/04/05/11/23** | **HLD / architect** |
 | **26** | ⭐ **[Scaling 100x: where it breaks first](26-scaling-100x-bottlenecks/)** · [notes](26-scaling-100x-bottlenecks/notes.md) | **throughput ceilings (DB connections, per-pod limiter, hot-row lock, relay) — which fixes are knob vs component vs redesign; 3/4 don't move with pods** | **HLD / architect** |
 | **27** | ⭐ **[Observability: the SLI that catches slow AND broken](27-observability-sli-incident-model/)** · [notes](27-observability-sli-incident-model/notes.md) | **SLI = availability+latency (slow-2xx via `le=1.0`), 4xx excluded; multi-window multi-burn; metric→trace→log incident reasoning; monitor-the-monitor** | **SRE / architect** |
+| 28 | [Concurrency control: locks, no-locks, JPA↔DB](28-concurrency-control-locks-jpa-db/) · [notes](28-concurrency-control-locks-jpa-db/notes.md) | optimistic `@Version` vs no-lock atomic `UPDATE` vs pessimistic `FOR UPDATE SKIP LOCKED` — JPA→SQL translation, contention-profile picks the tool, isolation levels, which API gets which | Backend / concurrency |
 
-**Status:** 01–24 + 25/26/27 (architect capstone trilogy) built (har ek: comprehension + notes + local & online hands-on). **25 = correctness** ("sahi hai?"), **26 = scale** ("tootega kahan?"), **27 = observability** ("pata kaise + kahan dekhun?") — teeno synthesis. Aage aur topics isi shape mein add ho sakte.
+**Status:** 01–24 + 25/26/27 (architect capstone trilogy) + 28 (concurrency control) built (har ek: comprehension + notes + local & online hands-on). **25 = correctness** ("sahi hai?"), **26 = scale** ("tootega kahan?"), **27 = observability** ("pata kaise + kahan dekhun?") — teeno synthesis. Aage aur topics isi shape mein add ho sakte.
 
 ## Shared
 
