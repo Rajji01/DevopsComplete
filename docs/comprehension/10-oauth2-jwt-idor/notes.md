@@ -48,6 +48,38 @@ Office entry socho:
           (any fail → 401)                                     (empty config → skip, dev only)
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli code:**
+```java
+// SecurityConfig — stateless, matchers
+.csrf(disable).sessionManagement(STATELESS)
+.requestMatchers("/actuator/**","/swagger-ui/**").permitAll()
+.requestMatchers(GET, "/api/v1/orders/**").hasAnyRole("customer","support")
+.requestMatchers("/api/v1/orders/**").hasRole("customer")           // writes
+.anyRequest().denyAll()
+
+// JwtDecoderConfig — sig+exp+iss default; audience jab configured
+decoder.setJwtValidator(audience.isBlank() ? withIssuer
+    : new DelegatingOAuth2TokenValidator<>(withIssuer, audienceValidator(audience)));
+// audienceValidator: aud.contains(X) || azp==X || client_id==X   (Keycloak/Cognito shapes)
+
+// OrderService.get — IDOR: 404 not 403
+return orderRepository.findById(id).filter(caller::mayAccess)       // mayAccess = owner || support
+        .orElseThrow(() -> new OrderNotFoundException(id));          // non-owner → 404
+```
+
+**Dry run — token checks (kaun 401/403/404):**
+```
+ no token                 → filter: authentication nahi → 401
+ token, bad signature     → JWKS verify fail → 401
+ token, iss = purana IdP  → iss mismatch → 401        (IdP migration bug — dekho D09)
+ token, aud != this API   → audience fail → 401        (confused deputy rok)
+ valid token, role missing→ denyAll/hasRole fail → 403
+ valid customer, GET /orders/99 (bob, alice ka order) → findById ok, mayAccess false → 404 (NOT 403)
+```
+**Seekh:** 401 = token pe bharosa nahi (auth layer); 403 = bharosa hai par allowed nahi (authz); 404 (403 nahi) = id-existence chhupao.
+
 ## Alternate approaches (kab kaunsa)
 | Choice | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|

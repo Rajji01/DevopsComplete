@@ -56,6 +56,40 @@ Sawaal: *jo container prod mein chal raha, kya wo bilkul wahi hai jo CI ne revie
  right sig, tag moved │ runs the VERIFIED digest, not the swapped tag (mutateDigest)
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli config (CI + admission policy):**
+```yaml
+# shopflow.yml (CI, main only)
+- trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1   # fixable high/crit → fail
+- anchore/sbom-action (CycloneDX)                                        # sbom-<svc>.cdx.json
+- docker push ghcr.io/<owner>/shopflow-<svc>:<sha>                       # SHA tag, not latest
+- cosign sign --yes <image>@<digest>   # keyless: id-token→Sigstore cert (workflow identity)→Rekor
+```
+```yaml
+# kyverno/verify-image-signature.yaml (admission, ns shopflow, Enforce)
+verifyImages:
+  - imageReferences: ["ghcr.io/rajji01/shopflow-*"]
+    attestors: [{ keyless: { subject: ".../shopflow.yml@refs/heads/main",
+                             issuer: "https://token.actions.githubusercontent.com", rekor: ... } }]
+    mutateDigest: true    # tag → verified digest (check-ke-baad swap na ho)
+```
+
+**Dry run — malicious image deploy (admission reject):**
+```
+ attacker pushes ghcr.io/rajji01/shopflow-order-service:latest  (unsigned / apni identity)
+ kubectl run ... (ns shopflow)
+ → Kyverno admission webhook (Enforce): image ka digest signed? subject == shopflow.yml@main? issuer == github OIDC? rekor?
+ → attacker apni OIDC identity assume nahi kar sakta → verify FAIL → ADMISSION DENIED → pod banta hi nahi
+```
+
+**Dry run — legit image (admit + pin):**
+```
+ CI main: build → trivy pass → SBOM → push :sha → cosign sign (digest, Rekor log)
+ deploy: Kyverno verify → subject/issuer/rekor match → mutateDigest: tag→digest → ADMIT (jo verify hua wahi chale)
+```
+**Seekh:** "signed by someone" kaafi nahi — "signed by OUR workflow on main" chahiye; mutateDigest TOCTOU/tag-swap rokta; keyless = no key to leak.
+
 ## Alternate approaches (kab kaunsa)
 | Approach | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|
