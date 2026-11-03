@@ -487,3 +487,18 @@ Walk 25 lesson: **a study doc is a set of claims, each one greppable.** The fast
 
 ### Honest status (Walks 22–25)
 - Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Walks 22–25 committed **locally, not pushed** (holding per "no push for an hour") — 4 local commits ahead of `origin/master`.
+
+## Walk 26: the visual flow that still drew only the happy refund (Nov 3, 2026)
+
+Scope: the same Walk-20 refund-decline sync, chased into the other study docs (`VISUAL-FLOWS.md`, `HLD-SYSTEM-DESIGN.md`) — because a state diagram people learn from is exactly where a missing branch mis-teaches.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **`VISUAL-FLOWS.md`'s order state machine + refund sequence drew only `REFUND_PENDING → REFUNDED` (PaymentRefunded).** No decline branch — a reader studying the diagram would believe a refund always succeeds, the same gap Walk 22/23 fixed in comprehension 02 | A visual is the thing people memorize; an incomplete state machine is a wrong mental model that surfaces in an interview | Added the self-loop `REFUND_PENDING --> REFUND_PENDING: PaymentRefundFailed (declined → stays CAPTURED, alert + retry — Walk 20)` to the state diagram, a note to the saga sequence, and the decline clause to the "Kaise" idempotency line |
+
+Verified correct (no change): `HLD-SYSTEM-DESIGN.md` **already** carries the decline path ("refund declined: `PaymentRefundFailed`, order REFUND_PENDING, human (Walk 20)"); and a sweep of all three big docs for stale **SLI** wording (Walk 14's `non-5xx`→`2xx`) found **none** — only my own comprehension 06/D05 had used the old term, and those were already fixed.
+
+Walk 26 lesson: **one code change fans out across every doc that drew the old picture.** After fixing a mechanism doc, grep *every* place that renders the same flow — prose, a Mermaid diagram, a sequence note — not just the first file. The refund-decline of Walk 20 touched four of my files and one of theirs; each needed finding separately.
+
+### Honest status (Walks 22–26)
+- Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Five local commits ahead of `origin/master`, **not pushed** (holding per "no push for an hour"). When Abhishek lifts the hold, one `git push` ships Walks 22–26 together.

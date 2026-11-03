@@ -75,6 +75,7 @@ stateDiagram-v2
     CONFIRMED --> CANCELLED: user cancel (stock release)
     PAID --> REFUND_PENDING: user cancel (paisa wapas karna hai)
     REFUND_PENDING --> REFUNDED: PaymentRefunded (stock release)
+    REFUND_PENDING --> REFUND_PENDING: PaymentRefundFailed (gateway declined → payment CAPTURED rehta, alert + retry; fake REFUNDED nahi — Walk 20)
     FAILED --> CANCELLED: reconciler (grace ke baad)
     PENDING --> CANCELLED: reconciler (pod mar gaya tha)
     REJECTED --> [*]
@@ -154,12 +155,12 @@ sequenceDiagram
       K->>OS: PaymentFailed
       OS->>OS: stock release + CANCELLED (compensation)
     end
-    Note over OS,PS: Refund leg: user PAID order cancel kare →<br/>OrderRefundPending → PS refund → PaymentRefunded → REFUNDED
+    Note over OS,PS: Refund leg: user PAID order cancel kare →<br/>OrderRefundPending → PS refund → PaymentRefunded → REFUNDED<br/>(refund declined → PaymentRefundFailed → REFUND_PENDING pe atka, alert + retry — Walk 20)
 ```
 
 **Kya:** reserve ke baad charge karna, aur fail hone pe ulta karna (compensation).
 **Kyu:** distributed transaction (2PC) mahanga/nazuk hai; saga = chhote local steps + compensation.
-**Kaise:** events outbox se jaate hain; consumers idempotent. Refund = ulti saga (same machinery, opposite direction), idempotency **state se** (payment already REFUNDED → no-op).
+**Kaise:** events outbox se jaate hain; consumers idempotent. Refund = ulti saga (same machinery, opposite direction), idempotency **state se** (payment already REFUNDED → no-op; declined → CAPTURED hi rehta, redelivery retry karega — kabhi fake REFUNDED nahi).
 **Code kahan:** `payment-service/.../OrderConfirmedListener.java`, `order-service/.../payment/PaymentEventListener.java`, `OrderService.onPayment*`.
 **Related:** [#7 idempotency](#7-idempotency), [#2 state machine](#2-order-state-machine).
 
