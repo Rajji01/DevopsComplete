@@ -62,7 +62,7 @@ DevopsComplete/
 │   ├── EASY-NOTES.md / LABS.md / PRACTICE-LABS.md / ROADMAP.md / SELF-WALK.md
 │   ├── runbooks/ .......... per-alert on-call steps
 │   ├── interview-notes/ ... 01..12 + README (Q → model answer)
-│   ├── comprehension/ ..... Google-style comprehension rounds: 01..24/{comprehension,notes}.md + README + ONLINE-LABS.md
+│   ├── comprehension/ ..... Google-style comprehension rounds: 01..25/ (25 = correctness capstone){comprehension,notes}.md + README + ONLINE-LABS.md
 │   └── debugging/ ......... debugging drills (symptom → root cause → fix): D01..D15 + README
 ├── shopflow/ ............... asli microservices project
 │   ├── order-service/  inventory-service/  payment-service/  notification-service/
