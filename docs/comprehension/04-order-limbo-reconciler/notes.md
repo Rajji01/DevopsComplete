@@ -52,6 +52,60 @@ Restaurant mein order di, par waiter kitchen tak gaya ki nahi pata nahi (timeout
       (idempotent release)       (auto-cancel could strand a PAID order)
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli code:**
+```java
+// OrderReconciler — har 60s: FAILED/PENDING settle + CONFIRMED stuck count
+@Scheduled(fixedDelayString = "${orders.reconcile.delay:60s}")
+public void run() {
+    orderService.reconcileFailedOrders(reconcileGrace);              // grace 2m
+    stuckConfirmed.set(orderService.countStuckConfirmed(stuckGrace)); // grace 10m → gauge
+}
+
+// reconcileFailedOrders — no money moved → safe auto-cancel
+public int reconcileFailedOrders(Duration grace) {
+    var stale = orderRepository.findTop100ByStatusInAndUpdatedAtBefore(
+            List.of(OrderStatus.FAILED, OrderStatus.PENDING), Instant.now().minus(grace));
+    for (Order order : stale) {
+        try {
+            inventoryClient.release(order.getOrderRef());   // IDEMPOTENT: kuch reserve nahi hua to no-op
+            order.cancel(); saveWithEvent(order);
+        } catch (RestClientException | CallNotPermittedException e) {
+            break;   // inventory abhi bhi down → batch roko, agli run retry (hammer mat karo)
+        }
+    }
+    ...
+}
+
+// countStuckConfirmed — money MOVE ho sakta → sirf GINO, cancel NAHI
+public long countStuckConfirmed(Duration grace) {
+    return orderRepository.countByStatusInAndUpdatedAtBefore(
+            List.of(OrderStatus.CONFIRMED, OrderStatus.REFUND_PENDING), Instant.now().minus(grace));
+}
+```
+
+**Dry run — inventory down → FAILED limbo settle:**
+```
+t0   POST /orders → save PENDING → inventory.reserve() THROWS (breaker open) → order.fail() → status FAILED
+     (readiness UP — inventory readiness mein nahi; POST ne 503 diya par order FAILED save hua)
+t+2m reconciler.run (60s tick): FAILED + updatedAt < now-2m? haan
+     → inventoryClient.release(orderRef)  (kuch reserve nahi hua → no-op, safe)
+     → order.cancel() → status CANCELLED + OrderCancelled event
+     → customer ko definite answer, limbo khatam
+ (agar inventory abhi bhi down: release throw → break → agli minute retry)
+```
+
+**Dry run — payment-service down → CONFIRMED stuck (auto-cancel NAHI):**
+```
+t0    order CONFIRMED, OrderConfirmed event gaya, par payment-service down → PaymentCaptured kabhi nahi
+t+10m reconciler: countStuckConfirmed → ye order gina → orders_stuck_confirmed gauge ++
+      → OrdersStuckConfirmed alert → HUMAN
+      ❗ auto-cancel NAHI: payment in-flight ho sakta; cancel karte to PAID order strand ho jaata
+t+    payment-service UP → PaymentCaptured → onPaymentCaptured (CONFIRMED?) → PAID  (khud theek)
+```
+**Seekh:** "har limbo ka owner" ≠ "auto-cancel". Money na chala (FAILED/PENDING) → safe cancel; chal sakta (CONFIRMED) → sirf alert.
+
 ## Alternate approaches (kab kaunsa)
 | Approach | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|

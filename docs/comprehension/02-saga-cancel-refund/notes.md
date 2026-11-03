@@ -53,6 +53,60 @@ Aur PAID order ka cancel seedha delete/release isliye galat hai kyunki **paisa c
  Visibility: distributed tracing (traceparent HTTP + Kafka headers se travel karta).
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli code:**
+```java
+// OrderService.cancel — teen shapes (kitna door saga pahuncha)
+public Order cancel(long id, Caller caller) {
+    Order order = get(id, caller);
+    if (order.isPaid()) {                       // PAID: paisa cut chuka → refund saga
+        order.requestRefund();                  // status = REFUND_PENDING
+        return saveWithEvent(order);            // event OrderRefundPending → payment-service
+    }
+    if (!order.isCancellable())                 // PENDING/already-cancelling → 409
+        throw new OrderNotCancellableException(id, order.getStatus());
+    inventoryClient.release(order.getOrderRef());  // CONFIRMED/FAILED: no money → release + cancel
+    order.cancel();
+    return saveWithEvent(order);
+}
+
+// payment-service OrderConfirmedListener.refund — idempotent BY STATE + decline branch (Walk 20)
+private void refund(OrderEvent event) {
+    payments.findByOrderRef(event.orderRef())
+        .filter(p -> p.getStatus() == Payment.Status.CAPTURED)   // sirf CAPTURED (redeliver = no-op)
+        .ifPresent(payment -> {
+            var result = gateway.refund(payment.getOrderRef(), payment.getAmount());
+            if (result.approved()) {
+                payment.markRefunded();                          // CAPTURED → REFUNDED
+                outbox.publish(..., "PaymentRefunded", ...);
+            } else {                                             // DECLINE: fake REFUNDED NAHI
+                outbox.publish(..., "PaymentRefundFailed", ...); // payment CAPTURED hi rehta → retry
+            }
+        });
+}
+```
+
+**Dry run — PAID order cancel (approve path):**
+```
+DELETE /orders/42  (status PAID)
+ → cancel: isPaid() → requestRefund() → status REFUND_PENDING → saveWithEvent → OrderRefundPending event
+ → payment-service refund(): payment CAPTURED? haan → gateway.refund() approved
+       → payment.markRefunded() (CAPTURED→REFUNDED) → PaymentRefunded event
+ → order-service onPaymentRefunded(): order REFUND_PENDING? haan → inventoryClient.release() → markRefunded
+       → status REFUNDED   (MONEY pehle wapas, STOCK baad mein)
+```
+
+**Dry run — refund DECLINE (Walk 20 branch):**
+```
+... REFUND_PENDING → OrderRefundPending → payment-service refund(): gateway.refund() DECLINED
+ → payment CAPTURED hi rehta (fake REFUNDED nahi) → PaymentRefundFailed event
+ → order-service onRefundFailed(): order REFUND_PENDING pe ATKA rehta + counter++  (status badalta NAHI)
+ → OrdersStuckConfirmed alert (REFUND_PENDING bhi count hota) → human
+ → redelivered OrderRefundPending → payment abhi CAPTURED → refund RETRY  (koi stock leak nahi)
+```
+**Seekh:** money na aaye to stock release nahi (invariant); decline pe system REFUND_PENDING pe honestly atkata hai, fake REFUNDED nahi.
+
 ## Alternate approaches (kab kaunsa)
 | Approach | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|

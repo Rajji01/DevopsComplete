@@ -49,6 +49,52 @@ Flash sale (high contention, single row) ke liye yahi sabse clean aur fast hai �
  k6 threshold orders_confirmed==count 3  ── gates CI (overselling can't merge)
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli code:**
+```java
+// ProductRepository — check + decrement EK atomic statement (row lock + WHERE re-check)
+@Modifying(clearAutomatically = true, flushAutomatically = true)
+@Query("update Product p set p.quantity = p.quantity - :qty " +
+       "where p.sku = :sku and p.quantity >= :qty")
+int decrementStock(@Param("sku") String sku, @Param("qty") int qty);  // rows: 1=hua, 0=out/unknown
+
+// ReservationService.reserve — idempotent + atomic
+@Transactional
+public Reservation reserve(String orderRef, String sku, int quantity) {
+    var existing = reservationRepository.findByOrderRef(orderRef);
+    if (existing.isPresent()) return existing.get();          // idempotent: retry = wahi reservation
+    if (productRepository.decrementStock(sku, quantity) == 0) {  // ATOMIC
+        if (!productRepository.existsBySku(sku)) throw new ProductNotFoundException(sku);
+        rejectedCounter.increment();
+        throw new InsufficientStockException(sku, quantity);  // → 409
+    }
+    return reservationRepository.save(new Reservation(orderRef, sku, quantity));
+}
+```
+
+**Dry run — do buyer, stock = 1, bilkul ek saath (`decrementStock("PS5",1)`):**
+```
+ DB row: PS5 quantity=1
+ Buyer A  ─┐                         Buyer B ─┐
+           ▼                                   ▼
+ UPDATE ... set qty=qty-1 where qty>=1   UPDATE ... set qty=qty-1 where qty>=1
+   │ DB row LOCK A ne liya (serialize)     │ A ke commit tak WAIT
+   │ WHERE 1>=1 true → qty=0, rows=1        │
+   │ COMMIT, lock chhoda                    ▼ ab chalta: WHERE 0>=1 FALSE → rows=0
+   ▼                                        └→ InsufficientStockException → 409
+ A: rows=1 → reservation save → CONFIRMED
+ B: rows=0 → 409 REJECTED
+ → quantity ab 0, KABHI -1 nahi. Exactly ek jeeta.
+```
+**Naive (galat) version ka dry run — oversell:**
+```
+ A read qty=1 ─┐  B read qty=1 ─┐   (dono purana 1 dekhte — gap!)
+ A check 1>=1 ok, write 0        B check 1>=1 ok, write 0
+ → DONO reserved, stock 1 ka 2 bika (LOST UPDATE)
+```
+**Seekh:** check aur write ke beech ka gap hi dushman; atomic UPDATE wo gap mitata, DB row-lock serialize karta.
+
 ## Alternate approaches (kab kaunsa)
 | Approach | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|

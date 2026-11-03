@@ -45,6 +45,46 @@ Ek hi mechanism sab jagah fit nahi: client retry tab aata hai jab **event bana h
            └  (no id)  ──► refund: payment.status CAPTURED→REFUNDED  (state is the guard)
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli code (teen tarah):**
+```java
+// (1) Idempotency-Key (client) — OrderService.placeOrder
+if (idempotencyKey != null) {
+    var existing = orderRepository.findByIdempotencyKey(idempotencyKey);
+    if (existing.isPresent()) {
+        if (!existing.get().isOwnedBy(caller.customerId()))     // doosre user ki key
+            throw new IdempotencyKeyConflictException(...);     // → 422 (kabhi replay nahi)
+        return new PlacedOrder(existing.get(), false);          // wahi order (created=false → 200)
+    }
+}
+
+// (2) processed_event dedupe (consumer) — PaymentEventListener  @Transactional
+if (processedEvents.existsById(event.eventId())) return;        // dekha hua → skip
+switch (event.type()) { ... }                                   // handle (state change)
+processedEvents.save(new ProcessedEvent(event.eventId()));      // SAME txn mein record
+
+// (3) PK = eventId (natural key) — OrderConfirmedListener.charge
+if (payments.existsById(event.eventId())) { duplicates++; return; }  // redeliver → skip
+payments.save(new Payment(event.eventId(), ...));              // race → PK constraint fail
+```
+
+**Dry run — (1) client POST /orders do baar, same Key "abc":**
+```
+call-1: findByIdempotencyKey("abc") → none → naya order #42 → 201 Created
+call-2: findByIdempotencyKey("abc") → #42 mila, owner same → return #42 → 200 OK (naya order NAHI)
+call-2b (bob): same "abc" → #42 mila par owner alice → 422 (cross-user replay bug nahi)
+```
+
+**Dry run — (2)/(3) Kafka rebalance pe PaymentCaptured(eventId=E9) redeliver:**
+```
+1st delivery:  existsById(E9)? nahi → onPaymentCaptured → order PAID → save E9 (same txn) → offset commit
+rebalance → E9 REDELIVER
+2nd delivery:  existsById(E9)? HAAN → skip (email/charge dobara nahi)
+ race (2 thread same E9): dono existsById miss → dono insert → ek PK constraint pe FAIL (DB backstop)
+```
+**Seekh:** at-least-once given hai; har jagah **natural key** (client-Key / eventId / PK) jo pehle se hai usse dedupe — alag mechanism isliye ki har context ki key alag.
+
 ## Alternate approaches (kab kaunsa)
 | Mechanism | Key kahan se | Extra state | Best jab |
 |---|---|---|---|

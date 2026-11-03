@@ -63,6 +63,65 @@ Kafka DOWN:  write txn still commits → 201 → relay send() fails → row stay
                          (PK = eventId)         (processed_event dedupe)
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli code (do tukde):**
+```java
+// OrderService.saveWithEvent — order row + outbox row EK local transaction mein
+Order saveWithEvent(Order order) {
+    Order saved = transactionTemplate.execute(status -> {        // @Transactional NAHI (proxy trap) → template
+        Order persisted = orderRepository.save(order);           // (1) orders row
+        OrderEvent event = OrderEvent.from(persisted);
+        outbox.publish(OrderEvent.TOPIC, "Order",
+                       persisted.getOrderRef(), event.type(), event);  // (2) outbox_event row (SAME txn)
+        return persisted;                                        // dono saath commit, ya dono nahi
+    });
+    count(saved);                                                // metric
+    return saved;
+}
+
+// OutboxRelay.publishPending — har 1s, alag txn, multi-pod safe
+@Scheduled(fixedDelayString = "${outbox.relay.delay:1s}")
+@Transactional
+public void publishPending() {
+    var batch = outboxRepository.findUnpublished(PageRequest.of(0, 100));  // FOR UPDATE SKIP LOCKED
+    for (OutboxEvent e : batch) {
+        try {
+            kafkaTemplate.send(e.getTopic(), e.getAggregateId(), e.getPayload())
+                         .get(5, TimeUnit.SECONDS);              // broker ACK ka wait
+            e.markPublished();                                   // published_at set (dirty-check update)
+        } catch (Exception ex) {
+            return;                                              // fail → batch roko, agli run retry (order bache)
+        }
+    }
+}
+```
+
+**Dry run — ek order (`PS5-SLIM` ×1), happy path:**
+```
+t0  POST /orders → placeOrder: save PENDING → inventory.reserve() ok → order.confirm() (status=CONFIRMED)
+t0  saveWithEvent → TransactionTemplate:
+       INSERT orders(status=CONFIRMED)         ┐ ek hi
+       INSERT outbox_event(type=OrderConfirmed,│ transaction
+                           published_at=NULL)  ┘ → COMMIT
+    → 201 client ko (event abhi Kafka pe nahi gaya)
+t≤1s relay.publishPending → findUnpublished (SKIP LOCKED) → wo row
+       kafkaTemplate.send("orders.events", key=orderRef, payload).get(5s) → ACK
+       e.markPublished() → published_at = now
+t+   payment-service consume OrderConfirmed → charge → PaymentCaptured → order PAID
+```
+
+**Dry run — Kafka DOWN at t≤1s (yahi outbox ka point):**
+```
+t0  ...same as above → orders+outbox row COMMIT → 201   (order SAFE in DB)
+t≤1s relay.send(...) → THROWS (broker down) → catch → return
+       outbox_event.published_at abhi bhi NULL → outbox_unpublished gauge ++
+    (relay har 1s retry karta; OutboxBacklogGrowing >100 for 5m pe alert)
+tN  Kafka UP → agli run findUnpublished → send → ACK → markPublished → backlog drains
+    → consumer ko ab event milta (at-least-once; duplicate aaye to processed_event dedupe)
+```
+**Seekh:** 201 ka matlab sirf "DB commit hua" — downstream alag leg hai; Kafka down pe order kabhi at risk nahi, sirf event delayed.
+
 ## Alternate approaches (kab kaunsa)
 | Approach | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|
