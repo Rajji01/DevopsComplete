@@ -6,7 +6,7 @@
 
 ## Page (symptom)
 
-`KubePodCrashLooping` fires for one `order-service` pod. `kubectl get pods` shows it `CrashLoopBackOff` with a restart count climbing every few minutes. The other order-service pods are fine; the service is degraded (one fewer replica) but up.
+A pod crash-loop alert fires for one `order-service` pod (the platform's `KubePodCrashLooping`, from kube-prometheus-stack — ShopFlow's own `monitoring/` rules are app-level, not pod-level). `kubectl get pods` shows it `CrashLoopBackOff` with a restart count climbing every few minutes. The other order-service pods are fine; the service is degraded (one fewer replica) but up.
 
 **Before details: a pod restarting in a loop has a handful of classic causes. List them, then say which signal tells them apart.**
 

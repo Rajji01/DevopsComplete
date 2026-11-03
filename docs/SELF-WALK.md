@@ -565,3 +565,18 @@ Walk 30 lesson: **the best drills are "someone deleted the line that was protect
 
 ### Honest status (Walks 22–30)
 - Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Debugging series now **D01–D15** (15 drills); comprehension 15 topics, all synced/enriched; 48-file link check clean. Local commits ahead of `origin/master`, **not pushed** (holding per "no push"). One `git push` ships Walks 22–30 together when the hold lifts.
+
+## Walk 31: QA sweep — do the drills cite alerts that actually exist? (Nov 3, 2026)
+
+Scope: having written 15 drills quickly, grep every **alert name** they cite and check it against `shopflow/monitoring/*.yml` — the fastest way to catch an over-claim before it becomes study material.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **D04 said `KubePodCrashLooping` "fires" as if it were a ShopFlow alert.** It isn't in `monitoring/` — it's a standard **kube-prometheus-stack** platform alert; ShopFlow's own rules are app-level (`OrdersStuckConfirmed`, `OutboxBacklogGrowing`, `KafkaConsumerLagHigh`, `CheckoutSLOBurnRate*`, `PaymentFailureRateHigh`, `InventoryCircuitOpen`, `ServiceDown`, `HighErrorRate`, `HighP99…`) | A reader would claim an alert the project doesn't define — the kind of specific-but-wrong detail an interviewer catches | Reworded D04 to attribute `KubePodCrashLooping` to the platform (kube-prometheus-stack) and note ShopFlow's rules are app-level, not pod-level |
+
+Verified correct (no change): the other four alert names the drills use (`OrdersStuckConfirmed`, `OutboxBacklogGrowing`, `KafkaConsumerLagHigh`, `CheckoutSLOBurnRateFast`) are all defined in `monitoring/`; and the metric names (`orders_stuck_confirmed`, `outbox_unpublished`, `resilience4j_circuitbreaker_state`, `payments_duplicates_total`, `inventory_reservations_rejected_total`, `http_server_requests_seconds_*`) all map to real `MeterRegistry`/Micrometer sources. (Noted for later: `InventoryCircuitOpen` is a real alert the resilience drills D03/D09 could cite but don't need to.)
+
+Walk 31 lesson: **a cited alert/metric name is a claim; grep it against the rules file.** Project-specific names (`OrdersStuckConfirmed`) and platform names (`KubePodCrashLooping`) read the same in prose but one is yours and one isn't — say which.
+
+### Honest status (Walks 22–31)
+- Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Debugging series **D01–D15**; comprehension 15; all synced/enriched/QA'd; links clean. Local commits ahead of `origin/master`, **not pushed** (holding per "no push"). One `git push` ships Walks 22–31 when the hold lifts.
