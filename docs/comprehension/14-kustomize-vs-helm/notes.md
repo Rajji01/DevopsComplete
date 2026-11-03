@@ -45,6 +45,29 @@ Isliye team dono rakhti: jahan reuse chahiye (vendor, many services) Helm, jahan
                                                                       (or helm rollback per release)
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli shape:**
+```yaml
+# Kustomize: base (full valid YAML) + overlay patch (sirf difference)
+# k8s/base/order-service/deployment.yaml  → image: shopflow/order-service, env dev deps
+# k8s/overlays/prod/kustomization.yaml     → images: [{name: ..., newTag: <sha>}], + external-secret, service-accounts
+```
+```yaml
+# Helm: ek chart + per-service values (~15 lines)
+# helm/shopflow-service/templates/deployment.yaml  → {{ .Values.image }}, {{- if .Values.prod }}...
+# helm/values/order-service.yaml                    → image, port, replicas...
+```
+
+**Dry run — same service, do environment render (no cluster):**
+```
+ kubectl kustomize k8s/overlays/dev   → image: shopflow/order-service (in-cluster PG/Kafka)
+ kubectl kustomize k8s/overlays/prod  → image: ...@<sha> (RDS/MSK, ExternalSecret, IRSA SA)   ← Argo CD yahi sync
+ helm template order-service helm/shopflow-service -f values/order-service.yaml  → same manifests, templated
+ dono → | kubeconform -strict   (CI gate; make validate)
+```
+**Seekh:** Kustomize = copy+patch (readable, base per service copy); Helm = template+values (reuse, N values). Rule: base/<service> chauthi baar copy karo → chart.
+
 ## Alternate approaches (kab kaunsa)
 | | Kustomize | Helm |
 |---|---|---|

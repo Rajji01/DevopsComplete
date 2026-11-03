@@ -45,6 +45,33 @@ Khaas: **rule 2** (service web-layer pe depend na kare) ek asli bug rokta — Sh
  dependency direction: web → service → persistence, NEVER reverse/skip
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli code (ek rule — load-bearing #2):**
+```java
+@AnalyzeClasses(packages = "com.shopflow.order", importOptions = ImportOption.DoNotIncludeTests.class)
+class ArchitectureTest {
+  @ArchTest static final ArchRule services_do_not_depend_on_the_web_layer = noClasses()
+      .that().haveSimpleNameEndingWith("Service")
+      .should().dependOnClassesThat().resideInAnyPackage("org.springframework.web.bind..","jakarta.servlet..")
+      .because("services must be callable from Kafka listeners and schedulers, not only from HTTP");
+  // + controllers↛Repository, controllers↛@Entity, @RestController named *Controller,
+  //   no field-injection, no System.out, no java.util.logging
+}
+```
+
+**Dry run — PR jo rule todta:**
+```
+ dev adds: OrderService method takes HttpServletRequest, returns ResponseEntity<ProductEntity>
+ compile ok, HTTP endpoint chalta...
+ CI: ArchitectureTest run → services_do_not_depend_on_the_web_layer FAIL (jakarta.servlet..)
+     + controllers↛@Entity spirit FAIL (ResponseEntity<Entity>)
+ → @ArchTest red → CI red → PR MERGE BLOCKED
+ (bina rule: merge ho jaata; phir PaymentEventListener (Kafka) us service ko call kare →
+  HttpServletRequest scope mein nahi → saga mein NPE, production, async)
+```
+**Seekh:** agreement ko build-failing test banao; rule 2 asli bug (service Kafka-listener se toote) build-time pe pakadta, runtime surprise ki jagah.
+
 ## Alternate approaches (kab kaunsa)
 | Approach | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|

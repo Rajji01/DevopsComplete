@@ -42,6 +42,31 @@ Catch: virtual threads resource limit nahi badhate — real bottleneck (DB conne
    CPU-bound → bounded pool=cores  → use ReentrantLock         computing parallelism → cores, not threads
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli config + pinning fix:**
+```yaml
+# application.yml (all 4 services)
+spring.threads.virtual.enabled: true     # Java 21: har request ek virtual thread pe
+```
+```java
+// PINNING trap (mat karo): synchronized ke andar IO → carrier pin, unmount nahi
+synchronized (this) { restClient.call(); dbRead(); }   // ❌ carrier block
+// FIX: ReentrantLock (virtual thread hold karte hue unmount kar sakta)
+lock.lock(); try { restClient.call(); dbRead(); } finally { lock.unlock(); }   // ✅
+```
+
+**Dry run — 1000 concurrent IO-bound requests:**
+```
+ PLATFORM pool (~200): req1..200 OS-thread pakde, sab IO pe BLOCKED (CPU idle); req201.. QUEUE  → ceiling
+ VIRTUAL (on):
+   req1..1000 → 1000 virtual thread
+   har ek inventory/DB IO pe → UNMOUNT from carrier → park; carrier free → agla VT mount
+   few carriers (≈cores) sab ka wait sambhal lete → 1000 "in flight", no queue
+   REAL limit: HikariCP pool(10) → 1000 VT 10 connection pe cheaply wait (OS-thread cost nahi)
+```
+**Seekh:** virtual threads waiting sasta karte (IO-bound scale), resource (DB pool) bada nahi; CPU-bound se scale nahi; synchronized+IO = pinning.
+
 ## Alternate approaches (kab kaunsa)
 | Approach | Kaise | Pros | Cons | Kab |
 |---|---|---|---|---|

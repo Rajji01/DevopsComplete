@@ -51,6 +51,36 @@ Alag dar, alag tool — isliye ek "best" nahi.
                                      (+router for weights)
 ```
 
+## Code + dry run (samajh pakki)
+
+**Asli config:**
+```yaml
+# order-service-canary.yaml (Argo Rollout)
+strategy.canary:
+  analysis: { templates: [{templateName: error-ratio}], startingStep: 1 }   # 10% ke baad
+  steps: [ {setWeight: 10}, {pause: {duration: 5m}}, {setWeight: 25}, {pause: {duration: 5m}},
+           {setWeight: 50}, {pause: {duration: 10m}}, {setWeight: 100} ]
+# analysis-template.yaml
+metrics: [{ name: error-ratio, interval: 1m, count: 5, successCondition: "result[0] < 0.02", failureLimit: 3,
+            provider: { prometheus: { query: "5xx-ratio of canary pods only (rollouts_pod_template_hash!='')" } } }]
+# inventory-service-bluegreen.yaml: activeService+previewService, autoPromotionEnabled: false, scaleDownDelaySeconds: 60
+```
+
+**Dry run — canary (pass vs fail):**
+```
+ set image → v2 @ 10%  →  analysis: canary 5xx < 2%?  haan → pause 5m → 25% → 50% (pause 10m) → 100%  ✅
+                          nahi (3 consecutive) → AUTO-ABORT → traffic wapas v1 (stable serve kar raha tha)
+ (exact weights ke liye traffic router; warna weight ≈ pod ratio — 3 pods pe 10% nahi ban'ta)
+```
+
+**Dry run — blue-green:**
+```
+ green (v2) → previewService ke peeche (blue 100% serve)  →  smoke test + prePromotionAnalysis
+ promote (human) → activeService flip blue→green (0→100% atomic)
+ blue 60s zinda (scaleDownDelaySeconds) → undo = flip back (INSTANT rollback)
+```
+**Seekh:** RollingUpdate "ready"="healthy" maanta; canary metric-gated + blast-radius; blue-green atomic + instant rollback.
+
 ## Alternate approaches (kab kaunsa)
 | Strategy | Best jab | Avoid jab |
 |---|---|---|
