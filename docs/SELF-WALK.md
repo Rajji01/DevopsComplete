@@ -550,3 +550,18 @@ Walk 29 lesson: **a debugging-drill series is only as trustworthy as its weakest
 
 ### Honest status (Walks 22–29)
 - Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Debugging series now **D01–D13**; comprehension 15 topics, all synced/enriched; 46-file link check clean. Local commits ahead of `origin/master`, **not pushed** (holding per "no push"). One `git push` ships Walks 22–29 together when the hold lifts.
+
+## Walk 30: two more k8s drills (D14, D15), both read off the manifest (Nov 3, 2026)
+
+Scope: two more debugging drills, deliberately **grounded in the real manifest** (the Walk-28 lesson — write the symptom from the file, not from memory).
+
+Built: **D14** (every deploy throws a few seconds of 502/connection-reset → a "tidy-up" removed the container `lifecycle.preStop: sleep 5`, so SIGTERM wins the race against endpoint-deregistration; teaches 502≠500, preStop=stop-new vs graceful=finish-old, zero-downtime = add-before-remove + stop-new + finish-old), **D15** (replicas flap 2↔5 all day on flat traffic → a removed `behavior.scaleDown.stabilizationWindowSeconds: 300` + a JVM's twitchy CPU hovering at the 70% target; teaches HPA's up-fast/down-slow asymmetry, why raising the target only masks it, and request-rate as a smoother metric than CPU).
+
+Both root causes are **removed-config regressions against the actual files**: `deployment.yaml` really has `lifecycle.preStop: sleep 5` + `server.shutdown: graceful` (D14), and `hpa.yaml` really has `scaleDown.stabilizationWindowSeconds: 300` + CPU `averageUtilization: 70` of a `250m` request (D15) — so "someone deleted it" is a plausible, checkable regression, not an invented bug.
+
+Indexed in the same commit: debugging `README` (D01–D15), `INDEX.md`, `STATE.md §1`, comprehension README pairing + reverse links on topics 07/15. Link-integrity over **48** files: all resolve.
+
+Walk 30 lesson: **the best drills are "someone deleted the line that was protecting you."** Reading the manifest first (`preStop`, `stabilizationWindowSeconds`) turns a vague "deploys are flaky" into a specific, grounded regression — and doubles as teaching what that line is *for*.
+
+### Honest status (Walks 22–30)
+- Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Debugging series now **D01–D15** (15 drills); comprehension 15 topics, all synced/enriched; 48-file link check clean. Local commits ahead of `origin/master`, **not pushed** (holding per "no push"). One `git push` ships Walks 22–30 together when the hold lifts.

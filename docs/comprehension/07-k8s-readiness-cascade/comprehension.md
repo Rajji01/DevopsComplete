@@ -1,7 +1,7 @@
 # 07 · Why readiness must not check the database — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `k8s/base/order-service/deployment.yaml` (probes, `maxUnavailable: 0`, `preStop`), `order-service application.yml` (`management.endpoint.health.group.readiness`).
-> **Debug it live:** [D11](../../debugging/D11-readiness-cascade.md) · [D10](../../debugging/D10-redis-down-thundering-herd.md) — isi mechanism ka symptom-se-root-cause drill.
+> **Debug it live:** [D11](../../debugging/D11-readiness-cascade.md) · [D10](../../debugging/D10-redis-down-thundering-herd.md) · [D14](../../debugging/D14-deploy-drops-requests.md) — isi mechanism ka symptom-se-root-cause drill.
 
 ---
 

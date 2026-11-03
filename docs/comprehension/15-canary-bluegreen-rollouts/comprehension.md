@@ -1,7 +1,7 @@
 # 15 · Shipping a new version: canary vs blue-green — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `k8s/rollouts/order-service-canary.yaml`, `inventory-service-bluegreen.yaml`, `analysis-template.yaml`, `rollouts/README.md`. Baseline: `k8s/base/*/deployment.yaml` (RollingUpdate).
-> **Debug it live:** [D13](../../debugging/D13-rollout-stuck-or-paused.md) — isi mechanism ka symptom-se-root-cause drill.
+> **Debug it live:** [D13](../../debugging/D13-rollout-stuck-or-paused.md) · [D14](../../debugging/D14-deploy-drops-requests.md) · [D15](../../debugging/D15-hpa-flapping.md) — isi mechanism ka symptom-se-root-cause drill.
 
 ---
 

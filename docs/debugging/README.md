@@ -44,8 +44,10 @@ Yahi Google/Meta/Amazon ka **debugging / SRE round** hai, aur yahi on-call ki as
 | D11 | [inventory blipped, order-service has zero endpoints](D11-readiness-cascade.md) | readiness coupled to a downstream → cascade | Kubernetes / health |
 | D12 | [The DLT has 9,000 records and nobody noticed](D12-dlt-filling-up.md) | growing DLT, zero lag — silent loss, no alert | async / schema drift |
 | D13 | [The deploy's been "in progress" 20 min — stuck?](D13-rollout-stuck-or-paused.md) | paused-by-design vs auto-aborted vs genuinely stuck | progressive delivery |
+| D14 | [Every deploy throws a few seconds of 502s](D14-deploy-drops-requests.md) | removed `preStop` → SIGTERM-vs-deregistration race | k8s / zero-downtime |
+| D15 | [The autoscaler flaps up and down all day](D15-hpa-flapping.md) | removed scaleDown stabilization window + twitchy CPU | k8s / autoscaling |
 
-**Status:** D01–D13 built. Aage (ideas): zero-downtime deploy dropping requests (preStop/graceful), HPA flapping, a `FAILED`-order storm the reconciler can't drain.
+**Status:** D01–D15 built. Aage (ideas): a `FAILED`-order storm the reconciler can't drain, Keycloak/Postgres connection-pool exhaustion, a Terraform drift surprise.
 
 ## In sab ka rishta
 - **Mechanism samajhna** → [`../comprehension/`](../comprehension/) (har drill wahan ke topic se link karta).

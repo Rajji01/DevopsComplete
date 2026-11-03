@@ -28,7 +28,9 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 - **26:** `VISUAL-FLOWS.md` state-machine mein refund-decline branch add (sirf happy-path tha).
 - **27:** INDEXING-HIBERNATE.md verify (clean, incl. `OutboxRepository` SKIP LOCKED); isse topic 01 ka gap mila → multi-pod relay + `FOR UPDATE SKIP LOCKED` add kiya (passage + naya Q10 + notes).
 - **28:** naye debugging drills **D08** (one-partition poison-pill stall), **D09** (401 after IdP migration), **D10** (Redis-down thundering-herd) — grounded + poora indexed; D08 ke draft mein apni hi invented-bug (unknown-SKU NPE; `priceOf` getOrDefault karta, null nahi) pakad ke fix ki.
-**Net:** debugging series ab **D01–D10**; comprehension 15 + sab synced/enriched. Link-check 43 files clean.
+- **29:** aur drills **D11** (readiness cascade — aggregate /health se downstream coupling), **D12** (DLT chup-chaap bhar raha, zero lag, no alert — field rename past `ignoreUnknown`, fix-then-replay), **D13** (rollout paused-vs-aborted-vs-stuck) — grounded + indexed (reverse links 07/11/15).
+- **30:** **D14** (deploy pe 502s — `preStop` hata diya → SIGTERM vs endpoint-deregistration race), **D15** (HPA flapping — `scaleDown.stabilizationWindowSeconds` hata + twitchy CPU). Dono "removed-config regression" asli manifest ke against (deployment.yaml preStop, hpa.yaml stabilization window) — grounded, invented nahi.
+**Net:** debugging series ab **D01–D15** (15 drills); comprehension 15 + sab synced/enriched. Link-check 48 files clean.
 **Verify/push:** sab **docs only, not executed** (test phase pending — Abhishek bolega). Earlier sync (02/06/D07) pushed as `07761ba`; Walks 22–28 ab tak **7 local commits, NOT pushed** (Abhishek ka "no push for an hour" hold). Hold hat-te hi ek `git push` sabko bhej dega.
 
 ---
