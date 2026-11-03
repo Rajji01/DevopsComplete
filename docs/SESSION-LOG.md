@@ -34,7 +34,7 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 - **(study-friendly enrichment):** har comprehension topic **01–17** ke `notes.md` mein **"Code + dry run (samajh pakki)"** add — asli grounded snippet + ek example ka step-by-step trace (failure branch ke saath: Kafka-down, refund-decline, oversell-race, breaker-open, SLO bucket-bug, readiness, cache-evict/Redis-down, trace-across-Kafka, admission-reject, 401/403/404, canary-abort, pinning, ArchUnit-build-fail). 18–20 flow/component diagrams se covered.
 - **(UI + Postman testing):** topics 02/03/05/10 ke notes mein **"Test karo (UI + Postman + curl)"** — `labs/lab-console.html` panel + Postman Lab (1–6) + ready curl; comprehension README mein "Test karo — 3 tarah" hub + topic↔lab mapping (asli panels/collection se grounded).
 **Net:** debugging series **D01–D15** (15 drills); comprehension **01–20** (20 topics, 01–17 Code+dry-run + 02/03/05/10 Test-karo); sab synced/enriched/indexed. **Links clean.**
-**Push status:** 17 local commits ahead of `origin/master`, **kuch push nahi** (Abhishek: "local hi, push mat karna"). Jab "push karo" bole → ek `git push`.
+**Push status:** hold hata (Abhishek: "sab sync update kar ke push") — Walks 22–32 + comprehension 16–20 + enrichment (Code+dry-run 01–17, Test-karo 02/03/05/10) **`origin/master` pe push kiye** (fast-forward; fetch pe origin 0 aage tha, clean). master == origin/master in-sync.
 **Verify/push:** sab **docs only, not executed** (test phase pending — Abhishek bolega). Earlier sync (02/06/D07) pushed as `07761ba`; Walks 22–28 ab tak **7 local commits, NOT pushed** (Abhishek ka "no push for an hour" hold). Hold hat-te hi ek `git push` sabko bhej dega.
 
 ---
