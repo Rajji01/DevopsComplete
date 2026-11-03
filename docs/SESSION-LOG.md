@@ -14,6 +14,17 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-03 — CLI (Opus 4.8) — pull + sync docs to new code
+**Branch:** `master`. Pulled (ff `17dcccc..e65e6c0`, 31 commits). Read new files + the RESUME-HERE **GUIDED-STUDY** rule (self-walk paused unless Abhishek says "self walk") — noted, respecting it.
+**Sync (doc ↔ STATE, CLAUDE §2):** since the pull changed code my docs reference, fixed the now-stale claims:
+- comprehension **02 (saga-refund)**: refund-decline is **no longer an open item** — implemented Walk 20. Updated Q8/answer + E10 to match: on decline payment stays `CAPTURED`, emits `PaymentRefundFailed`, order stays `REFUND_PENDING`, `OrdersStuckConfirmed` pages, redelivery retries (not a fake `REFUND_FAILED` status). Charge limit still 100000 so topic 02 hands-on unchanged.
+- comprehension **06 (SLO bug)**: SLI redefined Walk 14 — `non-5xx` → `2xx` (valid = `[25]..`, bad = 5xx + slow-2xx, 4xx/429 excluded). `le="1.0"` bucket lesson unchanged.
+- Committed local **D07** (duplicate-emails/charges drill) that was pending — grounded claims still valid (no refund-decline content).
+**Not yet synced (noted, low):** debugging D05 wording is generic (no `non-5xx`), fine. Other new docs (HLD/LLD/INDEXING/VISUAL-FLOWS, `labs/`) read — no conflict with mine.
+**Verify:** docs only; not executed (test phase pending — Abhishek will say). Pushed.
+
+---
+
 ## 2026-11-01 — CLI (Opus 4.8) — Walk 15+16+17 (quiet-files sweep + policy init-container gaps)
 **Branch:** `master` (in-sync).
 **Walk 15 (sweep, no-change clean):** docker-compose (`localhost:host-gateway` trick correct — multi-address fallback), Jenkinsfile (casing-trap se bacha — `ghcr.io/rajji01` lowercase, `.trivyignore` root pe), argocd prod (sound). Trivial: prod external-secret comment "three keys"→"four keys".

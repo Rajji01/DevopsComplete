@@ -10,11 +10,11 @@
 
 ShopFlow's checkout SLO: **99.5% of `POST /api/v1/orders` succeed (no 5xx) within 1 second, over 30 days.** The error budget is 0.5%. Alerting uses **multi-window, multi-burn-rate** rules from the Google SRE workbook: page when burning the budget **14.4× too fast over 1h** (confirmed by a 5-minute window), page at **6× over 6h** (confirmed by 30m), ticket at **1× over 3d**. Threshold = `burn_rate × (1 − SLO)` = `burn_rate × 0.005`.
 
-The SLI's "bad" requests are defined in a recording rule as **5xx responses, plus successful-but-slow ones**. "Slow" is computed as *(all non-5xx requests) minus (non-5xx requests that finished within 1s)* — and "within 1s" reads the Prometheus histogram bucket **`http_server_requests_seconds_bucket{..., le="1.0"}`**. In other words, the latency half of the SLI depends entirely on a bucket boundary at exactly **`le="1.0"`** existing in the metrics.
+The SLI's "bad" requests are defined in a recording rule as **5xx responses, plus successful-but-slow ones**. Valid attempts are counted as `status=~"[25].."` (2xx or 5xx; 4xx/429 are the client's problem and excluded from both numerator and denominator). "Slow" is computed as *(all 2xx requests) minus (2xx requests that finished within 1s)* — and "within 1s" reads the Prometheus histogram bucket **`http_server_requests_seconds_bucket{..., status=~"2..", le="1.0"}`**. In other words, the latency half of the SLI depends entirely on a bucket boundary at exactly **`le="1.0"`** existing in the metrics.
 
 Everything looked green for weeks. The alert rules passed `promtool check rules`, and the **alert unit tests passed** too. Then Walk 8 asked a blunt question: *has this alert ever actually fired in a real Prometheus?* It had not — and it **could not**.
 
-The order-service was configured with `percentiles-histogram: true`, which makes Micrometer publish its **own** set of exponential histogram buckets for latency. Those buckets are **not guaranteed to include a boundary at exactly `le="1.0"`**. So in a real Prometheus, `http_server_requests_seconds_bucket{le="1.0"}` returned an **empty vector**. The "slow" term `(non-5xx total) − (empty)` collapsed, the SLI's latency signal was effectively dead, and the burn-rate expression never crossed its threshold no matter how slow checkout got. The alert was **structurally incapable of firing**.
+The order-service was configured with `percentiles-histogram: true`, which makes Micrometer publish its **own** set of exponential histogram buckets for latency. Those buckets are **not guaranteed to include a boundary at exactly `le="1.0"`**. So in a real Prometheus, `http_server_requests_seconds_bucket{le="1.0"}` returned an **empty vector**. The "slow" term `(2xx total) − (empty)` collapsed, the SLI's latency signal was effectively dead, and the burn-rate expression never crossed its threshold no matter how slow checkout got. The alert was **structurally incapable of firing**.
 
 Why did the tests miss it? The alert **unit test injected a synthetic `le="1.0"` series itself** to drive the scenario — so the test provided the very bucket that production lacked. The test proved the *math* of the burn-rate rule, not the *existence* of the bucket it depends on. Green in CI, dead in prod.
 
@@ -51,7 +51,7 @@ The fix had two parts: **(1)** force the bucket to exist — set `management.met
 <details>
 <summary>A — Literal</summary>
 
-1. **(a)** 5xx responses (server errors) and **(b)** successful-but-**slow** responses — non-5xx requests that took longer than 1s.
+1. **(a)** 5xx responses (server errors) and **(b)** successful-but-**slow** responses — 2xx requests that took longer than 1s.
 2. `http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status!~"5..", le="1.0"}`. In real Prometheus it returned an **empty vector** (that bucket boundary didn't exist).
 3. **(1)** Set `management.metrics.distribution.slo.http.server.requests: 1s` so Micrometer always publishes an `le="1.0"` bucket; **(2)** add a guard test asserting that bucket is present in the exported metrics.
 </details>
@@ -60,7 +60,7 @@ The fix had two parts: **(1)** force the bucket to exist — set `management.met
 <summary>B — Inference</summary>
 
 4. `promtool check rules` only validates **syntax/structure** of the rules file — it never evaluates them against real data, so it can't know a referenced series will be empty. The **unit tests** (`promtool test rules`) *do* evaluate the math, but they **fabricate their own input series** — including an `le="1.0"` bucket that production didn't emit. So the tests proved "given this bucket, the burn-rate math is correct," which was true; they never proved "this bucket exists in production." Both checks were blind to the missing-dependency failure.
-5. The "slow" term is `(non-5xx total rate) − (non-5xx within-1s rate)`. If the `le="1.0"` series is empty, the subtrahend is absent, so in PromQL the subtraction yields **no result for that term** (empty − present → empty), collapsing the slow contribution. `sli:checkout_bad` then reflects **only** 5xx (or goes empty depending on evaluation), so `sli:checkout_error_ratio` loses all latency signal. The burn-rate expr compares that crippled ratio to the threshold and **never exceeds it on latency**, so the alert can't fire however slow checkout becomes.
+5. The "slow" term is `(2xx total rate) − (2xx within-1s rate)`. If the `le="1.0"` series is empty, the subtrahend is absent, so in PromQL the subtraction yields **no result for that term** (empty − present → empty), collapsing the slow contribution. `sli:checkout_bad` then reflects **only** 5xx (or goes empty depending on evaluation), so `sli:checkout_error_ratio` loses all latency signal. The burn-rate expr compares that crippled ratio to the threshold and **never exceeds it on latency**, so the alert can't fire however slow checkout becomes.
 </details>
 
 <details>

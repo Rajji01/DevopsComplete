@@ -43,7 +43,7 @@ Compare this with the earlier compensation: when a **payment fails** on a fresh 
 7. Refund idempotency is "by state" (look up by `orderRef`, act only if `CAPTURED`) instead of a `processed_event` dedupe table keyed by `eventId`. Why is "by state" a reasonable choice **here** specifically?
 
 ### D — Transfer / extension
-8. The fake gateway always approves refunds. In reality a refund can be declined by the processor. Using the saga's own shape, where would you add a `RefundFailed` path, and what new state/alert would you introduce so nothing is lost?
+8. By default the fake gateway approves refunds (a low `payment.refund-limit` in the test profile forces a decline). In reality a refund can be declined by the processor. Using the saga's own shape, where does a `RefundFailed` path belong, and what state/alert keeps anything from being lost? (ShopFlow implements this — reason it out first, then check against the answer.)
 9. Product asks for **partial** refunds (refund 1 of 2 items). What breaks in the current "look up the payment by `orderRef` and refund it if CAPTURED" logic, and what would the model need to track instead?
 
 ### E — Spot-the-flaw
@@ -78,14 +78,14 @@ Compare this with the earlier compensation: when a **payment fails** on a fresh 
 <details>
 <summary>D — Transfer / extension</summary>
 
-8. Mirror the capture path. payment-service's `refund` would, on a declined refund, write the payment as `REFUND_FAILED` (not `REFUNDED`) and emit a `RefundFailed` event. order-service keeps the order in `REFUND_PENDING` (does **not** advance to `REFUNDED`, so stock stays held) and the stuck-`REFUND_PENDING` gauge already catches it → an alert pages a human (and/or a retry with backoff against the processor). Nothing is lost: no money implies no stock release, and the limbo is visible. (This is an open item in `docs/STATE.md` §4.)
+8. **This is implemented (Walk 20).** On a declined refund, payment-service does **not** mark the payment `REFUNDED` — it **keeps it `CAPTURED`** (the money never came back) and emits **`PaymentRefundFailed`**. order-service keeps the order in `REFUND_PENDING` (does **not** advance to `REFUNDED`, so stock stays held), and the existing **`OrdersStuckConfirmed`** alert — which counts `REFUND_PENDING` too — pages a human; because the payment is still `CAPTURED`, a **redelivered `OrderRefundPending` retries** the refund. Nothing is lost: no money back ⇒ no stock release, and the limbo is visible. Grounded in `OrderConfirmedListener.refund` (checks the gateway `Result`), verified by `PaymentServiceApplicationTests.declinedRefundPublishesRefundFailedAndKeepsPaymentCaptured`. The key design choice: keep the payment `CAPTURED` (retryable) rather than inventing a dead `REFUND_FAILED` status.
 9. "Refund **the** payment for this `orderRef` if CAPTURED" assumes one all-or-nothing payment per order. Partial refunds need to track **amount refunded vs amount captured** (and probably per-line-item), so the payment can be `PARTIALLY_REFUNDED`, and idempotency must key on *which* refund (a refund id / line), not just the payment's binary status. The state guard alone is no longer enough.
 </details>
 
 <details>
 <summary>E — Spot-the-flaw</summary>
 
-10. It releases stock **before** the money is actually returned, and even marks `REFUNDED` while the refund is only *requested*. If payment-service's refund then fails (processor declines, pod crash), the item is already back on sale and the order says `REFUNDED`, but **the customer was never refunded** — they're charged, product-less, and the system shows the order as fully settled. It violates the passage's core invariant: **money back first, stock after**, so a failed refund can never leak stock. Tests passed only because the fake gateway always approves refunds, hiding the failure branch.
+10. It releases stock **before** the money is actually returned, and even marks `REFUNDED` while the refund is only *requested*. If payment-service's refund then fails (processor declines, pod crash), the item is already back on sale and the order says `REFUNDED`, but **the customer was never refunded** — they're charged, product-less, and the system shows the order as fully settled. It violates the passage's core invariant: **money back first, stock after**, so a failed refund can never leak stock. Tests passed only because, by default, the fake gateway approves refunds; the decline branch — now implemented and tested (Walk 20: `PaymentRefundFailed`, payment stays `CAPTURED`, order stays `REFUND_PENDING`) — is exactly where this "mark REFUNDED before the money is back" bug would surface.
 </details>
 
 ---

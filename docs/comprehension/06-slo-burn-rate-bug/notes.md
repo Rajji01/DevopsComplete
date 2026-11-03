@@ -15,7 +15,7 @@ Ab bug: tumhara "late delivery" detector ek **ghadi** pe depend karta tha jo lag
 
 ## Kaise (step by step)
 1. **SLO:** 99.5% POST /orders, no 5xx, <1s, 30d. Budget 0.5%. Threshold = `burn × 0.005`.
-2. **Recording rules** (`recording-rules.yml`): `sli:checkout_bad = 5xx-rate + (non-5xx total − non-5xx within le=1.0)`; `sli:checkout_error_ratio:rateXX = bad/total` for 5m/30m/1h/6h.
+2. **Recording rules** (`recording-rules.yml`): `sli:checkout_bad = 5xx-rate + (2xx total − 2xx within le=1.0)`; `sli:checkout_error_ratio:rateXX = bad/total` for 5m/30m/1h/6h.
 3. **Alerts** (`slo-rules.yml`): `BurnRateFast` = rate1h > 14.4×0.005 **and** rate5m > same (for 2m) → page. `BurnRateSlow` = rate6h > 6×0.005 **and** rate30m (for 15m) → page. (3d/1× → ticket.)
 4. **Bug:** `percentiles-histogram: true` apne buckets banata, `le="1.0"` guaranteed nahi → prod mein wo series empty → slow-term collapse → ratio latency-blind → alert dead. Unit test ne khud `le="1.0"` inject kiya → green.
 5. **Fix:** `management.metrics.distribution.slo.http.server.requests: 1s` (bucket force) + guard test (bucket maujood hai assert).
