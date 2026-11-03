@@ -580,3 +580,20 @@ Walk 31 lesson: **a cited alert/metric name is a claim; grep it against the rule
 
 ### Honest status (Walks 22–31)
 - Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Debugging series **D01–D15**; comprehension 15; all synced/enriched/QA'd; links clean. Local commits ahead of `origin/master`, **not pushed** (holding per "no push"). One `git push` ships Walks 22–31 when the hold lifts.
+
+## Walk 32: verifying the fast-written "Code + dry run" snippets (Nov 3, 2026)
+
+Scope: the enrichment pass added a `Code + dry run` section to every comprehension topic's `notes.md` (01–17), written quickly — some from memory of the code. The D08 fiasco (an invented NPE) is the warning: a snippet that misquotes the code teaches a lie. So grep each snippet's **checkable values** (config constants, method signatures, behaviour) against the real source.
+
+Verified correct — **no fixes** (a clean verification pass; recorded because the snippets are now study material):
+- **09 resilience:** `connect-timeout: 1s`, `read-timeout: 2s`, `max-attempts: 3`, `wait-duration: 200ms`, `sliding-window-size: 10`, `minimum-number-of-calls: 5`, `failure-rate-threshold: 50`, `wait-duration-in-open-state: 10s`, `ignore-exceptions: InventoryRejectedException` — all match `application.yml` exactly.
+- **11 Kafka:** `new ExponentialBackOff(500L, 2.0)` + `setMaxElapsedTime(10_000L)` — matches `KafkaErrorConfig`.
+- **12 caching:** `time-to-live: 60s` — matches inventory `application.yml`.
+- **06 SLO:** the fix line `management.metrics.distribution.slo.http.server.requests: 1s` — present and exact.
+- **Code shapes:** `OrderService.cancel` (isPaid→requestRefund→REFUND_PENDING; else release+cancel), `OrderService.get` (findById→filter mayAccess→404), `placeOrder` (findByIdempotencyKey + ownership), `decrementStock` (`… where quantity >= :qty`) — all match the real methods. The dry-run traces (PS5 qty1→PAID, qty2→CANCELLED via the 100000 charge limit; breaker open after 50%/10 → fast-FAILED) are consistent with the code.
+- Honest caveat kept in mind: a few snippets are **abbreviated** (e.g. 09's `.onStatus(CONFLICT, …)` vs the real `status -> status.isSameCodeAs(HttpStatus.CONFLICT)`; 10's matcher list trimmed) — simplified for readability, not wrong; the exact code is one click away via the cited file.
+
+Walk 32 lesson: **enrichment written at speed is exactly where a D08 hides.** The cheapest insurance is a grep of every constant/signature in a new snippet against its source file — values, not vibes. This pass found them all accurate, which is the result you *verify*, not assume.
+
+### Honest status (Walks 22–32)
+- Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Comprehension **01–20** (01–17 Code+dry-run verified, 02/03/05/10 Test-karo); debugging **D01–D15**; all synced/enriched/verified; links clean. Local commits ahead of `origin/master`, **not pushed** (per "local hi, push mat karna").
