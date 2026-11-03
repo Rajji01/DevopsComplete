@@ -41,8 +41,11 @@ Yahi Google/Meta/Amazon ka **debugging / SRE round** hai, aur yahi on-call ki as
 | D08 | [Lag on ONE partition, the other two fine](D08-one-partition-stalled.md) | poison pill + a DLT topic that didn't exist | Kafka / partitions |
 | D09 | [Every request 401 after the IdP migration](D09-401-after-idp-change.md) | wrong `JWT_ISSUER_URI` (auth vs authz layer) | security / JWT |
 | D10 | [Redis went down, the database caught fire](D10-redis-down-thundering-herd.md) | fail-open cache → DB stampede (capacity, not errors) | caching / capacity |
+| D11 | [inventory blipped, order-service has zero endpoints](D11-readiness-cascade.md) | readiness coupled to a downstream → cascade | Kubernetes / health |
+| D12 | [The DLT has 9,000 records and nobody noticed](D12-dlt-filling-up.md) | growing DLT, zero lag — silent loss, no alert | async / schema drift |
+| D13 | [The deploy's been "in progress" 20 min — stuck?](D13-rollout-stuck-or-paused.md) | paused-by-design vs auto-aborted vs genuinely stuck | progressive delivery |
 
-**Status:** D01–D10 built. Aage: readiness cascade (one dep down pulls all pods), DLT filling up, a slow deploy that's actually a rollback-window.
+**Status:** D01–D13 built. Aage (ideas): zero-downtime deploy dropping requests (preStop/graceful), HPA flapping, a `FAILED`-order storm the reconciler can't drain.
 
 ## In sab ka rishta
 - **Mechanism samajhna** → [`../comprehension/`](../comprehension/) (har drill wahan ke topic se link karta).

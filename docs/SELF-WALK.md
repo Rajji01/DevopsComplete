@@ -537,3 +537,16 @@ Walk 28 lesson: **the fastest way to write a fake drill is to recall the code in
 
 ### Honest status (Walks 22–28)
 - Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Seven local commits ahead of `origin/master`, **not pushed** (holding per "no push"). One `git push` ships Walks 22–28 together when the hold lifts.
+
+## Walk 29: three more debugging drills (D11–D13) (Nov 3, 2026)
+
+Scope: finish the debugging series' planned list — the three remaining high-value scenarios — each grounded in shopflow and indexed in the same commit.
+
+Built: **D11** (inventory blips → order-service has zero endpoints → a readiness probe pointed at the *aggregate* `/actuator/health` coupled availability to a downstream → cascade; teaches "all replicas unhealthy at once + each healthy = shared config, not instance failure"), **D12** (DLT at 9,000 records, zero lag, no alert → a working dead-letter handler silently eating a systematic failure after a field *rename* that `ignoreUnknown` doesn't protect against → recovery is **fix-then-replay**, safe only because consumers are idempotent → alert on the escape hatch), **D13** (rollout "in progress" 20 min → **paused-by-design vs auto-aborted vs genuinely stuck**, read from one `kubectl argo rollouts get`; don't fight your own gates; `promote` trades soak time for speed).
+
+Indexed in the same commit: debugging `README` (D01–D13, planned list refreshed), `INDEX.md`, `STATE.md §1`, the comprehension README pairing line, and reverse links on topics 07/11/15. Link-integrity over **46** files: all resolve. No invented bugs this time — each root cause (aggregate-health readiness, field-rename past `ignoreUnknown`, canary pause semantics) is a real property of the code/manifests cited.
+
+Walk 29 lesson: **a debugging-drill series is only as trustworthy as its weakest invented symptom** (Walk 28's `priceOf` NPE). D11–D13 were written straight from the manifests/handlers they cite (`deployment.yaml` readiness group, `KafkaErrorConfig` + the `ignoreUnknown` copies, `order-service-canary.yaml` steps), so the "root cause" in each is something that can actually happen here.
+
+### Honest status (Walks 22–29)
+- Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). Debugging series now **D01–D13**; comprehension 15 topics, all synced/enriched; 46-file link check clean. Local commits ahead of `origin/master`, **not pushed** (holding per "no push"). One `git push` ships Walks 22–29 together when the hold lifts.

@@ -1,7 +1,7 @@
 # 11 · Poison pills, dead-letter topics & consumer lag — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in: `KafkaErrorConfig.java` (`DefaultErrorHandler` + `DeadLetterPublishingRecoverer`), `order-service application.yml` (consumer config), `PaymentEventListener`.
-> **Debug it live:** [D01](../../debugging/D01-orders-stuck-confirmed.md) · [D02](../../debugging/D02-201-but-silent-downstream.md) · [D08](../../debugging/D08-one-partition-stalled.md) — isi mechanism ka symptom-se-root-cause drill.
+> **Debug it live:** [D01](../../debugging/D01-orders-stuck-confirmed.md) · [D02](../../debugging/D02-201-but-silent-downstream.md) · [D08](../../debugging/D08-one-partition-stalled.md) · [D12](../../debugging/D12-dlt-filling-up.md) — isi mechanism ka symptom-se-root-cause drill.
 
 ---
 
