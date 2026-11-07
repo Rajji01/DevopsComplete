@@ -407,6 +407,17 @@ In ShopFlow:
 - `OrderService` has **no** `@Transactional` on `placeOrder` on purpose: never hold a DB transaction across a remote HTTP call. Its private `saveWithEvent` uses a **`TransactionTemplate`** to commit the order row and the `outbox_event` row together (transactional outbox) — programmatic, because an annotation on a self-invoked private method would be ignored.
 - `OutboxRelay.publishPending` is `@Transactional` so the `FOR UPDATE SKIP LOCKED` rows stay locked until the batch is marked published; `OrderEventListener.onOrderEvent` (notification-service) is `@KafkaListener` + `@Transactional` so the `processed_event` insert and the side effect commit together.
 
+### `repository.save()` — persist vs merge, and the assigned-`@Id` SELECT
+
+| Question | Answer |
+|---|---|
+| What does `save()` actually do? | `SimpleJpaRepository.save()` checks `entityInformation.isNew(entity)`: new → `em.persist()` (a single INSERT); not new → `em.merge()`, which issues a `SELECT … WHERE id = ?` to load/reconcile the row before the INSERT/UPDATE. So merge is **two** statements, persist is one. |
+| How does the default `isNew()` decide? | No custom `Persistable`/`@Version`: if there's a `@Version` field it checks that for null; otherwise it checks the `@Id` — **null ⇒ new (persist), non-null ⇒ existing (merge)**. Fine for `@GeneratedValue` ids (null until insert); wrong for ids you assign yourself. |
+| Where did this bite ShopFlow? | `ProcessedEvent` (order + notification), `Payment`, and `OutboxEvent` use an **assigned** UUID (`eventId`) as the `@Id`, so the id is never null → the default picked `merge()` → an extra `SELECT` before every INSERT, once per Kafka message inside the consumer's transaction (saga hot path). |
+| Fix? | `implements Persistable<UUID>` with `getId()` returning the id and `isNew() { return true; }` → `persist()` → plain INSERT, no SELECT. `OutboxEvent` got it in self-walk Walk 21; the other three in Walk 38. |
+| Isn't `isNew()==true` a lie that breaks updates? | No — these tables are **insert-only**. `Payment`'s refund mutates the loaded entity via Hibernate dirty-checking (`markRefunded`), never `save()`; the `ProcessedEvent`s are only ever created. The idempotency guard is the **primary key** (a duplicate `eventId` fails the INSERT, caught as "already processed"), which never relied on merge's SELECT. If an update-via-`save` path were ever added, `isNew()` would have to become e.g. `createdAt == null`. |
+| Which entities *shouldn't* get it? | `Product`, `Reservation`, `Order` use `@GeneratedValue(IDENTITY)` — id is null pre-insert so the default `isNew()` is already correct; `Order` also has `@Version` and is genuinely updated, so its `merge()` is required. |
+
 ### Propagation
 
 | Propagation | Behaviour |

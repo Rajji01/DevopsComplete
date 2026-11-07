@@ -248,6 +248,24 @@ flowchart TB
 
 **`open-in-view: false` (repo mein):** default Spring `true` rakhta — view/controller tak session khula, lazy fields controller mein load ho jaate (hidden N+1 + DB connection zyada der). Repo ne **`false`** kiya → lazy data **service layer** mein hi load karo, warna `LazyInitializationException`. Ye jaanbujh ke hai (honest failure > hidden slow query). → `application.yml` `spring.jpa.open-in-view: false`.
 
+### 9.1 `save()` = persist ya merge? (assigned @Id ka chhupa SELECT)
+
+`SimpleJpaRepository.save()` decide karta hai: `isNew()` true → `em.persist()` (pura INSERT, 1 query); false → `em.merge()` (pehle `SELECT ... WHERE id=?`, phir INSERT/UPDATE = 2 query — wo SELECT dekhta hai row detached copy ko DB se reconcile karna hai ya nahi).
+
+**Default `isNew()`:** `@Version` null? → new. Warna `@Id` null? → new → persist. Warna (id set) → "purana" → merge.
+
+**Trap:** jin entities ka `@Id` **hum assign** karte hain (UUID `eventId`), id kabhi null nahi → default merge chun leta → har insert pe **bekaar SELECT**. Kafka consumer ki har message, txn ke andar — ek extra round-trip.
+
+**Fix:** insert-only entity ko `Persistable<UUID>` banao, `isNew(){return true;}` → persist → plain INSERT. Safe kyunki ye rows `save()` se update nahi hoti (Payment refund = §9 wala dirty-check `markRefunded()`, `save()` nahi); idempotency guard **PK** hai (duplicate eventId INSERT pe fail), merge ke SELECT pe depend nahi.
+
+| Entity | @Id | save() | Persistable? |
+|---|---|---|---|
+| `OutboxEvent`, `ProcessedEvent`×2, `Payment` | assigned UUID, insert-only | chahiye INSERT | **haan** (W21/W38) `isNew()=true` |
+| `Product`, `Reservation` | `@GeneratedValue IDENTITY` | id null→persist auto | nahi chahiye |
+| `Order` | IDENTITY + `@Version`, sach-much UPDATE | merge SAHI | nahi — rehne do |
+
+Diagram: [`VISUAL-FLOWS.md` #14](VISUAL-FLOWS.md#14-save-persist-merge). Story: `SELF-WALK.md` Walk 21 + 38.
+
 ---
 
 ## 10. LAB-E: optimistic lock (`@Version`) race <a id="10"></a>
@@ -411,6 +429,7 @@ SELECT * FROM items WHERE order_id=1;  ... x100   -- 100 queries  (N+1!)
 - **SKIP LOCKED kyu?** multi-pod relay, har pod alag rows, no blocking, no double-publish.
 - **`@Transactional` self-call kyu nahi chalta?** Spring proxy bypass; fix = alag bean / `TransactionTemplate`.
 - **`open-in-view: false` kyu?** hidden lazy-load/N+1 aur lambi DB session se bacho; lazy data service mein load karo.
+- **`save()` persist ya merge?** `isNew()` true → persist (INSERT); false → merge (SELECT + ...). Assigned `@Id` + no `@Version` → default merge → bekaar SELECT; insert-only pe `Persistable isNew()=true` → plain INSERT. Guard PK hai, merge pe nahi.
 - **ddl-auto prod mein?** `validate` (+ Flyway). `create/update` kabhi nahi.
 - **N+1 is project mein?** nahi — JPA relations hi nahi, sirf IDs + REST/events.
 - **enum store?** `STRING` (ordinal nahi — reorder pe corrupt).
