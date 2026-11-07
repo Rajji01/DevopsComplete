@@ -86,3 +86,15 @@ groups:
         annotations:
           summary: "more than half of all payments are failing"
           runbook: docs/runbooks/PaymentFailureRateHigh.md
+
+      - alert: PaymentRefundFailed
+        # the processor DECLINED a refund (Walk 20): the order stays REFUND_PENDING and the money is
+        # still with us. Rare and always needs a human — no retry loop fixes a declined refund — so we
+        # alert on any occurrence, faster and more specific than the OrdersStuckConfirmed backstop.
+        expr: sum(increase(payments_refund_failed_total[15m])) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "a refund was declined by the processor (order stuck in REFUND_PENDING, money not returned)"
+          runbook: docs/runbooks/PaymentRefundFailed.md

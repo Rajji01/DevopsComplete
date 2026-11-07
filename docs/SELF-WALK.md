@@ -621,3 +621,15 @@ Walk 34–35 lesson: after one number drifts (the DB pool), **sweep the same cla
 
 ### Honest status (Walks 22–35)
 - Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). All claims re-verified against source; DB-pool number consistent (5/pod); numbers/citations/HLD audited clean; links clean. In-sync with `origin/master` (pushed).
+
+## Walk 36: the refund-failure metric nobody could see (Nov 8, 2026)
+
+Scope: close a gap Walk 20 left. Walk 20 added a `payments.refund.failed` counter when the processor declines a refund, but **no alert, no runbook** — the repo's own rule (STATE §5: a new failure signal gets an alert + unit test + runbook) wasn't met, and the Grafana dashboard doesn't plot it either. So a declined refund was recorded but invisible until `OrdersStuckConfirmed` fired ~15 min later for a different reason.
+
+First, the self-walk also **verified the Grafana dashboard** (`shopflow-red.json`): all 14 panel expressions map to metrics/recording rules that actually exist (`service:*` RED rules, `sli:checkout_error_ratio:*`, `orders_total`/`payments_total`, `outbox_unpublished`, `kafka_consumer_fetch_manager_records_lag_max`, `resilience4j_circuitbreaker_not_permitted_calls_total`, `hikaricp_connections_*`, `orders_stuck_confirmed`). No broken panels.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `payments_refund_failed_total` had no alert/runbook | A declined refund means a customer is owed money and the order is stuck in `REFUND_PENDING`; relying on the slower `OrdersStuckConfirmed` backstop buries a known, actionable failure | Added a **`PaymentRefundFailed`** alert (`increase(payments_refund_failed_total[15m]) > 0`, severity ticket — money is safe with us, not a 3 AM page, but must not be ignored), two promtool unit tests (ticks up → fires; flat → silent), and a runbook (how to see which orders, why the decline, how to resolve without ever faking REFUNDED). Distinct from `OrdersStuckConfirmed`: faster and names the cause (decline, not lag) |
+
+Walk 36 lesson: **a metric without an alert is a number nobody reads.** Walk 20 did the hard correctness part (stop faking the refund) but left the signal mute; completing the loop is alert + runbook + test, exactly the rule the repo already states. (Verified in CI — no Docker/JDK locally this session.)

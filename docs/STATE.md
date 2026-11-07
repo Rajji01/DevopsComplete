@@ -2,7 +2,7 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-11-01 (Walk 21: outbox save() persist-not-merge; Walk 20 refund decline; 19 IRSA; 18 Ansible; 16/17 policies). Prior: 14 (SLI), 13 (ci.yml), 12 (CI green). Branch: `master`.
+Last updated: 2026-11-08 (Walk 36: PaymentRefundFailed alert+runbook+test completes Walk 20's signal; dashboard verified). Prior: Walks 22–35 (web: drills/comprehension/audits), 21 (outbox persist), 20 (refund decline). Branch: `master`.
 
 ## 1. What is in the repo
 

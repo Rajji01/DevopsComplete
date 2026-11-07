@@ -143,3 +143,28 @@ tests:
       - eval_time: 70m
         alertname: CheckoutSLOBurnRateFast
         exp_alerts: []
+
+  # 8. PaymentRefundFailed: the refund-failed counter ticks up once -> ticket fires
+  - interval: 1m
+    input_series:
+      - series: 'payments_refund_failed_total{application="payment-service"}'
+        values: '0+0x5 1+0x15'      # flat 0 for 6m, then jumps to 1 -> increase>0 within 15m
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PaymentRefundFailed
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: "a refund was declined by the processor (order stuck in REFUND_PENDING, money not returned)"
+              runbook: docs/runbooks/PaymentRefundFailed.md
+
+  # 8b. no refund failures -> silent
+  - interval: 1m
+    input_series:
+      - series: 'payments_refund_failed_total{application="payment-service"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PaymentRefundFailed
+        exp_alerts: []

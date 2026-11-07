@@ -6,13 +6,18 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
-## ▶ RESUME HERE (night study session) — 2026-11-01
-**Mode:** GUIDED STUDY. Autonomous self-walk **PAUSED** — sirf tab chalao jab Abhishek literally "self walk" bole. Abhishek code padhega; Claude ka kaam: **explain → guide → quiz/test** (har topic 2-min explain → files padho → 2-3 sawaal → agla).
-**State:** sab green + in-sync (HEAD `924e456`); dono CI workflows green; Walks done **up to 21**. Background/Docker sab band.
+## ▶ RESUME HERE — 2026-11-08
+**Mode:** **AUTONOMOUS self-walk + teach, non-stop** (Abhishek ne 2026-11-08 ko wapas on kiya: "self walk krta rah, concept via project, karta rah"). Goal: ShopFlow improve karte hue Abhishek ko DevOps+Java+interview king banana — asli bug/gap dhoondho+fix+verify+commit, aur concepts project se samjhao. Ruko mat, baar-baar na poochho.
+**State:** in-sync; Walks done **up to 36**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
+**Verify note:** is machine pe JDK21/Docker **ho bhi sakta, nahi bhi** (session pe depend) — jo chale chalao, warna CI (GitHub token `git credential fill` se logs/status) verifier.
 **Start topic:** **E — app correctness** (interview gold): refund-decline saga (Walk 20 → `payment-service/OrderConfirmedListener.refund`, `order-service/.../OrderService.onRefundFailed`), outbox persist (Walk 21 → `shopflow-outbox/OutboxEvent`), flaky-test fix (Walk 11 → `OutboxCleanupTest`). Self-test interactive: `labs/comprehension.html`.
 **Study map (jo humne banaya):** neeche ke entries + `SELF-WALK.md` (Walks 8–21, har change ki poori story = textbook). Deep-dives: `INDEXING-HIBERNATE.md`, `LLD-DESIGN-PATTERNS.md`, `HLD-SYSTEM-DESIGN.md`, `VISUAL-FLOWS.md`.
 
 ---
+
+## 2026-11-08 — CLI (Opus 4.8) — Walk 36 (refund-failure alert; dashboard verified)
+**Branch:** `master` (pulled Walks 22–35 via ff). **Mode wapas autonomous self-walk + teach.** **Found:** Walk 20 ne `payments.refund.failed` counter add kiya par **koi alert/runbook nahi** (repo §5 rule adhoora) — declined refund invisible tha jab tak `OrdersStuckConfirmed` ~15m baad aur hi reason se na fire kare. Grafana dashboard bhi verify (14 panel exprs sab real metrics/rules se match — **clean**). **Fix:** `PaymentRefundFailed` alert (`increase(payments_refund_failed_total[15m])>0`, ticket) + 2 promtool tests (fire + silent) + runbook `PaymentRefundFailed.md` + README row. Distinct from OrdersStuckConfirmed (faster, decline-specific). **Verify:** YAML valid; promtool **CI** mein (Docker daemon local band tha). **Lesson:** metric bina alert = number jo koi nahi padhta; Walk 20 ka loop (alert+runbook+test) ab complete.
+**Teaching:** Topic E Concept 1 (dual-write → transactional outbox) Abhishek ko explain kiya (lesson chat mein).
 
 ## 2026-11-03 — CLI (Opus 4.8) — pull + sync docs to new code
 **Branch:** `master`. Pulled (ff `17dcccc..e65e6c0`, 31 commits). Read new files + the RESUME-HERE **GUIDED-STUDY** rule (self-walk paused unless Abhishek says "self walk") — noted, respecting it.
