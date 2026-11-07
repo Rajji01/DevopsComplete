@@ -305,16 +305,21 @@ Test: `processesEachEventExactlyOnceEvenWhenDeliveredTwice` sends the same JSON 
 ### Poison pills, retries and the DLT (as configured)
 
 ```java
-// KafkaErrorConfig
+// KafkaErrorConfig (all three services; counter added in Walk 40)
+var deadLetter = new DeadLetterPublishingRecoverer(template);
+var deadLettered = Counter.builder("kafka.dead.lettered").register(meterRegistry);
 var backOff = new ExponentialBackOff(500L, 2.0);   // 0.5s, 1s, 2s, 4s, ...
 backOff.setMaxElapsedTime(10_000L);                // ... until ~10s have passed in total
-return new DefaultErrorHandler(new DeadLetterPublishingRecoverer(template), backOff);
+return new DefaultErrorHandler((record, ex) -> {
+    deadLetter.accept(record, ex);   // throws if the DLT publish fails -> retried, not counted
+    deadLettered.increment();        // only counts records safely parked on the DLT
+}, backOff);
 ```
 - A record that throws is **re-polled and retried in place** (the consumer seeks back to that offset, so the partition is blocked during the retries — that is why the window is short). After the back-off budget is exhausted the recoverer publishes it to **`orders.events.DLT`** (default naming: `<topic>.DLT`, same partition number when the DLT has at least as many partitions) with exception headers, the offset is committed, and the partition moves on.
 - Why "bad JSON" lands in the DLT here: the listener receives a `String` (`StringDeserializer`) and calls `objectMapper.readValue` itself, so a parse error is an ordinary listener exception → retried → DLT. If you used `JsonDeserializer` directly, a deserialization failure happens **before** the listener and loops forever unless you wrap it in `ErrorHandlingDeserializer` — a classic interview trap.
 - Transient vs permanent: a DB outage longer than 10s also sends good records to the DLT. Improvements: longer backoff for `TransientDataAccessException`, `addNotRetryableExceptions(JsonProcessingException.class)` to skip straight to the DLT for malformed payloads, or **retry topics** (`@RetryableTopic`: `orders.events-retry-1000`, `-retry-2000`, ..., then `-dlt`) which free the main partition at the cost of per-key ordering.
-- Someone must **watch the DLT**: a consumer-lag or message-count alert on `orders.events.DLT`, a small admin tool to inspect headers and replay (re-produce to the main topic after a fix).
-- Test: `poisonPillGoesToDeadLetterTopicWithoutBlockingOthers` sends `"this is not json"` then a valid event and asserts the valid one is processed (≤30s because the retries run first).
+- Someone must **watch the DLT** — implemented (Walk 40): every successful dead-lettering increments `kafka.dead.lettered` → the **`KafkaMessageDeadLettered`** alert tickets on any occurrence (`sum by (application) (increase(kafka_dead_lettered_total[15m])) > 0`), the dashboard plots it (panel 12), and the runbook (`docs/runbooks/KafkaMessageDeadLettered.md`) covers inspecting the exception headers and the idempotent replay. Without that, a DLT is a graveyard, not a parking lot: the partition flows but the event is silently lost.
+- Test: `poisonPillGoesToDeadLetterTopicWithoutBlockingOthers` sends `"this is not json"` then a valid event, asserts the valid one is processed (≤30s because the retries run first) **and** that `kafka.dead.lettered` ticked.
 
 ### Consumer lag, scaling and backpressure
 
