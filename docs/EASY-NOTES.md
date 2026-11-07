@@ -223,6 +223,31 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 
 ---
 
+### 9a. `repo.save()` ka chhupa hua SELECT (assigned @Id + Persistable)
+
+**Problem:** `processed_event` aur `payment` rows ka `@Id` hum khud dete hain (Kafka ka `eventId`, ek UUID — DB-generated nahi). Har message pe `repo.save(new ...)` call hota hai, aur har call se pehle DB pe ek **bekaar SELECT** ja raha tha. Matlab consumer ki transaction ke andar, saga ke hot path pe, 1 ki jagah 2 DB round-trip.
+
+**Kyu:** Spring Data ka `save()` do raaste leta hai — `isNew()` **true** ho to `persist()` (pura INSERT, 1 query), **false** ho to `merge()` (pehle `SELECT ... WHERE id=?` ye dekhne ko row hai ya nahi, phir INSERT/UPDATE = 2 query). Default `isNew()`: koi `@Version` nahi + `@Id` **non-null** → "ye purana hoga" → `merge()`. Humne id khud set kar di, to wo kabhi null nahi — Spring ko lagta hai row pehle se hai, aur wo wasteful SELECT maar deta hai. Jabki hume *pata* hai row nayi hai.
+
+**Kaise (fix):** entity ko `Persistable<UUID>` banao aur saaf bata do ye insert-only hai —
+```java
+class Payment implements Persistable<UUID> {
+    public UUID getId()    { return eventId; }
+    public boolean isNew() { return true; }   // ye table sirf INSERT hoti hai
+}
+```
+Ab `isNew()==true` → `persist()` → sidha INSERT, SELECT gaya.
+
+**Safe kyu (interview ka jaal — "`return true` to jhooth hai, update todega"):** nahi — ye rows kabhi `save()` se update nahi hoti. `Payment` ka refund `markRefunded()` se hota hai jo loaded entity ko mutate karta hai, Hibernate dirty-check se flush karta hai — `save()` call hi nahi. Idempotency guard **primary key** hai (duplicate `eventId` INSERT pe fail → "already processed"), merge ke SELECT pe kabhi depend nahi tha. Agar kal update-via-save path aaya, to `isNew` ko `createdAt == null` jaisa banana padega.
+
+**ShopFlow mein:** `OutboxEvent` (Walk 21), dono `ProcessedEvent` + `Payment` (Walk 38). Generated-id entities (`Product`/`Reservation`/`Order`, `@GeneratedValue IDENTITY`) ko zaroorat nahi — unka id pre-insert null hota hai, default `isNew()` apne-aap sahi; `Order` pe `@Version` hai aur wo sach-much UPDATE hoti, to uska `merge()` sahi hai.
+
+**System kaise behtar hua:** har consumed event / payment pe ek DB round-trip kam — hot path halka.
+
+**Ek line mein:** *assigned `@Id` + no `@Version` = Spring Data naye row ko purana samajh ke merge+SELECT karta hai; insert-only table pe `Persistable isNew()==true` se wo plain INSERT ban jaata hai.* Diagram: [`VISUAL-FLOWS.md` #14](VISUAL-FLOWS.md#14-save-persist-merge).
+
+---
+
 ### 9b. Saga: choreography vs orchestration (ShopFlow dono use karta hai)
 
 **Problem:** Order confirm hua, ab paisa kaun lega? Agar order-service seedha payment-service ko call kare aur woh down ho, to order atak jaata hai. Aur card decline hua to reserve kiya stock kaun wapas karega?

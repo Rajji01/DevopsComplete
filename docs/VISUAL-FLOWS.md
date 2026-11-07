@@ -18,6 +18,7 @@
 11. [Observability → alert → runbook](#11-observability)
 12. [Deploy — Kustomize / Helm / Rollouts + probes](#12-deploy)
 13. [CI/CD — commit se prod tak](#13-cicd)
+14. [JPA `save()` — persist vs merge (chhupa SELECT)](#14-save-persist-merge)
 
 ---
 
@@ -364,6 +365,70 @@ flowchart LR
 **Kaise:** `.github/workflows/shopflow.yml` (master+main pe gating; push/sign/deploy sirf main-gated). Jenkins + Argo CD alternatives.
 **Code kahan:** `.github/workflows/shopflow.yml`, `shopflow/Jenkinsfile`, `shopflow/argocd/`.
 **Related:** GitOps, keyless signing (OIDC), [#11 observability](#11-observability) (deploy ke baad watch).
+
+---
+
+## 14. JPA `save()` — persist vs merge (chhupa SELECT) {#14-save-persist-merge}
+
+**Decision Spring Data har `save()` pe leta hai** (`SimpleJpaRepository.save`):
+
+```
+                    repo.save(entity)
+                          │
+                 entityInformation.isNew(entity)?
+                          │
+            ┌─────────────┴──────────────┐
+          TRUE                          FALSE
+            │                             │
+      em.persist(e)                 em.merge(e)
+            │                             │
+      ┌─────────┐              ┌──────────────────────┐
+      │ INSERT  │              │ SELECT ... WHERE id=? │  ← round-trip
+      └─────────┘              │   mila?  → UPDATE     │
+     1 query                   │   nahi? → INSERT      │
+                               └──────────────────────┘
+                                   2 queries
+```
+
+**Default `isNew()` kaise sochta hai** (no custom):
+```
+   @Version field hai?  ──yes──►  version == null  → NEW
+          │ no
+   @Id null hai?        ──yes──►  NEW      (persist → INSERT)
+          │ no (id set hai)
+          └──────────────────►  "purana"  (merge → SELECT+...)
+```
+
+**Humara trap:** `eventId` / UUID hum **khud** set karte hain → id kabhi null nahi → default bolta hai "purana" → **merge → bekaar SELECT**, har Kafka message pe, consumer txn ke andar.
+
+**Fix — `Persistable` se khud bata do insert-only hai:**
+```
+  class Payment implements Persistable<UUID> {
+      getId()  → eventId
+      isNew()  → true        // ye table sirf INSERT hoti hai
+  }
+            │
+            ▼
+      isNew()==true  →  persist()  →  pure INSERT   (SELECT gaya)
+```
+
+**Kaun-kaun (humare 7 entities):**
+```
+  assigned @Id (hum dete)        generated @Id (DB deta, IDENTITY)
+  ────────────────────────       ─────────────────────────────────
+  OutboxEvent      (W21) ✅       Product      → default sahi (id null→persist)
+  ProcessedEvent×2 (W38) ✅       Reservation  → default sahi
+  Payment          (W38) ✅       Order        → @Version + sach-much UPDATE
+                                                 hoti → merge SAHI hai, rehne do
+  → in sabko Persistable
+```
+
+**Kya:** assigned id + insert-only entity pe `Persistable isNew()==true` → `save()` = plain INSERT, merge ka SELECT nahi.
+**Kyu:** wo SELECT round-trip saga ke hot path pe bekaar hai; row hum jaante hain nayi hai.
+**Safe kyu:** ye rows `save()` se kabhi update nahi hoti (Payment refund `markRefunded()` dirty-check se, `save()` nahi); idempotency guard **PK** hai (duplicate eventId INSERT pe fail), merge ke SELECT pe kabhi depend nahi tha.
+**Jaal (interview):** "`isNew(){return true}` jhooth hai na?" — nahi, kyunki insert-only; agar kabhi update-via-save aaya to `isNew` ko `createdAt==null` banana padega.
+**Code kahan:** `shopflow-outbox/.../OutboxEvent.java`, `*/ProcessedEvent.java`, `payment-service/.../Payment.java`.
+**Related:** [#7 idempotency](#7-idempotency) (PK hi guard), [#5 outbox](#5-outbox) (OutboxEvent wahi pattern), `SELF-WALK.md` Walk 21 + 38.
 
 ---
 
