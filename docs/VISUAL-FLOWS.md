@@ -19,6 +19,7 @@
 12. [Deploy — Kustomize / Helm / Rollouts + probes](#12-deploy)
 13. [CI/CD — commit se prod tak](#13-cicd)
 14. [JPA `save()` — persist vs merge (chhupa SELECT)](#14-save-persist-merge)
+15. [Poison pill → DLT → alert → replay](#15-poison-pill-dlt)
 
 ---
 
@@ -429,6 +430,32 @@ flowchart LR
 **Jaal (interview):** "`isNew(){return true}` jhooth hai na?" — nahi, kyunki insert-only; agar kabhi update-via-save aaya to `isNew` ko `createdAt==null` banana padega.
 **Code kahan:** `shopflow-outbox/.../OutboxEvent.java`, `*/ProcessedEvent.java`, `payment-service/.../Payment.java`.
 **Related:** [#7 idempotency](#7-idempotency) (PK hi guard), [#5 outbox](#5-outbox) (OutboxEvent wahi pattern), `SELF-WALK.md` Walk 21 + 38.
+
+---
+
+## 15. Poison pill → DLT → alert → replay <a id="15-poison-pill-dlt"></a>
+
+Ek kharab message poori partition na roke, aur DLT pe jaake **chup bhi na ho jaaye**.
+
+```mermaid
+flowchart TB
+    M[record aata hai] --> L[listener process kare]
+    L -->|fail| R{retry with backoff<br/>500ms ×2, max ~10s}
+    R -->|phir bhi fail| D[DeadLetterPublishingRecoverer<br/>→ topic.DLT + exception headers]
+    D -->|publish OK| C[counter kafka.dead.lettered++]
+    C --> A[KafkaMessageDeadLettered alert<br/>ticket, by application]
+    A --> H[insaan: runbook<br/>inspect → fix → REPLAY]
+    H -->|same key se wapis original topic pe| M
+    R -->|success| OK[offset commit, aage badho]
+    D -. partition turant free .-> M2[agla record chalta rahta hai]
+```
+
+**Kya:** fail hota record backoff se retry hota hai; nahi sudhra to `.DLT` pe park + **counter** + **ticket**; insaan fix karke replay karta hai.
+**Kyu (do failure modes, dono cover):** (1) DLT na ho → ek poison pill **poori partition block** (uske peeche ke saare orders atke). (2) DLT ho par alert na ho → event **chupchaap lost** (email nahi gayi, payment outcome apply nahi hua) — Walk 40 se pehle yahi tha. DLT bina alert ke **graveyard hai, parking lot nahi**.
+**Replay safe kyu:** har consumer idempotent (`processed_event`/PK dedupe) → duplicate replay harmless. Same key (orderRef) se produce karo taaki same partition pe jaaye (ordering).
+**Counter kab badhta:** sirf DLT publish **succeed** hone ke baad (`accept()` ke baad increment) — "humne try kiya" nahi, "safely parked" ka matlab.
+**Code kahan:** teeno services ka `KafkaErrorConfig.java`; alert `monitoring/alert-rules.yml`; runbook `docs/runbooks/KafkaMessageDeadLettered.md`; dashboard panel 12.
+**Related:** [#7 idempotency](#7-idempotency) (replay isi pe tikta hai), [#11 observability](#11-observability), `SELF-WALK.md` Walk 40–41.
 
 ---
 
