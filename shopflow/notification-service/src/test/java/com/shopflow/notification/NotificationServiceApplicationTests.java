@@ -62,5 +62,10 @@ class NotificationServiceApplicationTests {
 
         await().atMost(Duration.ofSeconds(30)).untilAsserted(() ->
                 assertThat(processedEvents.existsById(good)).isTrue());
+
+        // the KafkaMessageDeadLettered alert depends on this counter: it must tick when the
+        // poison pill lands on the DLT (incremented only after the DLT publish succeeded)
+        await().atMost(Duration.ofSeconds(30)).untilAsserted(() ->
+                assertThat(meterRegistry.counter("kafka.dead.lettered").count()).isGreaterThanOrEqualTo(1));
     }
 }

@@ -98,3 +98,17 @@ groups:
         annotations:
           summary: "a refund was declined by the processor (order stuck in REFUND_PENDING, money not returned)"
           runbook: docs/runbooks/PaymentRefundFailed.md
+
+      - alert: KafkaMessageDeadLettered
+        # a record exhausted its retries and was moved to a .DLT topic (Walk 40). Nothing consumes
+        # the DLTs, so without this alert a dead-lettered event (an order email, a payment event) is
+        # silently lost until someone notices the side effect missing. Any occurrence needs a human:
+        # inspect the DLT record, fix the bug/data, replay. Counter lives in each service's
+        # KafkaErrorConfig and only increments after the DLT publish succeeded.
+        expr: sum by (application) (increase(kafka_dead_lettered_total[15m])) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $labels.application }} dead-lettered a Kafka record (event lost until replayed from the DLT)"
+          runbook: docs/runbooks/KafkaMessageDeadLettered.md

@@ -2,7 +2,7 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-11-08 (Walk 39: jitter on inventory retry — `enable-randomized-wait`+`randomized-wait-factor: 0.5` → `ofExponentialRandomBackoff`, de-syncs retry waves across pods / thundering herd). Prior: Walk 38 (`Persistable`+`isNew()==true` on the 3 assigned-UUID insert-only entities — closes Walk-21 follow-up), Walk 36 (PaymentRefundFailed alert+runbook+test), Walks 22–35 (web: drills/comprehension/audits), 21 (outbox persist), 20 (refund decline). Branch: `master`.
+Last updated: 2026-11-08 (Walk 40: `kafka.dead.lettered` counter in all 3 `KafkaErrorConfig`s + `KafkaMessageDeadLettered` alert + promtool tests + runbook — a DLT record is no longer silent. Walk 39: jitter on inventory retry — `enable-randomized-wait`+`randomized-wait-factor: 0.5` → `ofExponentialRandomBackoff`, de-syncs retry waves across pods / thundering herd). Prior: Walk 38 (`Persistable`+`isNew()==true` on the 3 assigned-UUID insert-only entities — closes Walk-21 follow-up), Walk 36 (PaymentRefundFailed alert+runbook+test), Walks 22–35 (web: drills/comprehension/audits), 21 (outbox persist), 20 (refund decline). Branch: `master`.
 
 ## 1. What is in the repo
 

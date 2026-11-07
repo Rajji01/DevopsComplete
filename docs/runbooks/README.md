@@ -14,6 +14,7 @@ One page per alert: **what it means → what to check first (commands) → likel
 | KafkaConsumerLagHigh | ticket | [KafkaConsumerLagHigh.md](KafkaConsumerLagHigh.md) |
 | PaymentFailureRateHigh | page | [PaymentFailureRateHigh.md](PaymentFailureRateHigh.md) |
 | PaymentRefundFailed | ticket | [PaymentRefundFailed.md](PaymentRefundFailed.md) |
+| KafkaMessageDeadLettered | ticket | [KafkaMessageDeadLettered.md](KafkaMessageDeadLettered.md) |
 | OrdersStuckConfirmed | ticket | [OrdersStuckConfirmed.md](OrdersStuckConfirmed.md) |
 | CheckoutSLOBurnRateFast / Slow | page | [CheckoutSLOBurnRate.md](CheckoutSLOBurnRate.md) |
 | (procedure) Restore PostgreSQL from backup | — | [RestorePostgres.md](RestorePostgres.md) |

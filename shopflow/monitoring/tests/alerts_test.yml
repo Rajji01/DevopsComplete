@@ -168,3 +168,29 @@ tests:
       - eval_time: 10m
         alertname: PaymentRefundFailed
         exp_alerts: []
+
+  # 9. KafkaMessageDeadLettered: a record lands on a DLT -> ticket fires, labelled by service
+  - interval: 1m
+    input_series:
+      - series: 'kafka_dead_lettered_total{application="notification-service"}'
+        values: '0+0x5 1+0x15'      # flat 0 for 6m, then jumps to 1 -> increase>0 within 15m
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: KafkaMessageDeadLettered
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              application: notification-service
+            exp_annotations:
+              summary: "notification-service dead-lettered a Kafka record (event lost until replayed from the DLT)"
+              runbook: docs/runbooks/KafkaMessageDeadLettered.md
+
+  # 9b. nothing dead-lettered -> silent
+  - interval: 1m
+    input_series:
+      - series: 'kafka_dead_lettered_total{application="notification-service"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: KafkaMessageDeadLettered
+        exp_alerts: []

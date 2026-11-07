@@ -213,7 +213,7 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 2. Consumer: `processed_event` table mein eventId check karo. Hai → skip, counter badhao. Nahi → kaam karo + eventId insert karo, **ek transaction mein**.
 3. Offset commit listener ke **baad** (`enable-auto-commit: false`); crash pe redelivery, redelivery pe skip.
 4. **Error handler**: fail hua to backoff ke saath retry (0.5s, 1s, 2s... max 10s), phir message **DLT** (`orders.events.DLT`) pe bhejo aur aage badho.
-5. DLT pe alert/ticket; bug fix karke replay karo.
+5. DLT pe alert/ticket (`KafkaMessageDeadLettered`: har dead-lettering `kafka.dead.lettered` counter badhata hai → ticket, Walk 40); bug fix karke replay karo — consumers idempotent hain to replay safe hai.
 
 **ShopFlow mein:** `notification-service` (`OrderEventListener`, `KafkaErrorConfig`), tests `processesEachEventExactlyOnce...`, `poisonPillGoesToDeadLetterTopic...`, Labs 18–19.
 
