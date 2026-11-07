@@ -368,7 +368,7 @@ flowchart LR
 
 ---
 
-## 14. JPA `save()` — persist vs merge (chhupa SELECT) {#14-save-persist-merge}
+## 14. JPA `save()` — persist vs merge (chhupa SELECT) <a id="14-save-persist-merge"></a>
 
 **Decision Spring Data har `save()` pe leta hai** (`SimpleJpaRepository.save`):
 
