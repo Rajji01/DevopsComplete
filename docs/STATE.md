@@ -2,7 +2,7 @@
 
 **Read this first** (after [`START-HERE.md`](START-HERE.md) if you are new). It says what exists, which approach is "basic" and which is "advanced" for each topic (both are kept on purpose), what has been verified and how, and what is still open. Every walk updates it. If a document disagrees with this file, this file wins and the document gets fixed.
 
-Last updated: 2026-11-08 (Walk 36: PaymentRefundFailed alert+runbook+test completes Walk 20's signal; dashboard verified). Prior: Walks 22–35 (web: drills/comprehension/audits), 21 (outbox persist), 20 (refund decline). Branch: `master`.
+Last updated: 2026-11-08 (Walk 38: `Persistable`+`isNew()==true` on the 3 remaining assigned-UUID insert-only entities — ProcessedEvent ×2 + Payment — so `save()` is INSERT not merge()+SELECT; closes the Walk-21 follow-up in §4). Prior: Walk 36 (PaymentRefundFailed alert+runbook+test), Walks 22–35 (web: drills/comprehension/audits), 21 (outbox persist), 20 (refund decline). Branch: `master`.
 
 ## 1. What is in the repo
 
@@ -96,7 +96,7 @@ Refund decline (Walk 20): if payment-service's gateway declines the refund, it e
   - Basics `ci.yml` (Devops/microservice01, runs on every push) was **also red since it was added** (Walk 13): `docker build -t Devops:ci` → "repository name must be lowercase". Fixed by lowercasing the tag (`${SERVICE,,}`) + `fail-fast: false`. Both workflows now green.
 - **OutboxRelay (open, low priority):** `publishPending()` holds its `@Transactional` across the Kafka `send().get(5s)`; bounded (returns on first failure) but move broker I/O out of the DB transaction if the Hikari pool is ever pressured.
 - **Spring Boot 4 / Spring 7 upgrade (open):** the proper fix for the triaged `spring-webmvc` CVEs and a chance to drop the pom CVE-patch overrides. A major upgrade — plan and test deliberately.
-- **Persistable follow-up (Walk 21, low):** `OutboxEvent` now avoids `merge()`+SELECT on save via `Persistable`. `ProcessedEvent` (×2) and `Payment` share the assigned-UUID, insert-only pattern and could do the same; lower write volume, so deferred.
+- **Persistable follow-up — DONE (Walk 38):** `ProcessedEvent` (order + notification) and `Payment` now `implements Persistable<UUID>` with `isNew(){return true;}`, so their assigned-UUID insert-only `save()` is a plain INSERT instead of `merge()`+SELECT (same fix `OutboxEvent` got in Walk 21). Payment's refund mutates the loaded entity via dirty-checking (`markRefunded`), never `save()`, so this stays correct.
 
 ## 5. How to keep this file true
 1. Every walk: update sections 1–4 **in the same commit** as the change.

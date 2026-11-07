@@ -4,6 +4,8 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
+import org.springframework.data.domain.Persistable;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -14,10 +16,13 @@ import jakarta.persistence.Table;
 /**
  * One payment per order. The primary key is the eventId of the OrderConfirmed event that
  * triggered it, which makes the consumer idempotent: a redelivered event hits the same row.
+ * Persistable with isNew()==true so the charge's save() is a plain INSERT, not merge()+SELECT
+ * (Walk 38). The row is only ever inserted; the refund mutates the loaded entity via dirty
+ * checking (markRefunded), never save(), so this stays correct.
  */
 @Entity
 @Table(name = "payment")
-public class Payment {
+public class Payment implements Persistable<UUID> {
 
     public enum Status { CAPTURED, FAILED, REFUNDED }
 
@@ -71,5 +76,15 @@ public class Payment {
 
     public String getFailureReason() {
         return failureReason;
+    }
+
+    @Override
+    public UUID getId() {
+        return eventId;
+    }
+
+    @Override
+    public boolean isNew() {
+        return true;
     }
 }
