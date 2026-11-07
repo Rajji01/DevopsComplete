@@ -673,3 +673,13 @@ Scope: Kafka error-handling review. All three consumers have the same `KafkaErro
 Design note: the counter is incremented *after* `accept()` so the metric means "safely parked on the DLT", not "we tried". Alert is a **ticket**, not a page — the pipeline is healthy, but every DLT record is owed a replay. Replay is safe because every consumer is idempotent (`processed_event` / PK dedupe — Walks 38's entities are exactly this bookkeeping).
 
 Walk 40 lesson: **a dead-letter topic without an alert is a graveyard, not a parking lot.** The DLT pattern only "handles" failure if something routes a human to it; otherwise it converts a loud failure (blocked partition) into a silent one (lost event). Same lesson as Walk 36, one level up the stack — and the docs claiming "DLT pe alert" before one existed is exactly the doc-vs-reality drift STATE §2 exists to catch. (Verified in CI — promtool + the extended poison-pill test.)
+
+## Walk 41: the failure signals get a dashboard panel (Nov 8, 2026)
+
+Scope: close the gap Walk 36 itself recorded — "the Grafana dashboard doesn't plot it either." `payments_refund_failed_total` (Walk 36) and now `kafka_dead_lettered_total` (Walk 40) had alerts + runbooks but no place on `shopflow-red.json`, so during an incident you could *get* the ticket but not *see* the signal next to the RED metrics you're already staring at.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The two "money/data at risk" counters were alert-only, invisible on the dashboard | During triage you correlate: did the refund decline coincide with the breaker opening? with consumer lag? A signal that lives only in Alertmanager can't be correlated visually | New stat panel 12 ("Failure signals (15m): refunds declined / dead-lettered") next to the stuck-orders stat: `sum(increase(payments_refund_failed_total[15m]))` + `sum(increase(kafka_dead_lettered_total[15m]))`, green at 0, red at ≥1 — same threshold style as panel 11. JSON validated (12 panels) |
+
+Walk 41 lesson: **an alert tells you *that* something broke; the dashboard is where you see *what else* broke with it.** Every alerted signal deserves a spot next to the metrics you correlate it against — otherwise the on-call pivots between tools during the worst five minutes.
