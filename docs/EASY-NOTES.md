@@ -108,7 +108,7 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 
 **Kaise (steps, isi order mein):**
 1. **Timeout** lagao (connect 1s, read 2s). Ab worst case 3s mein fail hoga, thread free.
-2. **Retry** sirf *transient* errors pe (timeout, 503), **kabhi** 404/409 jaise business errors pe nahi. Exponential backoff (200ms, 400ms, 800ms) taaki down service pe hamla na ho. Max 3 attempts.
+2. **Retry** sirf *transient* errors pe (timeout, 503), **kabhi** 404/409 jaise business errors pe nahi. Max 3 attempts = 2 retries, exponential backoff (200ms, 400ms) **+ jitter ±50%** (`enable-randomized-wait`) taaki bahut saare pods ek saath lockstep mein retry na karein (thundering herd). Down service ko saans milti hai.
 3. **Circuit breaker**: pichhli 10 calls mein 50% fail → "open" ho jaata hai → 10s tak call hi nahi karta, turant fail (fast fail). Phir "half-open": 2 test calls, pass hui to "closed".
 4. Caller ko saaf jawab do: 503 + order `FAILED` + orderId, taaki baad mein reconcile ho sake.
 5. **Readiness probe mein downstream mat daalo** (section 7), warna healthy pods bhi traffic se hat jayenge.

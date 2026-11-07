@@ -340,13 +340,15 @@ resilience4j.retry.instances.inventory:
   wait-duration: 200ms
   enable-exponential-backoff: true
   exponential-backoff-multiplier: 2
+  enable-randomized-wait: true    # jitter so pods don't retry in lockstep
+  randomized-wait-factor: 0.5     # each backoff ±50%
   retry-exceptions:
     - org.springframework.web.client.ResourceAccessException   # I/O, connect/read timeout
     - org.springframework.web.client.HttpServerErrorException  # 5xx
 ```
 
 - 409 (out of stock) / 404 (unknown SKU) are **business answers**. Retrying gives the same answer, wastes capacity and adds latency → `InventoryRejectedException`, not retried; also in breaker `ignore-exceptions` so a flood of "out of stock" during a sale doesn't open the circuit.
-- Backoff 200ms → 400ms gives the downstream breathing room. **No jitter is configured** (improvement: `randomized-wait-factor` or `IntervalFunction.ofExponentialRandomBackoff` to avoid synchronized retry waves).
+- Backoff 200ms → 400ms gives the downstream breathing room, **with jitter** (`enable-randomized-wait: true`, `randomized-wait-factor: 0.5`) so each wait is ±50% (200ms→[100,300], 400ms→[200,600]). Without it, many order-service pods that failed at the same instant would retry in lockstep and hammer a recovering inventory-service in synchronized waves (a self-inflicted thundering herd). Resilience4j combines the two flags into `IntervalFunction.ofExponentialRandomBackoff` (Walk 39).
 - Retries multiply load: 3 attempts × N clients. The circuit breaker caps that.
 - Test `rejectsOrderWhenOutOfStockWithoutRetrying` (exactly 1 call on 409) and `retriesTransientInventoryErrors` (503 then 201 → CONFIRMED, 2 calls).
 

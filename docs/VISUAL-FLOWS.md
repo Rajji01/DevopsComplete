@@ -241,7 +241,7 @@ inventory-service slow/down ho to order-service ko bachao.
 ```mermaid
 flowchart TB
     CALL[InventoryClient.reserve] --> RETRY{Retry<br/>transient? 5xx/timeout}
-    RETRY -->|haan, 3x backoff| CALL
+    RETRY -->|haan, 3x backoff+jitter| CALL
     RETRY --> CB{CircuitBreaker}
     CB -->|closed| OK[call jao]
     CB -->|open 10s| FAST[fail fast → FAILED/503]
@@ -250,7 +250,7 @@ flowchart TB
 
 **Kya:** har call `Retry(CircuitBreaker(call))`.
 **Kyu:** transient error pe retry; par agar inventory sach mein down hai to **breaker open** → fail fast (threads pile up nahi hote, cascading failure ruka).
-**Kaise:** breaker: last 10 calls mein 50% fail → open 10s → half-open 2 test. Retry sirf `ResourceAccessException`/`HttpServerErrorException` pe (business 409/404 pe nahi). Breaker open → `InventoryCircuitOpen` alert.
+**Kaise:** breaker: last 10 calls mein 50% fail → open 10s → half-open 2 test. Retry sirf `ResourceAccessException`/`HttpServerErrorException` pe (business 409/404 pe nahi), backoff 200ms→400ms **+ jitter ±50%** (pods lockstep mein retry na karein). Breaker open → `InventoryCircuitOpen` alert.
 **Code kahan:** `InventoryClient.java` + `application.yml` `resilience4j:`.
 **Related:** timeout (connect 1s/read 2s), bulkhead, [#11 alerts](#11-observability).
 

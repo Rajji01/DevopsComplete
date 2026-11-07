@@ -80,6 +80,8 @@ resilience4j:
         wait-duration: 200ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
+        enable-randomized-wait: true    # jitter: de-sync retry waves across pods (thundering herd)
+        randomized-wait-factor: 0.5     # each backoff ±50%: 200ms→[100,300], 400ms→[200,600]
         retry-exceptions:         # only transient technical errors are retried
           - org.springframework.web.client.ResourceAccessException
           - org.springframework.web.client.HttpServerErrorException
