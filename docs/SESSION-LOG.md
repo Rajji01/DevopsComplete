@@ -8,12 +8,20 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ## ▶ RESUME HERE — 2026-11-08
 **Mode:** **AUTONOMOUS self-walk + teach, non-stop** (Abhishek ne 2026-11-08 ko wapas on kiya: "self walk krta rah, concept via project, karta rah"). Goal: ShopFlow improve karte hue Abhishek ko DevOps+Java+interview king banana — asli bug/gap dhoondho+fix+verify+commit, aur concepts project se samjhao. Ruko mat, baar-baar na poochho.
-**State:** in-sync; Walks done **up to 45**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
+**State:** in-sync; Walks done **up to 46** (46 = clean security/infra sweep). (Earlier a GUIDED-STUDY pause tha; ab lifted.)
 **Verify note:** is machine pe JDK21/Docker **ho bhi sakta, nahi bhi** (session pe depend) — jo chale chalao, warna CI (GitHub token `git credential fill` se logs/status) verifier.
 **Start topic:** **E — app correctness** (interview gold): refund-decline saga (Walk 20 → `payment-service/OrderConfirmedListener.refund`, `order-service/.../OrderService.onRefundFailed`), outbox persist (Walk 21 → `shopflow-outbox/OutboxEvent`), flaky-test fix (Walk 11 → `OutboxCleanupTest`). Self-test interactive: `labs/comprehension.html`.
 **Study map (jo humne banaya):** neeche ke entries + `SELF-WALK.md` (Walks 8–21, har change ki poori story = textbook). Deep-dives: `INDEXING-HIBERNATE.md`, `LLD-DESIGN-PATTERNS.md`, `HLD-SYSTEM-DESIGN.md`, `VISUAL-FLOWS.md`.
 
 ---
+
+## 2026-11-08 — CLI (Opus 4.8) — Walk 46: security/infra sweep (all clean, no change)
+**Branch:** `master`. Zero-trust layer ka full audit — **sab verified, koi change nahi banta** (honesty: ye bhi result hai):
+- **NetworkPolicies:** default-deny ingress+egress; har allow-rule justified (ingress-nginx→inventory sirf isliye ki Ingress `/api/v1/products` ko public route karta hai; reservations ko koi path route nahi karta). Egress↔ingress pairs symmetric; inventory ke paas Kafka nahi (REST-only, sahi); redis sirf inventory.
+- **Service-to-service auth nahi hai (sirf order-service pe JWT)** — ye **documented trade-off** hai (interview-notes 11:580 exact yahi kehta: L3/L4 only, next step = client-credentials/mTLS mesh; ROADMAP mein mesh). Blind spot nahi.
+- **backup-cronjob:** PVC-only (prod = RDS PITR), `.part`→rename atomic pattern, `set -euo pipefail`, retention delete failure pe abort — textbook. Egress policy (sirf postgres:5432) sahi.
+- **PaymentEventListener:** dedupe + chaaron event types + unknown-warn, processed_event same tx. **Helm chart:** sirf workloads, monitoring copy nahi → Walk 36/40 alerts se drift impossible. **Labs:** Walk 42 ke baad stale claim nahi.
+**Lesson:** 45 walks ke baad main-path clean milna EXPECTED hai; ab asli value naye failure classes (races, flakes, silent paths) aur docs-vs-code sync mein hai.
 
 ## 2026-11-08 — CLI (Opus 4.8) — Walk 45 (idempotency race) + doc syncs
 **Branch:** `master`. **Walk 45:** same Idempotency-Key ki do concurrent POSTs (double click) — dono pre-check paas, ek save unique index pe haara → pehle **409** milta tha; inventory ka reservation-race pattern (loser returns winner) order-service mein nahi tha = repo apne aap se inconsistent. **Fix:** `placeOrder` catch `DataIntegrityViolationException` → key se re-fetch → owned to winner return (200, counter `orders.idempotency.race`), doosre customer ka to asli 409, warna rethrow. Invariant test: 2 threads barrier pe, same key → same order id, 1 hi reservation. **Pre-check = optimization, constraint = guarantee, catch = recovery.** **CI GREEN on `c3a80bc`** (CI + shopflow dono success): Walk 44-addendum ka pinned syft SBOM steps paas, yamllint clean, Walk 45 barrier test + Walk 42/43 money-tests verified. **Doc syncs (Walk 43 ke baad stale):** comprehension 02 (+notes) aur 04, interview-notes 01/10, D12, EASY-NOTES 9b step 7 — sab "late capture on CANCELLED = no-op" claims ab compensation batate hain.
