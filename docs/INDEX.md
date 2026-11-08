@@ -27,7 +27,7 @@ Kaam continue karna? → SESSION-LOG top entry → CLAUDE.md → kaam.
 | `docs/SESSION-LOG.md` | per-session: hua kya, pending kya (newest first) | permanent facts (wo STATE mein) |
 | `docs/START-HERE.md` | onboarding map, one-day plan, code reading order | changing status |
 | `docs/GLOSSARY.md` | har shabd/folder ka 1-line matlab | deep explanation (wo EASY-NOTES) |
-| `docs/VISUAL-FLOWS.md` | har flow ka mermaid diagram + kya/kyu/kaise + code kahan (13 flows) | — |
+| `docs/VISUAL-FLOWS.md` | har flow ka mermaid diagram + kya/kyu/kaise + code kahan (17 flows) | — |
 | `docs/INDEXING-HIBERNATE.md` | **one example topic** done as a full lab: DB indexing + Hibernate/JPA — notes + diagrams + real snippets + psql labs. Template for other topic deep-dives | — |
 | `docs/LLD-DESIGN-PATTERNS.md` | LLD deep-dive: 15 design patterns as used in ShopFlow (Strategy, Outbox, Saga, Aggregate, ...) — kahan + kyu + snippet + interview line + SOLID | — |
 | `docs/HLD-SYSTEM-DESIGN.md` | HLD deep-dive: scaling, bottlenecks, CAP/consistency choices, failure domains, capacity, "100x pe kya badlega", design-a-feature scenarios + checklist | — |
@@ -58,10 +58,11 @@ DevopsComplete/
 │   ├── GLOSSARY.md ........ shabd-matlab
 │   ├── VISUAL-FLOWS.md ..... har flow ka diagram + kya/kyu/kaise
 │   ├── EASY-NOTES.md / LABS.md / PRACTICE-LABS.md / ROADMAP.md / SELF-WALK.md
-│   ├── runbooks/ .......... per-alert on-call steps
+│   ├── runbooks/ .......... per-alert on-call steps (har alert ki file + restore/rollback/post-mortem)
 │   ├── interview-notes/ ... 01..12 + README (Q → model answer)
 │   ├── comprehension/ ..... Google-style comprehension rounds: 01..20/{comprehension,notes}.md + README + ONLINE-LABS.md
 │   └── debugging/ ......... debugging drills (symptom → root cause → fix): D01..D15 + README
+├── labs/ ................... interactive: lab-console.html (React, 8 panels), comprehension.html, Postman collection
 ├── shopflow/ ............... asli microservices project
 │   ├── order-service/  inventory-service/  payment-service/  notification-service/
 │   ├── shopflow-outbox/ ... shared outbox lib
