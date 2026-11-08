@@ -56,7 +56,7 @@ shopflow/
 │       ├── outbox/OrderEvent.java            # event contract, TOPIC = "orders.events" (outbox classes moved to shopflow-outbox)
 │       ├── payment/PaymentEventListener.java # saga step 3: consumes payments.events (group order-service), processed_event dedupe
 │       ├── payment/PaymentEvent.java         # consumer-side copy of the payments.events contract
-│       ├── payment/ProcessedEvent*.java, ProcessedEventCleanup.java  # inbox table + daily 7d cleanup
+│       ├── payment/ProcessedEvent*.java, ProcessedEventCleanup.java  # inbox table + daily 14d cleanup
 │       ├── payment/KafkaErrorConfig.java     # backoff → payments.events.DLT
 │       ├── security/SecurityConfig.java      # resource server, stateless, role rules
 │       ├── security/JwtRolesConverter.java   # realm_access.roles | cognito:groups → ROLE_*
