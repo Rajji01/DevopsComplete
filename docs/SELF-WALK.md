@@ -833,3 +833,18 @@ Scope: inventory-service's reservation path, read against the same topology lens
 Design note: `@Version` on `Reservation` was the alternative — but it needs a schema change, turns the loser into an `OptimisticLockingFailureException` → HTTP 500 that order-service would misread as "inventory down" (breaking the reconciler's batch, Walk 53 all over again at the other end of the wire), and still needs a catch to mean "fine, skip". The conditional UPDATE needs none of that and matches `decrementStock`, which this same service already trusts for the much scarier oversell race.
 
 Walk 55 lesson: **"idempotent" has two tiers — replay-idempotent (same call again later) and race-idempotent (same call at the same time) — and a status-guarded read-then-write only buys the first.** Every place a comment says "X is idempotent so the double call is safe", ask: safe when the two calls *overlap*? If the guard is a read, it isn't.
+
+## Walk 56: the auth layer, verified clean (Nov 8, 2026)
+
+Scope: the whole order-service security stack, adversarially — `SecurityConfig`, `JwtDecoderConfig`, `JwtRolesConverter` — plus every external name it depends on (pattern #2: verify against the real system).
+
+Checked, with the result:
+
+- **Matchers**: `/actuator/**` permitAll is backed by a tight exposure list — all four services expose only `health,info,prometheus` (no env/heapdump/beans to leak). Swagger permitAll → springdoc 2.8.17 really is on the classpath. `GET` orders = customer|support, writes = customer, `anyRequest().denyAll()` — deny-by-default holds.
+- **Role names vs the real IdPs**: `hasRole("customer"/"support")` matches `shopflow-realm.json` realm roles (`customer`, `support`) AND `cognito.tf`'s `aws_cognito_user_group.roles` keys exactly. No case drift, no "customers".
+- **Decoder**: lazy `SupplierJwtDecoder` (pod starts with IdP down), default validators (sig/JWKS/exp/iss) + audience pinned via `aud`/`azp`/`client_id` when `JWT_AUDIENCE` set — `AudienceValidatorTest` covers it; empty-audience dev mode is documented in the yml.
+- **Known gap is documented, not hidden**: inventory/notification/payment have no app-level auth by design (NetworkPolicy zero-trust; interview-notes/01 lists client-credentials/mTLS as the next step). That stays a documented decision, not a finding.
+
+Nothing to change. **Verified clean.**
+
+Walk 56 lesson: an auth review is mostly name-matching across systems — matcher paths vs exposed endpoints, `hasRole` strings vs the IdP's actual role/group names, audience value vs what the IdP really puts in `aud`/`azp`/`client_id`. Every one of those pairs is a place where two files can silently disagree; here all of them agreed.

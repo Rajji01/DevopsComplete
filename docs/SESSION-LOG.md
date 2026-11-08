@@ -8,12 +8,15 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ## ▶ RESUME HERE — 2026-11-08
 **Mode:** **AUTONOMOUS self-walk + teach, non-stop** (Abhishek ne 2026-11-08 ko wapas on kiya: "self walk krta rah, concept via project, karta rah"). Goal: ShopFlow improve karte hue Abhishek ko DevOps+Java+interview king banana — asli bug/gap dhoondho+fix+verify+commit, aur concepts project se samjhao. Ruko mat, baar-baar na poochho.
-**State:** in-sync; Walks done **up to 55**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
+**State:** in-sync; Walks done **up to 56**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
 **Verify note:** is machine pe JDK21/Docker **ho bhi sakta, nahi bhi** (session pe depend) — jo chale chalao, warna CI (GitHub token `git credential fill` se logs/status) verifier.
 **Start topic:** **E — app correctness** (interview gold): refund-decline saga (Walk 20 → `payment-service/OrderConfirmedListener.refund`, `order-service/.../OrderService.onRefundFailed`), outbox persist (Walk 21 → `shopflow-outbox/OutboxEvent`), flaky-test fix (Walk 11 → `OutboxCleanupTest`). Self-test interactive: `labs/comprehension.html`.
 **Study map (jo humne banaya):** neeche ke entries + `SELF-WALK.md` (Walks 8–21, har change ki poori story = textbook). Deep-dives: `INDEXING-HIBERNATE.md`, `LLD-DESIGN-PATTERNS.md`, `HLD-SYSTEM-DESIGN.md`, `VISUAL-FLOWS.md`.
 
 ---
+
+## 2026-11-08 — CLI — Walk 56 (auth layer — verified clean)
+**Branch:** `master`. **Sweep:** SecurityConfig + JwtDecoderConfig + JwtRolesConverter, har external naam real system se match: actuator permitAll vs exposure list (sab services sirf health,info,prometheus), swagger vs springdoc classpath, `hasRole` strings vs realm JSON + cognito.tf group names (exact match), audience validator vs `AudienceValidatorTest`. Internal services ka no-app-auth gap already documented decision hai. **Koi change nahi — clean.** **Lesson:** auth review = cross-system name-matching; har pair silently disagree kar sakta hai, yahan sab agree karte the.
 
 ## 2026-11-08 — CLI — Walk 55 (release sirf replay-idempotent tha, race-idempotent nahi)
 **Branch:** `master`. **Found:** `Reservation` pe `@Version` nahi + `release()` ka guard plain read tha → do concurrent releases (HPA min-2 ke do reconciler pods same stale rows pe, ya customer-cancel vs reconciler — exactly Walk 53 ka scenario) dono RESERVED padhte, dono `incrementStock` karte = stock **do baar** wapas, koi exception/log nahi (status pe last-writer-wins). Phantom stock → oversell guard sahi number ko protect hi nahi kar raha. Order-service 4 jagah "release is idempotent" pe lean karta hai — wo sirf *sequentially* sach tha. **Fix:** `ReservationRepository.transition(orderRef, RESERVED, RELEASED)` conditional UPDATE (wahi `decrementStock` oversell pattern) = atomic guard; sirf winner (1 row) increment karta hai, loser info-log + skip; entity ka in-memory `release()` mutator delete (NOTE ke saath). `@Version` alternative jaan-bujh ke nahi: schema change + loser ka 500 order-service ko "inventory down" dikhta (Walk 53 doosre end pe repeat). **Test:** `concurrentReleasesRestoreStockOnlyOnce` (CyclicBarrier, 2 threads) — fix se pehle `before + 3` aata. **Lesson:** "idempotent" ke do tier — replay-idempotent vs race-idempotent; guard agar read hai to sirf pehla milta hai. CI pending on push.
