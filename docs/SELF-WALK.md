@@ -976,3 +976,15 @@ Scope: `argocd/` — the one deploy surface no walk had opened — plus, on find
 Argo CD manifests otherwise reviewed clean: dev app is manual-sync on HEAD (inspect-then-apply), prod has prune+selfHeal+ServerSideApply, retry backoff, the HPA `ignoreDifferences` on `/spec/replicas` matching the no-`spec.replicas` deployment choice, and the finalizer documented.
 
 Walk 67 lesson: when you find the second copy of a constant, stop and take the census — the cost of the full grep is minutes, and every copy found later costs a walk (this one took three: 50, 58, 67). "How many systems know this fact?" belongs in the first copy's review.
+
+## Walk 68: the chart that would let you fight your own autoscaler (Nov 8, 2026)
+
+Scope: `helm/shopflow-service` templates + `ingress.yaml` — the Helm half of the deploy story, walked against the Kustomize base it mirrors.
+
+Clean parts: the template is a faithful parameterisation of the base (same probes trio, preStop, non-root + read-only rootfs + dropped caps, topology spread, `automountServiceAccountToken: false`, maxUnavailable 0); values default `replicas: null` with the same "HPA owns the count" comment as the base; ingress exposes only `/api/v1/orders` and `/api/v1/products` (reservations API stays cluster-internal, matching the NetworkPolicy story), keycloak host is dev-only and the prod overlay removes it.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The chart rendered `replicas:` whenever a user set it — even with `hpa.enabled: true` (the default). The base's own comment explains the failure: a fixed `replicas` resets the count on every `helm upgrade` and fights the autoscaler. The guard was only a comment in values.yaml — nothing enforced it | This is the classic Helm footgun shape: a convention documented next to a default, silently violated by one values override. HPA scales to 6, the next deploy slams it back to 2, repeat — a sawtooth that looks like a capacity mystery | `{{ fail }}` when both `replicas` and `hpa.enabled` are set: the chart now refuses to render the contradiction, with the reason in the error message. CI's `helm lint` + `template \| kubeconform` verify the happy paths still render |
+
+Walk 68 lesson: **in a chart, a convention that lives only in a values comment is not a guard — `fail` is how a chart states its invariants.** Anywhere two values can contradict each other (fixed count vs autoscaler, both TLS modes, replicas vs PDB minAvailable), the template should refuse, not pick silently.
