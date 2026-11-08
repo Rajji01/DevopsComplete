@@ -18,6 +18,8 @@ kn exec kafka-0 -- /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server lo
 | payment-service healthy, its `orders.events` lag high | it is behind, catching up | wait / scale payment-service to the partition count; verify orders move to PAID |
 | payment row exists & CAPTURED but order still CONFIRMED | the `PaymentCaptured` event or order-service's consumer is stuck | check order-service's `payments.events` lag; look for a poison record in `payments.events.DLT` |
 | payment says FAILED but order still CONFIRMED | `PaymentFailed` lost | same: order-service consumer / DLT |
+| order is REFUND_PENDING with `failureReason` empty and **was CANCELLED just before** (`orders_cancel_charge_race_total` ticked; order-service log: "cancel/charge race") | the customer cancelled while the charge was in flight (Walk 43); the late capture re-entered the refund saga | normal compensation — payment-service should refund it shortly; only investigate if it *stays* REFUND_PENDING (then check `payments_refund_failed_total` / PaymentRefundFailed.md) |
+| order is REFUND_PENDING and payment-service logs "refund requested … but no payment row exists" (Walk 42 logging) | upstream data problem: a refund was requested for an order that never had a payment | **manual**: verify with the processor whether money ever moved; never flip the order without that answer |
 | genuinely orphaned (payment-service has no row and never will) | upstream bug | **manual**: decide to cancel (release stock) per order; never a blanket script |
 
 ## 2. Verify
