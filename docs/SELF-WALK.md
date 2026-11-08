@@ -925,3 +925,18 @@ Scope: `Order.java` (state machine) + `OrderController` — hunting the edges Wa
 Nothing to change. **Verified clean.**
 
 Walk 63 lesson: when a recovery path exists (the Walk-45 constraint catch), ask what ELSE can throw the same exception type — here the length overflow — and check each alternate cause has its own guard upstream. An exception type is a bucket, not a cause.
+
+## Walk 64: `make lint` wasn't what CI runs (Nov 8, 2026)
+
+Scope: CLAUDE.md §4's promise — "verify karo: jo CI chalata hai wahi (`make lint/validate/test`)" — diffed target by target against the two workflows. The promise had drifted in four places:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `hadolint` ran without `-c .hadolint.yaml`; `gitleaks` without `-c .gitleaks.toml` | The configs exist precisely to carry triaged ignores/allowlists — locally you'd get false failures CI doesn't have (or, worse, learn to ignore `make lint` failing) | Both now pass the same configs CI uses |
+| `make validate`'s `kyverno apply` included `verify-image-signature.yaml` | That policy needs a registry + a real signature (which don't exist — Walk 50), so `make validate` **always failed locally** on a step CI deliberately excludes (`grep -v verify-image-signature`). A verification command that always fails is one nobody runs | Same exclusion as CI, with the reason as a comment |
+| `ansible-lint` ran in CI's lint job but nowhere in the Makefile | Local "lint green" ≠ CI lint green for any ansible edit | Added to `make lint` |
+| CI's new `postgres-smoke` (Walk 57) had no local equivalent | The one check that needs a real engine was CI-only even on machines that have Docker | New `make test-pg`: starts `postgres:16-alpine`, creates the four DBs, runs the `PG_SMOKE` tests, always stops the container, exits with the test status |
+
+Verification note, honestly: this machine has no Docker/ansible/hadolint, so the new recipes are verified **textually** against the exact CI commands+flags (and `make help`/syntax by inspection), not by running them — same standing as the rest of the local-tooling story in STATE §3.
+
+Walk 64 lesson: **a parity promise ("local runs what CI runs") is a contract with no enforcement — it only stays true if someone re-diffs it after every CI change.** Every Walk that touched the workflows (40, 44, 51, 57) owed this file a visit; the debt collected today. The tell was the kyverno step: a local command that *cannot* succeed means nobody has run the target since it broke.

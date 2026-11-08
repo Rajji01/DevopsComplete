@@ -9,6 +9,14 @@ help: ## show this list
 ## ---- build & test ----
 test: ## run every unit/integration test (H2, embedded Kafka, WireMock)
 	cd $(SF) && ./mvnw -B verify
+test-pg: ## boot every service against real Postgres 16 (CI's postgres-smoke, locally; needs Docker)
+	docker run -d --name shopflow-pg-smoke --rm -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16-alpine
+	until docker exec shopflow-pg-smoke pg_isready -U postgres >/dev/null 2>&1; do sleep 1; done
+	for db in orders inventory payments notifications; do \
+	  docker exec shopflow-pg-smoke psql -U postgres -c "create database $$db"; done
+	cd $(SF) && PG_SMOKE=true ./mvnw -B test -Dtest=PostgresSchemaValidationTest \
+	  -Dsurefire.failIfNoSpecifiedTests=false; status=$$?; \
+	  docker stop shopflow-pg-smoke >/dev/null; exit $$status
 build: ## build all images (alpine variant)
 	for s in order-service inventory-service notification-service payment-service; do \
 	  docker build --build-arg SERVICE=$$s -t shopflow/$$s:local $(SF); done
@@ -39,16 +47,19 @@ policies: ## install Kyverno policies (cluster must run Kyverno)
 	kubectl apply -f $(SF)/k8s/policies/kyverno/
 
 ## ---- validation (what CI runs) ----
-lint: ## yamllint + hadolint + gitleaks + tflint
+lint: ## yamllint + hadolint + gitleaks + tflint + ansible-lint (same configs as CI — Walk 64)
 	yamllint -c .yamllint.yaml .
-	hadolint $(SF)/Dockerfile $(SF)/Dockerfile.distroless
-	gitleaks git --no-banner --redact .
+	hadolint -c .hadolint.yaml $(SF)/Dockerfile $(SF)/Dockerfile.distroless
+	gitleaks git --no-banner --redact -c .gitleaks.toml .
 	cd infra/terraform/aws && tflint --init >/dev/null && tflint
+	cd infra/ansible && ansible-lint
 validate: ## manifests, policies, alert rules, alertmanager, helm, ansible
 	for o in $(SF)/k8s/overlays/*/; do kustomize build $$o | kubeconform -strict -summary -ignore-missing-schemas -; done
 	kustomize build $(SF)/k8s/rollouts | kubeconform -strict -summary -schema-location default \
 	  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' -
-	kyverno apply $(SF)/k8s/policies/kyverno/ --resource <(kustomize build $(SF)/k8s/overlays/prod)
+	# verify-image-signature excluded like CI: the keyless check needs a registry+signature to exist
+	kyverno apply $$(ls $(SF)/k8s/policies/kyverno/*.yaml | grep -v verify-image-signature) \
+	  --resource <(kustomize build $(SF)/k8s/overlays/prod)
 	promtool check rules $(SF)/monitoring/alert-rules.yml $(SF)/monitoring/recording-rules.yml $(SF)/monitoring/slo-rules.yml
 	promtool test rules $(SF)/monitoring/tests/*.yml
 	amtool check-config $(SF)/monitoring/alertmanager.yml
@@ -62,4 +73,4 @@ tf-plan: ## terraform plan for an environment: make tf-plan ENV=dev
 ansible-deploy: ## old-school: the compose stack on one VM via Ansible (needs infra/ansible/inventory.ini)
 	ansible-playbook -i infra/ansible/inventory.ini infra/ansible/site.yml
 
-.PHONY: help test build build-distroless up down token loadtest k8s-dev k8s-prod-render helm-dev rollouts-dev policies lint validate tf-plan ansible-deploy
+.PHONY: help test test-pg build build-distroless up down token loadtest k8s-dev k8s-prod-render helm-dev rollouts-dev policies lint validate tf-plan ansible-deploy
