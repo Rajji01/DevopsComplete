@@ -371,6 +371,50 @@ class OrderServiceApplicationTests {
                 .andExpect(jsonPath("$.status").value("CANCELLED"));
     }
 
+    @Test
+    void reconcilerSurvivesAnOrderSettledConcurrently() throws Exception {
+        // Walk 53: every pod runs the reconciler on the same stale rows, and the customer can cancel
+        // at the same moment. The race loser's OptimisticLockingFailureException must be a skip
+        // (someone settled it = success), not an escape that aborts the batch and the gauge update.
+        stubReserve(500);
+        String body = mockMvc.perform(createOrder("PIXEL-9", 1)).andExpect(status().isServiceUnavailable())
+                .andReturn().getResponse().getContentAsString();
+        Number orderId = JsonPath.read(body, "$.orderId");
+        circuitBreakerRegistry.circuitBreaker("inventory").reset();
+
+        // first release call (the reconciler's) is slow; the next (the customer's cancel) is instant,
+        // so the cancel commits first and the reconciler's save loses the @Version race
+        inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*"))
+                .inScenario("concurrent-settle").whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willReturn(aResponse().withStatus(204).withFixedDelay(400))
+                .willSetStateTo("fast"));
+        inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*"))
+                .inScenario("concurrent-settle").whenScenarioStateIs("fast")
+                .willReturn(aResponse().withStatus(204)));
+
+        var reconcileResult = new java.util.concurrent.CompletableFuture<Integer>();
+        Thread reconciler = new Thread(() -> {
+            try {
+                reconcileResult.complete(orderService.reconcileFailedOrders(Duration.ZERO));
+            } catch (Exception e) {
+                reconcileResult.completeExceptionally(e);
+            }
+        });
+        reconciler.start();
+        Thread.sleep(100); // let the reconciler reach the slow release first
+        int cancelStatus = mockMvc.perform(MockMvcRequestBuilders.delete("/api/v1/orders/" + orderId).with(customer()))
+                .andReturn().getResponse().getStatus();
+        reconciler.join(10_000);
+
+        // whichever side lost the race, the reconciler must have completed normally...
+        assertThat(reconcileResult).succeedsWithin(Duration.ofSeconds(1));
+        // ...the customer saw a definitive answer (200 settled-by-me, or 409 someone-else-won)...
+        assertThat(cancelStatus).isIn(200, 409);
+        // ...and the order is settled exactly once
+        mockMvc.perform(get("/api/v1/orders/" + orderId).with(customer()))
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
+    }
+
     @Autowired
     private org.springframework.kafka.core.KafkaTemplate<String, String> kafkaTemplate;
 

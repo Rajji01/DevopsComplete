@@ -35,7 +35,12 @@ public class OrderReconciler {
 
     @Scheduled(fixedDelayString = "${orders.reconcile.delay:60s}")
     public void run() {
-        orderService.reconcileFailedOrders(reconcileGrace);
-        stuckConfirmed.set(orderService.countStuckConfirmed(stuckGrace));
+        try {
+            orderService.reconcileFailedOrders(reconcileGrace);
+        } finally {
+            // the gauge must stay fresh even when a reconcile pass fails: OrdersStuckConfirmed
+            // alerts on this number, and a stale value hides newly stuck orders (Walk 53)
+            stuckConfirmed.set(orderService.countStuckConfirmed(stuckGrace));
+        }
     }
 }

@@ -7,6 +7,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -219,6 +220,13 @@ public class OrderService {
             } catch (RestClientException | CallNotPermittedException e) {
                 log.warn("inventory still unavailable, order {} stays {}: {}", order.getOrderRef(), order.getStatus(), e.getMessage());
                 break; // inventory is down; no point hammering it for the rest of the batch
+            } catch (OptimisticLockingFailureException e) {
+                // Expected with >1 pod (every replica runs the reconciler on the same stale rows — no
+                // SKIP LOCKED here) or when the customer cancels concurrently: someone else settled
+                // this order between our find and save. That is success, not failure — before Walk 53
+                // this escaped, aborting the rest of the batch and this tick's gauge update with an
+                // ERROR stacktrace for a normal race. The double release was already idempotent.
+                log.info("order {} was settled concurrently (another pod or the customer), skipping", order.getOrderRef());
             }
         }
         return settled;
