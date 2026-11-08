@@ -84,6 +84,25 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 
 ---
 
+### 2a. "Idempotent" ke do tier: replay vs race (Walk 55)
+
+**Problem:** `release()` pe comment tha "idempotent hai, double call safe hai" — aur sequentially sach bhi tha (status guard: RELEASED mila to no-op). Par **do concurrent releases** (2 reconciler pods, ya cancel vs reconciler) dono ne RESERVED **padha**, dono ne stock increment kiya → stock do baar wapas = phantom stock → aage asli oversell.
+
+**Kyu hota hai:** read-then-write guard sirf **replay** (baad mein dobara call) rokta hai. **Race** (ek hi waqt do calls) mein dono reads commit se pehle ho jaate hain — dono ko purana committed state dikhta hai. Bina `@Version` ke dono writes chupchap last-writer-wins.
+
+```
+  REPLAY-idempotent (kaafi: read guard)        RACE-idempotent (chahiye: atomic guard)
+  T1: read RESERVED → release → commit         T1: UPDATE ... WHERE status='RESERVED'  → 1 row ✓
+  T2 (baad mein): read RELEASED → no-op ✓      T2: UPDATE ... WHERE status='RESERVED'  → 0 rows → skip ✓
+                                                (row lock serialise karta hai; WHERE dobara check hota hai)
+```
+
+**Fix (ShopFlow):** `ReservationRepository.transition(orderRef, RESERVED, RELEASED)` — conditional UPDATE (wahi pattern jo `decrementStock` oversell ke liye use karta hai). Sirf jisko `1` mila wahi `incrementStock` karta hai. Test: `concurrentReleasesRestoreStockOnlyOnce` (CyclicBarrier).
+
+**Ek line mein:** *Jahan bhi likha ho "X idempotent hai", poochho: overlap mein bhi? Guard agar read hai, to jawab nahi hai — transition ko hi atomic banao.*
+
+---
+
 ### 3. Status codes jo ek hi matlab rakhte hain
 
 **Problem:** Inventory 409 deta tha do cases mein: "stock nahi hai" aur "concurrent duplicate request". Order-service har 409 ko "stock nahi" samajhta tha → order REJECTED, jabki stock reserve ho chuka tha. Customer ko "out of stock" dikha, stock atka raha.
@@ -278,6 +297,24 @@ Ab `isNew()==true` → `persist()` → sidha INSERT, SELECT gaya.
 - **Replication factor 3, `min.insync.replicas=2`, `acks=all`**: ek broker mare to data safe, write tabhi confirm jab 2 copies ho.
 - **Consumer lag** = produce hua minus consume hua. Badh raha hai = consumer slow/down → `KafkaConsumerLagHigh` alert.
 - **Schema change**: consumer `@JsonIgnoreProperties(ignoreUnknown = true)` → producer field add kar sakta hai bina consumer tode. Field hatana/rename = breaking → Schema Registry (roadmap).
+
+### 10a. Retention ≠ "data gaya": replayable window (Walk 59)
+
+**Problem:** Dedupe table (`processed_event`) 7 din baad rows delete karta tha — "topic retention bhi 7d hai, purana record aa hi nahi sakta". Galat, do wajah se:
+
+1. Kafka **segment** delete karta hai, record nahi — aur segment tabhi jab uska **sabse naya** record retention paar kare. Quiet partition pe segment khula rehta hai → record ~**retention + segment-roll** (7d+7d = 14d) tak zinda.
+2. Consumers `auto-offset-reset: earliest` pe hain — matlab group reset/expire pe topic **replay hota hai, by design**.
+
+```
+record age:   0 ──────── 7d ──────────── 14d
+topic:        [ zinda    | shayad zinda (open segment) | gaya ]
+dedupe (old): [ yaad hai | BHUL GAYA ✗                 |      ]  ← replay tail = duplicate emails
+dedupe (new): [ yaad hai | yaad hai ✓                  | gaya ]  (14d)
+```
+
+**Fix (ShopFlow):** `processed-events.retention` 7d → **14d** dono services mein (rows ~40 bytes — margin free hai). `outbox.cleanup` 7d hi hai — wo dedupe nahi, debugging history hai.
+
+**Ek line mein:** *Retention = Kafka ko delete karne ki permission, guarantee nahi; idempotency store ko replayable window (retention + roll) se lamba jeena chahiye.*
 
 ---
 

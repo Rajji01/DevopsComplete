@@ -880,3 +880,13 @@ Scope: notification-service's listener + the `processed_event` cleanup jobs — 
 | Both `ProcessedEventCleanup`s (notification-service, order-service) deleted dedupe rows after **7d** — exactly equal to MSK's `log.retention.hours=168`. But (1) retention deletes a **segment** only when its *newest* record is past retention, so on a quiet partition a record survives up to retention + segment-roll (`log.roll.hours` default is another 168h ≈ 7d) — the oldest *replayable* record is ~14 days old, not 7; (2) both consumers run `auto-offset-reset: earliest` — chosen precisely so a reset/expired group **replays the topic** | On any replay (group reset for reprocessing, offsets expired after an outage, a new environment pointed at the same cluster), the tail of the replay — events 7–14 days old — has **no dedupe rows left**: notification-service re-sends customer emails, order-service re-processes `PaymentCaptured`/`PaymentRefunded` with only the status guards as the last line. Zero safety margin, by exact arithmetic coincidence of two unrelated 7s | `processed-events.retention` default **7d → 14d** in both services (= the real replayable window; rows are ~40 bytes, the margin is free), and the false comments rewritten in both repositories + cleanups to state the actual rule. interview-notes/01+10 synced. The `outbox.cleanup.retention: 7d` is untouched on purpose — published outbox rows are producer-side debugging history, not a dedupe guarantee |
 
 Walk 59 lesson: **"retention = 7d" is when Kafka is *allowed* to delete, not when data is gone — the replayable window is retention + segment roll, and your idempotency store must outlive THAT.** Two independent defaults that happen to be equal is not a margin, it's a coincidence waiting for a replay. (And the recurring pattern again: a comment making a claim about an external system — "cannot happen anymore" — that the external system's semantics don't back.)
+
+## Walk 60: teach-back — Walks 55 & 59 as notes + diagrams (Nov 8, 2026)
+
+Docs-only walk (the ritual's other half): the two new concepts earned their EASY-NOTES + VISUAL-FLOWS places.
+
+- **EASY-NOTES §2a** — "Idempotent ke do tier: replay vs race": read-guard sirf replay rokta hai; race mein atomic conditional UPDATE chahiye. Side-by-side timeline, `transition()` fix, test ka naam.
+- **EASY-NOTES §10a** — "Retention ≠ data gaya": replayable window = retention + segment-roll; ASCII timeline dikhata hai 7d dedupe ka "BHUL GAYA" gap aur 14d fix.
+- **VISUAL-FLOWS #17** — double-release race ke do mermaid sequence diagrams: bug wala interleaving (phantom stock +6) vs fix wala (row lock + WHERE re-check → 0 rows → skip), with the @Version-vs-conditional-UPDATE design note.
+
+No code changed.

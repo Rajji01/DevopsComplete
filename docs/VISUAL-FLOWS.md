@@ -490,6 +490,47 @@ flowchart LR
 
 ---
 
+## 17. Double-release race: read-guard vs atomic transition (Walk 55) <a id="17-double-release-race"></a>
+
+Do concurrent releases (reconciler pod A + customer cancel, ya pod A + pod B — HPA min-2!). `Reservation` pe `@Version` **nahi** hai.
+
+**Pehle (bug):** guard = plain read → dono paas ho jaate hain:
+
+```mermaid
+sequenceDiagram
+    participant A as release() — pod A
+    participant DB as Postgres
+    participant B as release() — pod B
+    A->>DB: SELECT status (orderRef)  → RESERVED
+    B->>DB: SELECT status (orderRef)  → RESERVED  (A ne commit nahi kiya)
+    A->>DB: UPDATE status=RELEASED; stock = stock + 3
+    A->>DB: COMMIT ✓
+    B->>DB: UPDATE status=RELEASED (last-writer-wins, koi error NahI); stock = stock + 3
+    B->>DB: COMMIT ✓  ← stock +6 for a 3-unit order = PHANTOM STOCK
+```
+
+**Ab (fix):** guard = conditional UPDATE — DB ka row lock serialise karta hai, WHERE dobara evaluate hota hai:
+
+```mermaid
+sequenceDiagram
+    participant A as release() — pod A
+    participant DB as Postgres
+    participant B as release() — pod B
+    A->>DB: UPDATE ... SET status=RELEASED WHERE orderRef=? AND status=RESERVED → 1 row
+    B->>DB: UPDATE ... (same)  — row lock pe WAIT
+    A->>DB: stock = stock + 3; COMMIT ✓
+    DB-->>B: lock mila, WHERE re-check: status ab RELEASED → 0 rows
+    B->>B: 0 rows → increment SKIP, log "released concurrently" ✓
+```
+
+**Kya:** `ReservationRepository.transition(orderRef, RESERVED, RELEASED)` — jisko `1` mila sirf wahi `incrementStock` karta hai.
+**Kyu ye pattern:** `@Version` alternative tha, par wo schema change + loser ko exception (HTTP 500 → order-service ise "inventory down" samajhta, Walk 53 doosre end pe repeat). Conditional UPDATE wahi hai jo `decrementStock` oversell ke liye pehle se karta hai — ek hi service mein ek hi problem ka ek hi jawab.
+**Test:** `concurrentReleasesRestoreStockOnlyOnce` (CyclicBarrier, 2 threads).
+**Code kahan:** `inventory-service/.../ReservationService.release`, `ReservationRepository.transition`.
+**Related:** [#14 save persist-vs-merge](#14-save-persist-merge) (JPA internals), EASY-NOTES §1 (atomic update), §2a (replay vs race).
+
+---
+
 ### Related docs
 - Concept detail (Hinglish prose): [`EASY-NOTES.md`](EASY-NOTES.md)
 - Topic-wise deep audit: [`comprehension/README.md`](comprehension/README.md)
