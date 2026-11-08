@@ -3,9 +3,10 @@ groups:
   - name: shopflow
     rules:
       - alert: HighErrorRate
-        expr: |
-          sum by (application) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
-            / sum by (application) (rate(http_server_requests_seconds_count[5m])) > 0.05
+        # uses the recorded ratio so alert + dashboard share ONE definition (Walk 74). The old inline
+        # expr had no uri exclusion: actuator scrapes + kubelet probes inflated the denominator, so a
+        # low-traffic service needed well over 5% business-request failures before this paged
+        expr: service:http_error_ratio:rate5m > 0.05
         for: 5m
         labels:
           severity: page
@@ -14,9 +15,8 @@ groups:
           runbook: docs/runbooks/HighErrorRate.md
 
       - alert: HighP99Latency
-        expr: |
-          histogram_quantile(0.99,
-            sum by (application, le) (rate(http_server_requests_seconds_bucket{uri!~"/actuator.*"}[5m]))) > 1
+        # same single-definition rule as HighErrorRate: the recorded p99, not a private copy (Walk 74)
+        expr: service:http_latency_p99:5m > 1
         for: 10m
         labels:
           severity: ticket
