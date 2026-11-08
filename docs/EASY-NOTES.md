@@ -298,6 +298,16 @@ Ab `isNew()==true` → `persist()` → sidha INSERT, SELECT gaya.
 - **Consumer lag** = produce hua minus consume hua. Badh raha hai = consumer slow/down → `KafkaConsumerLagHigh` alert.
 - **Schema change**: consumer `@JsonIgnoreProperties(ignoreUnknown = true)` → producer field add kar sakta hai bina consumer tode. Field hatana/rename = breaking → Schema Registry (roadmap).
 
+### 10b. Transaction ke andar remote paisa: do orderings, dono haarte hain (Walk 71)
+
+**Problem:** payment-service `gateway.charge()` + payment row + outbox event — sab "ek transaction" mein. Par gateway call DB transaction mein JOIN nahi kar sakta. To do hi orderings hain:
+- **Charge pehle, commit baad** (humara): crash beech mein → row nahi bana → redelivery → **dobara charge**.
+- **Commit pehle, charge baad**: crash beech mein → row CAPTURED dikhata hai, **paisa gaya hi nahi** — worse, kyunki ye jhooth hai.
+
+**Asli fix wire ke us paar hai:** processor-side **idempotency key** (Stripe `Idempotency-Key`, Razorpay `receipt`) = humara `orderRef`. Dobara charge aaye to processor bolta hai "ye to ho chuka" aur paisa ek hi baar move hota hai. Isliye ye **interface ka CONTRACT** hai (PaymentGateway javadoc), implementation detail nahi — real adapter likhne wala wahi padhega.
+
+**Ek line mein:** *Remote call + local transaction kabhi atomic nahi honge; at-least-once chuno aur dusri taraf dedupe karao — key tumhara aggregate id hai.*
+
 ### 10a. Retention ≠ "data gaya": replayable window (Walk 59)
 
 **Problem:** Dedupe table (`processed_event`) 7 din baad rows delete karta tha — "topic retention bhi 7d hai, purana record aa hi nahi sakta". Galat, do wajah se:
@@ -463,6 +473,8 @@ dedupe (new): [ yaad hai | yaad hai ✓                  | gaya ]  (14d)
 
 ## Part 5: Platform (Kubernetes, CI/CD, AWS)
 
+**Ek definition rule (Walk 74):** "error rate" jaise number ki definition **recording rule mein ek baar** likho; alert = `recorded_rule > threshold`. Jo alert apna ratio inline banata hai wo drift karega — humara HighErrorRate actuator-exclusion bhool ke probe/scrape traffic se denominator fula raha tha (low-traffic service pe page LATE). Audit mechanical hai: koi bhi alert jo recorded rule use kar sakta tha par nahi karta = doosri definition, disagree hone ka intezaar.
+
 ### 13b. Architecture rules as tests (ArchUnit)
 
 **Problem:** Team ne decide kiya "controller kabhi repository use nahi karega". 6 mahine, 5 naye developers, 1 deadline. Ab 3 controllers seedha DB query kar rahe hain, aur koi review mein pakad nahi paya.
@@ -512,6 +524,8 @@ dedupe (new): [ yaad hai | yaad hai ✓                  | gaya ]  (14d)
 **Ek line mein:** *Sab band, sirf zaroori khula, DNS yaad rakho.*
 
 ---
+
+**Chhupi bootstrap dependency (Walk 73):** auth mechanisms data-plane se pehle kuch aur dial karte hain — IRSA/MSK-IAM ko **STS (443)**, JWT validation ko **JWKS (443)**, OAuth ko token endpoint. Egress list banate waqt poochho: "is mechanism ka BOOTSTRAP kya dial karta hai?" — prod mein payment/notification ke paas 443 tha hi nahi, to Kafka SASL shuru hone se pehle hi credentials fail; order-service sirf isliye bacha ki JWKS ke liye 443 already khula tha (kisi aur ka broad rule tumhara missing rule chhupa sakta hai).
 
 ### 16. CI/CD + GitOps: commit se prod tak
 

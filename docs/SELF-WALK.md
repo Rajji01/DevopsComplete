@@ -1058,3 +1058,7 @@ Scope: `ArchitectureTest` — the 7 build-failing rules — read adversarially f
 Nothing to change. **Verified clean.**
 
 Walk 75 lesson: architecture tests are claims with a scope — the honest form is "these N rules hold in THIS module", and the audit is checking that the prose never quietly widens the scope the test actually enforces.
+
+## Walk 76: teach-back — Walks 71/73/74 as notes (Nov 9, 2026)
+
+Docs-only: EASY-NOTES §10b ("transaction ke andar remote paisa: do orderings, dono haarte hain" — the idempotency-key contract), a bootstrap-dependency note in Part 5 (STS/JWKS dial before the data plane; egress lists must cover the bootstrap), and the one-definition rule in §13 (alert = `recorded_rule > threshold`, never a private inline copy). No code changed.
