@@ -20,6 +20,7 @@
 13. [CI/CD — commit se prod tak](#13-cicd)
 14. [JPA `save()` — persist vs merge (chhupa SELECT)](#14-save-persist-merge)
 15. [Poison pill → DLT → alert → replay](#15-poison-pill-dlt)
+16. [Zero-trust network map (NetworkPolicies)](#16-zero-trust-network)
 
 ---
 
@@ -456,6 +457,36 @@ flowchart TB
 **Counter kab badhta:** sirf DLT publish **succeed** hone ke baad (`accept()` ke baad increment) — "humne try kiya" nahi, "safely parked" ka matlab.
 **Code kahan:** teeno services ka `KafkaErrorConfig.java`; alert `monitoring/alert-rules.yml`; runbook `docs/runbooks/KafkaMessageDeadLettered.md`; dashboard panel 12.
 **Related:** [#7 idempotency](#7-idempotency) (replay isi pe tikta hai), [#11 observability](#11-observability), `SELF-WALK.md` Walk 40–41.
+
+---
+
+## 16. Zero-trust network map (NetworkPolicies) <a id="16-zero-trust-network"></a>
+
+Default **sab band** (ingress + egress deny), phir sirf zaroori raste khule. Har teer = ek explicit allow-rule (`k8s/base/network-policies.yaml`); jo teer nahi hai, wo connection **ho hi nahi sakta**.
+
+```mermaid
+flowchart LR
+    NGX[ingress-nginx ns] -->|8081 /api/v1/orders| OS[order-service]
+    NGX -->|8082 sirf /products route| INV[inventory-service]
+    NGX -->|8180 dev only| KC[keycloak]
+    OS -->|8082 reserve/release| INV
+    OS -->|8180 JWKS| KC
+    OS -->|9092| K[(kafka)]
+    PS[payment-service] -->|9092| K
+    NS[notification-service] -->|9092| K
+    OS & INV & PS & NS -->|5432| PG[(postgres)]
+    BK[postgres-backup] -->|5432| PG
+    INV -->|6379| R[(redis)]
+    MON[monitoring ns] -.->|scrape 808x sab pods| OS & INV & PS & NS
+    OS & INV & PS & NS -.->|4318 traces| MON
+```
+
+**Kya:** namespace ke andar zero-trust — `default-deny-ingress` + `default-deny-egress-allow-dns` (DNS sabko, kube-dns:53), phir per-pod allow.
+**Kyu:** compromised pod blast-radius chhota — payment-service ka pod hack ho to wo inventory ko chhu bhi nahi sakta (uske egress mein inventory hai hi nahi), internet pe kuch exfiltrate nahi kar sakta (egress deny).
+**Padhne ka tareeka (symmetry rule):** har connection ke **do** rules chahiye — caller ke egress mein target, target ke ingress mein caller. Ek bhi missing = connection blocked. Isliye audit dono taraf se karo.
+**Dhyaan:** (1) inventory ka reservations API app-level pe unauthenticated hai — guard = ye policies + "Ingress sirf `/products` route karta hai"; L3/L4 hai, identity nahi — next step mTLS/client-credentials (ROADMAP, documented trade-off). (2) Enforcement CNI pe depend karta hai (Calico/Cilium) — bina NetworkPolicy-supporting CNI ke ye YAML **silent no-op** hai. (3) inventory Kafka se jaan-bujh ke disconnected (REST-only service).
+**Code kahan:** `shopflow/k8s/base/network-policies.yaml` (prod overlay include karta hai).
+**Related:** [#1 big picture](#1-big-picture), [#10 auth](#10-auth) (edge JWT), `interview-notes/11` (mesh/mTLS next step).
 
 ---
 
