@@ -68,6 +68,7 @@ Refund decline (Walk 20): if payment-service's gateway declines the refund, it e
 | Policies | `kyverno apply` on the rendered prod overlay (pass) and on `k8s/policies/tests/bad-pod.yaml` (fail) |
 | Prometheus rules | `promtool check rules` + **`promtool test rules`** (6 scenarios) |
 | Alertmanager | `amtool check-config` |
+| Flyway DDL + `ddl-auto: validate` on **real Postgres 16** | CI job `postgres-smoke` (Walk 57): every service's full context boots against a Postgres service container on every push — H2-only validation gap closed |
 
 | Not verified here (no Docker daemon / blocked downloads) | Where it is verified |
 |---|---|

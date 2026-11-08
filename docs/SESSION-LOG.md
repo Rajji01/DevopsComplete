@@ -8,12 +8,15 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ## ▶ RESUME HERE — 2026-11-08
 **Mode:** **AUTONOMOUS self-walk + teach, non-stop** (Abhishek ne 2026-11-08 ko wapas on kiya: "self walk krta rah, concept via project, karta rah"). Goal: ShopFlow improve karte hue Abhishek ko DevOps+Java+interview king banana — asli bug/gap dhoondho+fix+verify+commit, aur concepts project se samjhao. Ruko mat, baar-baar na poochho.
-**State:** in-sync; Walks done **up to 59** (57 ka CI verdict pending). (Earlier a GUIDED-STUDY pause tha; ab lifted.)
+**State:** in-sync; Walks done **up to 62**, sab CI-verified: **dbfc4f4 GREEN** (CI + shopflow, incl. naya `postgres-smoke` job — Walk 57 verdict: Postgres 16 schema accept karta hai, chaaron services full-context boot, "Tests run: 1" per service log-confirmed; Walk 55 race test + Walk 59 bhi isi run mein green). (Earlier a GUIDED-STUDY pause tha; ab lifted.)
 **Verify note:** is machine pe JDK21/Docker **ho bhi sakta, nahi bhi** (session pe depend) — jo chale chalao, warna CI (GitHub token `git credential fill` se logs/status) verifier.
 **Start topic:** **E — app correctness** (interview gold): refund-decline saga (Walk 20 → `payment-service/OrderConfirmedListener.refund`, `order-service/.../OrderService.onRefundFailed`), outbox persist (Walk 21 → `shopflow-outbox/OutboxEvent`), flaky-test fix (Walk 11 → `OutboxCleanupTest`). Self-test interactive: `labs/comprehension.html`.
 **Study map (jo humne banaya):** neeche ke entries + `SELF-WALK.md` (Walks 8–21, har change ki poori story = textbook). Deep-dives: `INDEXING-HIBERNATE.md`, `LLD-DESIGN-PATTERNS.md`, `HLD-SYSTEM-DESIGN.md`, `VISUAL-FLOWS.md`.
 
 ---
+
+## 2026-11-08 — CLI — Walks 60–62 (teach + 2 clean sweeps) & 57 verdict
+**Branch:** `master`. **Walk 60:** EASY-NOTES §2a (replay vs race idempotency) + §10a (replayable window) + VISUAL-FLOWS #17 (double-release ke do sequence diagrams). **Walk 61:** resilience stack clean (aspect order, whitelist vs CallNotPermitted, CB lists, latency budget, compose ordering). **Walk 62:** RED dashboard ke 16 exprs name-checked — sab recording rules/Micrometer/binder names se match, koi orphan query nahi. **Walk 57 verdict (dbfc4f4 GREEN):** postgres-smoke non-vacuous pass — Hibernate 6.6 + Postgres 16 pe Instant-vs-timestamp hazard bite nahi karta; hypothesis dead, guard permanent. **Walk 55 + 59 bhi isi run mein verified.**
 
 ## 2026-11-08 — CLI — Walk 59 (dedupe memory < Kafka ki asli memory)
 **Branch:** `master`. **Found:** dono `ProcessedEventCleanup` (notification + order) 7d pe rows delete karte the = exactly MSK `log.retention.hours=168`. Par segment tabhi delete hota jab uska **newest** record retention paar kare → quiet partition pe record ~retention+segment-roll (14d) tak replayable; aur dono consumers `auto-offset-reset: earliest` (replay by design). Replay ka 7–14d tail = dedupe rows deleted → duplicate emails / PaymentCaptured re-processing (sirf status guards bachte). **Fix:** default 14d dono jagah + jhoothe comments ("cannot happen anymore") rewritten + notes synced. Outbox cleanup 7d jaan-bujh ke untouched (wo dedupe nahi, debugging history hai). **Lesson:** retention = delete ki *permission*, data ki guarantee nahi; idempotency store ko replayable window (retention+roll) se lamba jeena chahiye.
