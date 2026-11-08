@@ -36,6 +36,9 @@ configMapGenerator:
       - kafka-bootstrap-servers=b-1.shopflow.xxxxxx.c2.kafka.ap-south-1.amazonaws.com:9098,b-2.shopflow.xxxxxx.c2.kafka.ap-south-1.amazonaws.com:9098
       - redis-host=shopflow-cache.xxxxxx.0001.aps1.cache.amazonaws.com
       - jwt-issuer-uri=https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_XXXXXXXXX
+      # Cognito app client id (terraform output cognito_web_client_id). Without it the audience
+      # check is OFF (empty = dev mode) and a token minted for ANY client of this pool passes (Walk 73)
+      - jwt-audience=REPLACE-with-cognito-app-client-id
       - otlp-endpoint=http://otel-collector.monitoring:4318/v1/traces   # ADOT collector -> AWS X-Ray / Grafana Tempo
       - rds-endpoint=shopflow.xxxxxx.ap-south-1.rds.amazonaws.com:5432
 patches:
@@ -198,6 +201,17 @@ patches:
             - port: 5432
             - port: 9092
             - port: 9098
+      # MSK IAM auth fetches its credentials from STS over HTTPS (IRSA web-identity exchange):
+      # without 443 the Kafka client cannot even authenticate (Walk 73). order-service already
+      # had 443 for Cognito JWKS; these two Kafka consumers need it for STS the same way.
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - ipBlock:
+                cidr: 0.0.0.0/0
+          ports:
+            - port: 443
   - target:
       kind: Deployment
       name: notification-service
@@ -265,6 +279,15 @@ patches:
             - port: 5432
             - port: 9092
             - port: 9098
+      # STS over HTTPS for MSK IAM credentials — same reason as payment-service (Walk 73)
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - ipBlock:
+                cidr: 0.0.0.0/0
+          ports:
+            - port: 443
   # IRSA: pods run as these ServiceAccounts so they get the kafka-clients IAM role (MSK IAM auth)
   - target:
       kind: Deployment
@@ -278,6 +301,15 @@ patches:
         value:
           name: SPRING_PROFILES_ACTIVE
           value: aws               # application-aws.yml: SASL/IAM for MSK
+      # prod pins the audience: dev's empty JWT_AUDIENCE deliberately skips the check, prod must not
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: JWT_AUDIENCE
+          valueFrom:
+            configMapKeyRef:
+              name: shopflow-endpoints
+              key: jwt-audience
   - target:
       kind: Deployment
       name: notification-service
