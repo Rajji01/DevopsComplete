@@ -24,6 +24,10 @@ spec:
         prometheus:
           address: http://prometheus.monitoring:9090
           query: |
-            sum(rate(http_server_requests_seconds_count{application="{{args.service}}", status=~"5..", uri!~"/actuator.*", rollouts_pod_template_hash="{{args.canary-hash}}"}[2m]))
+            sum(rate(http_server_requests_seconds_count{application="{{args.service}}",
+                     status=~"5..", uri!~"/actuator.*",
+                     rollouts_pod_template_hash="{{args.canary-hash}}"}[2m]))
             /
-            sum(rate(http_server_requests_seconds_count{application="{{args.service}}", uri!~"/actuator.*", rollouts_pod_template_hash="{{args.canary-hash}}"}[2m]))
+            sum(rate(http_server_requests_seconds_count{application="{{args.service}}",
+                     uri!~"/actuator.*",
+                     rollouts_pod_template_hash="{{args.canary-hash}}"}[2m]))
