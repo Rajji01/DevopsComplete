@@ -1078,3 +1078,7 @@ Walk 77 lesson: **a rule's exceptions need the same documentation rigor as the r
 Docs-only: `INDEX.md` — the file every session reads first — audited against the repo it maps. Three drifts: VISUAL-FLOWS counted "13 flows" (it has 17), the tree omitted the root `labs/` directory entirely (the interactive console + Postman collection the docs elsewhere advertise), and the runbooks line undersold what's there. All fixed. Everything else checked out: every file the table names exists, the reading chain's files exist, the per-file "ye mat likho" boundaries match how the docs are actually used.
 
 Walk 78 lesson: the entry-point doc is the one place drift is cheapest to fix and costliest to leave — a wrong count teaches a reader to distrust the whole map. Re-walk it whenever a counted thing (flows, labs, rules) grows.
+
+## Walk 79: the 30-second snapshot was 20 days old (Nov 9, 2026)
+
+Docs-only: `SUMMARY.md` — the "context reset ke baad yahi padho" page — was dated 2026-10-20 and still listed the Walk-20-resolved `RefundFailed` path as pending, while missing the two decisions STATE §4 actually waits on (publishing gates, dependabot PRs). Status block now carries today's truth: 78 walks, 51 tests + postgres-smoke, 17 alert test cases, publish/sign off with the six-gate census pointer. The irony is noted: a snapshot whose whole job is freshness had no mechanism reminding anyone to refresh it — it now rides the same rule as STATE ("counted things changed → re-walk the entry docs", Walk 78).

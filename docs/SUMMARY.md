@@ -19,17 +19,17 @@ DevOps + Java backend **mastery + interview prep** repo. Dil = `shopflow/` — e
 | Seekhne ke docs | `docs/EASY-NOTES.md`, `LABS.md`, `PRACTICE-LABS.md`, `interview-notes/` | concept → labs → interview answers |
 | Purana setup | `Devops/`, `microservice01/`, `notes.txt` | "before" picture, jaan-bujh ke rakha |
 
-## Abhi status (2026-10-20)
-- **master = full project**, origin se in-sync (web session ka saara kaam FF karke push ho chuka).
-- Java: **50+ tests green** (`make test`). YAML/k8s/terraform/ansible/alerts: lint + validate clean (STATE.md §3).
-- Live cluster / image build / AWS apply **yahan verify nahi** hote — CI ya tumhare labs mein hote hain (STATE.md §3 saaf batati hai kya-kya).
+## Abhi status (2026-11-09)
+- **master = full project**, origin se in-sync; **78 self-walks** ho chuki (har ek SELF-WALK.md mein — bug stories + clean sweeps).
+- Java: **51 tests green in CI** (JDK 21) + naya `postgres-smoke` CI job: chaaron services asli Postgres 16 pe Flyway+validate boot karti hain (Walk 57). Alerts: **17 promtool test cases** — har alert ka firing + silence test (Walk 70).
+- Live cluster / AWS apply **yahan verify nahi** hote — CI ya tumhare labs mein (STATE.md §3 saaf batati hai kya-kya). Image **publish/sign off hai**: saare gates nonexistent `main` pe (6 copies, 5 systems — STATE §4 ka decision item).
 
 ## Order ki life (ek line yaad rakhne wali)
 `PENDING → (stock ok) CONFIRMED → (payment captured) PAID → (cancel) REFUND_PENDING → REFUNDED`
 Jahan paisa **nahi** chala (PENDING/FAILED) wahan auto-cancel safe; jahan chal **sakta** hai (CONFIRMED/REFUND_PENDING) wahan sirf alert (full diagram: STATE.md §1).
 
 ## Abhi kya pending (poori list STATE.md §4)
-shared rate-limit · Schema Registry · Kyverno signature e2e test · chaos experiments · `RefundFailed` path · orphaned-CONFIRMED saga timeout.
+**publishing decision** (6 main-gates ek saath flip karo ya design-only rakho) · ~9 dependabot PRs · shared rate-limit · Schema Registry · Kyverno signature e2e test · chaos experiments · orphaned-CONFIRMED saga timeout. (`RefundFailed` path Walk 20 mein resolve ho chuka.)
 
 ## Agla kadam uthane se pehle
 1. [`SESSION-LOG.md`](SESSION-LOG.md) ka top entry padho — pichhli session kya chhod gayi.
