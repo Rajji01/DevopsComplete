@@ -15,7 +15,7 @@
       "directAccessGrantsEnabled": true,
       "standardFlowEnabled": true,
       "redirectUris": ["http://localhost:*"],
-      "webOrigins": ["*"],
+      "webOrigins": ["+"],
       "protocol": "openid-connect"
     }
   ],

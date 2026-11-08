@@ -952,3 +952,15 @@ The manifests themselves audit clean and tightly parallel: HPA owns replicas (no
 | Three copies of the connection arithmetic, all stale, each differently: deployments said "10 pods (HPA max) × 5 = 100 total" (base HPA max is **6**, and there are **4** services), `postgres/statefulset.yaml` said "2 services × 10 pods" (it's 4 × 6), `rds.tf` said "2 services × 10 × 5 = 100 plus notification-service" (prod is 4 × 10 × 5 = **200**) | The real numbers happen to still fit — base 120 < 200 (in-cluster PG), prod 200 < 300 (RDS parameter group) — but anyone *re-deriving* capacity from these comments (e.g. before raising an HPA max or shrinking RDS) would start from numbers that were never true together. Connection exhaustion is exactly the failure where readiness (`db` check) flaps every pod at once | All three now state the same worst-case formula with both environments' numbers; rds.tf's note also names the transient consumers (Flyway, reconcilers, `superuser_reserved_connections`) that eat into headroom |
 
 Walk 65 lesson: **numbers quoted in comments are the most-copied, least-verified claims in a repo — and the same budget stated in N files is the same constant copied N times** (Walk 58's lesson, arithmetic edition). State the formula, not just the result, and re-run it whenever any factor (service count, HPA max, pool size) changes.
+
+## Walk 66: CORS + the realm's wildcard origin (Nov 8, 2026)
+
+Scope: the browser-facing auth edges nobody had walked — both CORS configs and the Keycloak realm export.
+
+Clean parts: both `CorsConfig`s default to `http://localhost:*` origin patterns only, no `allowCredentials` (Bearer tokens, not cookies), overridable via `APP_CORS_ALLOWED_ORIGIN_PATTERNS`, and their "DEV ONLY" claims match reality (prod fronts services with an ALB and Cognito). Realm: `accessTokenLifespan` 900s, and `directAccessGrantsEnabled: true` is exactly what the docs claim it is (local-testing convenience).
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The `shopflow-web` client had `"webOrigins": ["*"]` while its `redirectUris` were already scoped to `http://localhost:*` | The wildcard tells Keycloak to answer CORS for its token/userinfo endpoints from **any** origin — broader than the client's own redirect scope, and a copy-paste seed: dev realm exports have a way of becoming prod realm imports. Keycloak has a dedicated idiom for "same as my redirect URIs": `"+"` | `webOrigins: ["+"]` — origins now derive from the redirect URIs, so tightening one tightens both. Same file serves compose and k8s (one source, no second copy to drift) |
+
+Walk 66 lesson: `*` in any security-adjacent list is a claim that "anyone" is the right audience — almost always it's a stand-in for "whatever my redirect URIs say", and Keycloak literally spells that `+`. Grep your realm exports for `"*"` before they graduate from dev.
