@@ -64,17 +64,27 @@ public class ReservationService {
                 .orElseThrow(() -> new IllegalStateException("reservation " + orderRef + " vanished"));
     }
 
-    /** Idempotent compensation: releasing twice (or releasing an unknown order) is a no-op. */
+    /**
+     * Idempotent compensation — including under CONCURRENCY (Walk 55). Two releases of the
+     * same order can run at the same moment: the reconciler on two pods (HPA minReplicas: 2),
+     * or a customer cancel racing the reconciler. Both read RESERVED here, so the read is only
+     * a fast path; the conditional UPDATE is the real guard — the row lock serialises the two,
+     * the WHERE re-checks status, and exactly one caller gets 1 back. The loser must NOT
+     * increment, or the stock comes back twice: phantom stock that oversells later.
+     */
     @Transactional
     @CacheEvict(cacheNames = "products", allEntries = true) // sku is only known after the lookup; releases are rare
     public void release(String orderRef) {
         reservationRepository.findByOrderRef(orderRef)
                 .filter(r -> r.getStatus() == Reservation.Status.RESERVED)
                 .ifPresent(r -> {
-                    // mark released first: the @Modifying update flushes this change, then clears the context
-                    r.release();
-                    productRepository.incrementStock(r.getSku(), r.getQuantity());
-                    log.info("released {} x {} for order {}", r.getQuantity(), r.getSku(), orderRef);
+                    if (reservationRepository.transition(orderRef,
+                            Reservation.Status.RESERVED, Reservation.Status.RELEASED) == 1) {
+                        productRepository.incrementStock(r.getSku(), r.getQuantity());
+                        log.info("released {} x {} for order {}", r.getQuantity(), r.getSku(), orderRef);
+                    } else {
+                        log.info("reservation {} was released concurrently, skipping", orderRef);
+                    }
                 });
     }
 }
