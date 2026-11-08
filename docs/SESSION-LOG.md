@@ -8,12 +8,15 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ## ▶ RESUME HERE — 2026-11-08
 **Mode:** **AUTONOMOUS self-walk + teach, non-stop** (Abhishek ne 2026-11-08 ko wapas on kiya: "self walk krta rah, concept via project, karta rah"). Goal: ShopFlow improve karte hue Abhishek ko DevOps+Java+interview king banana — asli bug/gap dhoondho+fix+verify+commit, aur concepts project se samjhao. Ruko mat, baar-baar na poochho.
-**State:** in-sync; Walks done **up to 50**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
+**State:** in-sync; Walks done **up to 51**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
 **Verify note:** is machine pe JDK21/Docker **ho bhi sakta, nahi bhi** (session pe depend) — jo chale chalao, warna CI (GitHub token `git credential fill` se logs/status) verifier.
 **Start topic:** **E — app correctness** (interview gold): refund-decline saga (Walk 20 → `payment-service/OrderConfirmedListener.refund`, `order-service/.../OrderService.onRefundFailed`), outbox persist (Walk 21 → `shopflow-outbox/OutboxEvent`), flaky-test fix (Walk 11 → `OutboxCleanupTest`). Self-test interactive: `labs/comprehension.html`.
 **Study map (jo humne banaya):** neeche ke entries + `SELF-WALK.md` (Walks 8–21, har change ki poori story = textbook). Deep-dives: `INDEXING-HIBERNATE.md`, `LLD-DESIGN-PATTERNS.md`, `HLD-SYSTEM-DESIGN.md`, `VISUAL-FLOWS.md`.
 
 ---
+
+## 2026-11-08 — CLI (Opus 4.8) — Walk 51 (canary gate graded the whole class)
+**Branch:** `master`. **Found:** AnalysisTemplate ka filter `rollouts_pod_template_hash!=""` — par Rollouts ye label **stable pods pe bhi** lagata hai (dono RS isi se manage hote) → gate blended ratio naapta tha. `setWeight: 10` pe 15%-errors wala canary blend ko sirf ~1.5% (<2%) pe le jaata → **kharab canary promote**. Jitna chhota (safe) pehla step, utna andha gate. **Fix:** template ab `canary-hash` arg leta hai (`rollouts_pod_template_hash="{{args.canary-hash}}"`); canary Rollout + blue-green prePromotion dono `valueFrom: podTemplateHashValue: Latest` pass karte. Template pe honest note: cluster-Prometheus ko pod labels labelmap karne chahiye. **Verify:** CI (kubeconform + Rollouts CRD schemas); live run labs ka. **Baaki green bhi:** `a731e36` ka delayed rerun2 success — Walks 42–48 ab poora verified; Walk 49+50 push `6ddbb10` CI pending.
 
 ## 2026-11-08 — CLI (Opus 4.8) — Walk 50 (supply chain that supplies nothing)
 **Branch:** `master`. **Found (Walk 48 ka thread):** GHCR push + cosign sign + ECR + prod-pin — aath `if: refs/heads/main` gates, aur `main` **exist nahi karta** → publish/sign kabhi chala hi nahi: GHCR mein koi `shopflow-*` image nahi, kabhi kuch sign nahi hua, prod overlay un images ko point karta jo bani hi nahi, Kyverno signature policy aaj apply karo to har pod reject. STATE §3 "signing/SBOM on main" bolta tha (SBOM galat bhi — wo har build pe chalta hai). **Fix (docs = sach):** STATE §3 row rewritten, §4 mein decision item (a: master pe gate + policy subject flip = sach mein publish; b: publish off, prod overlay design-only), policy file pe NOTE. **Gate khud NAHI badla** — public publishing outward-facing decision hai, Abhishek ki. **Lesson:** jo security control kabhi fire hi nahi hua, wo broken se alag nahi dikhta.

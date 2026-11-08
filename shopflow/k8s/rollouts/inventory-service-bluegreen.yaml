@@ -26,6 +26,9 @@ spec:
         args:
           - name: service
             value: inventory-service
+          - name: canary-hash   # here "canary" = the GREEN/preview ReplicaSet (Latest)
+            valueFrom:
+              podTemplateHashValue: Latest
 ---
 apiVersion: v1
 kind: Service
