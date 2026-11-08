@@ -1115,3 +1115,7 @@ Scope: `loadtest/flash-sale.js` end-to-end (Walk 47 had only fixed the expectedS
 | Two implicit assumptions undocumented: `orders_confirmed==3` needs a FRESH seeded stack (a re-run finds 0 units and fails "correctly" but confusingly), and `handleSummary` silently **replaces** k6's default end-of-run report | Both are the "works once, confuses the second person" class | Header note for the fresh-stack requirement; comment stating the summary replacement is a deliberate trade-off (thresholds still gate the exit code) |
 
 Walk 83 lesson: in k6, status 0 exists and every `< N` comparison must decide what it means; and a load test's hidden fixture assumptions (seed state) belong in its header, because the second run is always by someone else.
+
+## Walk 84: alert → runbook → README, all twelve accounted for (Nov 9, 2026)
+
+Docs-only audit of CLAUDE.md's rule #2 ("new alert → runbook + test + README row, teeno"): all 12 alert names cross-checked against `docs/runbooks/` files and the README table. Complete — every alert has its runbook and row; the two burn-rate alerts share `CheckoutSLOBurnRate.md` deliberately (same symptom, different window) and both annotations point there; the three non-alert runbooks (restore, rollback, post-mortem template) are the documented extras. With Walk 70's tests, the triad now genuinely holds: **12 alerts × (runbook + README row + firing-and-silence tests).** Verified clean.
