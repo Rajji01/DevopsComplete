@@ -31,9 +31,12 @@ public class ProductController {
      * Cache-aside: first call hits the DB and stores the DTO (not the entity!) under key = sku;
      * reserve/release evict that key, so a stale quantity is never served longer than one write.
      * The cached value is a record: serialisable and detached from the JPA session.
+     * sync=true (Walk 54): when a hot key expires (TTL 60s) or is evicted mid flash sale, the
+     * concurrent misses coalesce into ONE DB load per JVM instead of a stampede — exactly the
+     * first-line fix the caching notes teach; cross-pod you still get at most one query per pod.
      */
     @GetMapping("/{sku}")
-    @Cacheable(cacheNames = "products", key = "#sku")
+    @Cacheable(cacheNames = "products", key = "#sku", sync = true)
     public ProductResponse get(@PathVariable String sku) {
         return productRepository.findBySku(sku)
                 .map(ProductResponse::from)

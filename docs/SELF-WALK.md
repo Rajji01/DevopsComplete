@@ -811,3 +811,13 @@ Scope: `OrderReconciler` under the deployment's real shape — HPA `minReplicas:
 Design note: the heavier alternatives — ShedLock/leader election, or `SKIP LOCKED` on the query — buy less here than they cost: the work is idempotent and `@Version` already guarantees exactly-once settlement; the only real defect was treating the expected race as an exception. (Same lesson as Walk 43, one layer down: **every "can't happen" concurrent outcome is a state your code must have a normal path for.**)
 
 Walk 53 lesson: **catch clauses encode your concurrency model.** The loop knew inventory could be down but not that a sibling pod exists — yet the deployment guarantees one. Read every `catch` list against the real topology: N replicas, retries, and users acting mid-flight.
+
+## Walk 54: the stampede fix the notes taught and the code skipped (Nov 8, 2026)
+
+Scope: the cache-aside path. `interview-notes/11` teaches `sync = true` twice — "coalesce concurrent misses… stampede protection" and in the thundering-herd fix list — but the project's only `@Cacheable` (`ProductController.get`) didn't use it. The repo's recurring bug-pattern, fourth appearance: a claim the code never implemented.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `@Cacheable(cacheNames="products", key="#sku")` without `sync` | The products cache has a **60s TTL** (the Walk-46-verified safety net) — so a hot product's key expires every minute **by design**. During a flash sale that means: every minute, all concurrent readers of that sku miss together and hit Postgres at once. The browse load (k6: 200 req/s) funnels into a 1-minute-period DB spike train | `sync = true`: concurrent misses for the same key coalesce into one DB load per JVM (others wait for the loaded value); cross-pod it's still at most one query per pod per expiry — spike train becomes a trickle. Constraints checked: `sync` allows a single cache name (we have one) and no `unless` (we have none). Note synced into interview-notes/11 |
+
+Walk 54 lesson: **a TTL safety net turns every hot key into a scheduled stampede unless misses coalesce.** `sync = true` is one word; the checklist is TTL × hotness × concurrency. And when your own notes teach a fix, grep your own code for it — teaching it and shipping it are different claims.

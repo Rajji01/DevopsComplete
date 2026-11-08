@@ -8,12 +8,15 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ## ▶ RESUME HERE — 2026-11-08
 **Mode:** **AUTONOMOUS self-walk + teach, non-stop** (Abhishek ne 2026-11-08 ko wapas on kiya: "self walk krta rah, concept via project, karta rah"). Goal: ShopFlow improve karte hue Abhishek ko DevOps+Java+interview king banana — asli bug/gap dhoondho+fix+verify+commit, aur concepts project se samjhao. Ruko mat, baar-baar na poochho.
-**State:** in-sync; Walks done **up to 53**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
+**State:** in-sync; Walks done **up to 54**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
 **Verify note:** is machine pe JDK21/Docker **ho bhi sakta, nahi bhi** (session pe depend) — jo chale chalao, warna CI (GitHub token `git credential fill` se logs/status) verifier.
 **Start topic:** **E — app correctness** (interview gold): refund-decline saga (Walk 20 → `payment-service/OrderConfirmedListener.refund`, `order-service/.../OrderService.onRefundFailed`), outbox persist (Walk 21 → `shopflow-outbox/OutboxEvent`), flaky-test fix (Walk 11 → `OutboxCleanupTest`). Self-test interactive: `labs/comprehension.html`.
 **Study map (jo humne banaya):** neeche ke entries + `SELF-WALK.md` (Walks 8–21, har change ki poori story = textbook). Deep-dives: `INDEXING-HIBERNATE.md`, `LLD-DESIGN-PATTERNS.md`, `HLD-SYSTEM-DESIGN.md`, `VISUAL-FLOWS.md`.
 
 ---
+
+## 2026-11-08 — CLI (Opus 4.8) — Walk 54 (cache stampede — sync=true)
+**Branch:** `master`. **Found:** notes (interview-notes/11) do jagah `sync=true` sikhaate hain, par project ka iklauta `@Cacheable` (`ProductController.get`) use nahi karta tha. Products cache ki TTL 60s hai (by design) — matlab har minute hot sku ke saare concurrent readers ek saath DB pe = scheduled stampede train. **Fix:** `sync = true` (per-JVM coalescing; constraints verified: single cache, no unless). Notes mein cross-ref. **Pattern #4** (claim bina implementation): W36 metric-no-alert, W40 DLT-no-watcher, W47 comment-no-callback, W54 notes-no-sync. **Lesson:** TTL safety net + hot key + concurrency = stampede, jab tak misses coalesce na ho.
 
 ## 2026-11-08 — CLI (Opus 4.8) — Walk 53 (reconciler vs sibling pods)
 **Branch:** `master`. **Found:** HPA min-2 = har pod same stale rows pe reconciler chalata (no SKIP LOCKED) + customer concurrent cancel kar sakta — par loop sirf inventory-down catch karta tha; race loser ka `OptimisticLockingFailureException` **escape** hota: ERROR stacktrace + us tick ka baaki batch abort + `stuckConfirmed` gauge update skip (jis number pe OrdersStuckConfirmed alert hai). "Doosre ne settle kar diya" success hai, error nahi. **Fix:** loop mein catch→info+continue; `run()` try/finally se gauge hamesha fresh; deterministic race test (WireMock scenario: reconciler ki release slow, customer ki cancel fast → reconciler haarna). ShedLock/SKIP LOCKED jaan-bujh ke nahi — idempotency+@Version already exactly-once dete, defect sirf race ko exception maanna tha. **Lesson:** catch-list tumhara concurrency model hai — use real topology (N replicas, retries, mid-flight users) ke against padho.
