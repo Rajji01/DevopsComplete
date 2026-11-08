@@ -694,3 +694,27 @@ Scope: payment-service charge/refund paths, fresh eyes. The Walk-20 refund logic
 | `refund()`'s no-op paths were **silent**: no payment row at all, or a non-CAPTURED payment → `Optional.filter().ifPresent()` quietly did nothing | An `OrderRefundPending` with no payment row is an upstream data problem; the order then sits in REFUND_PENDING until `OrdersStuckConfirmed` fires — and the operator finds **zero log lines** explaining why no refund ever happened | Rewrote the chain as guard clauses: missing row → `log.warn` ("needs a human"), non-CAPTURED → `log.info` with the actual status (REFUNDED = normal duplicate; FAILED = upstream state-machine violation). Behaviour unchanged, triage no longer blind |
 
 Walk 42 lesson: **never invent an amount of money, and never no-op in silence.** A fallback price turns a config gap into a wrong charge; an unlogged early-return turns a data bug into a mystery. Fail loudly through the paths that already exist (decline → cancel → release; warn → runbook). (Verified in CI — new test + existing 50+ suite.)
+
+## Walk 43: the cancel/charge race that ate the customer's money (Nov 8, 2026)
+
+Scope: `OrderService` saga handlers, fresh eyes. Found the best bug of this block — a **choreography race with real money on the line**.
+
+The race: an order is CONFIRMED and `OrderConfirmed` is on the topic. payment-service will charge it *whenever it gets there* — with consumer lag or a pod restart that's minutes, not milliseconds. In that window the customer cancels: `cancel()` sees CONFIRMED (cancellable — no money moved *yet*), releases the stock, saves CANCELLED. Then the capture lands: `onPaymentCaptured` was `filter(Order::isConfirmed)` → CANCELLED fails the filter → **silent no-op**. payment-service ignores `OrderCancelled` (not its event). Net: **money captured, order CANCELLED, no refund ever triggered, nothing logged.** The payment row sits CAPTURED forever; the customer's card was charged for an order the UI shows as cancelled.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `PaymentCaptured` arriving for a CANCELLED order was silently dropped | The only orders that can hit this are exactly the cancel/charge race victims (FAILED/PENDING orders never emit `OrderConfirmed`; payment-failure cancellations have no capture coming) — so every occurrence is a customer owed money | `onPaymentCaptured` now branches: CONFIRMED → PAID (as before); **CANCELLED → `requestRefund()` + `saveWithEvent`** — the order re-enters the normal refund saga (`OrderRefundPending` event → payment-service finds the CAPTURED payment → refunds → `PaymentRefunded` → REFUNDED). Stock was already released by `cancel()`; the release in `onPaymentRefunded` is idempotent, so the replay is harmless. Counter `orders.cancel.charge.race` + warn log. New test `lateCaptureAfterCancelTriggersARefundInsteadOfLosingTheMoney` drives cancel-then-capture end to end to REFUNDED |
+
+Design note: the compensation **reuses the existing machinery** — no new states, no new events, no payment-service change. CANCELLED → REFUND_PENDING is semantically honest ("money must come back"), and every downstream handler was already status-guarded, so the re-entry is safe. The alternative (payment-service tracking `OrderCancelled` to skip the charge) trades one race for a harder ordering problem; charging then compensating is the saga answer.
+
+Walk 43 lesson: **in choreography, every "it can't be in that state" IS a state — at-least-once delivery plus user actions means any event can meet any status.** A status filter that silently drops an event with money attached is a bug; the question to ask of every handler is "what does this do when the event arrives *late*?"
+
+## Walk 44: the CI that failed because one byte went missing (Nov 8, 2026)
+
+Scope: Walk 42's `CI` run failed — in **kubeconform**, a job Walk 42 didn't touch. The log: `tar: Error is not recoverable`. Root cause: every tool install in both workflows and the Jenkinsfile was `curl -sSL <url> | tar xz` — no `-f` (an HTTP error page pipes straight into tar), no `--retry`, and a retry can't help mid-pipe anyway because tar has already consumed the truncated stream.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| 6 `curl -sSL … \| tar xz` tool downloads (ci.yml ×1, shopflow.yml ×4, Jenkinsfile ×2 commands) | One flaky byte from GitHub releases fails the whole validate job — a red build with zero relation to the commit, which trains people to ignore red builds | Download to a file with `curl -fsSL --retry 3 --retry-delay 5 -o <file>`, then `tar xzf` the complete file. `-f` fails on HTTP errors (instead of extracting an error page), `--retry` restarts the download cleanly into the file, and tar only ever sees a finished archive |
+
+Walk 44 lesson: **`curl | tar` couples two failure domains — transfer and extraction — so neither can recover.** Download-then-extract is the same line count and survives the blip. And: a CI failure on files you didn't touch is still your bug to chase — this one was a landmine for every future commit.

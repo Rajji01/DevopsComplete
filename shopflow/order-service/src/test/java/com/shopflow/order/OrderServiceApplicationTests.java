@@ -408,6 +408,33 @@ class OrderServiceApplicationTests {
     }
 
     @Test
+    void lateCaptureAfterCancelTriggersARefundInsteadOfLosingTheMoney() throws Exception {
+        // Cancel/charge race (Walk 43): the customer cancels the CONFIRMED order while payment-service
+        // is still processing OrderConfirmed (consumer lag makes that window minutes). The capture then
+        // lands for a CANCELLED order — before the fix this was silently dropped and the money was gone.
+        stubReserve(201);
+        inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*")).willReturn(aResponse().withStatus(204)));
+        String body = mockMvc.perform(createOrder("PIXEL-9", 1)).andReturn().getResponse().getContentAsString();
+        Number id = JsonPath.read(body, "$.id");
+        String orderRef = JsonPath.read(body, "$.orderRef");
+
+        mockMvc.perform(MockMvcRequestBuilders.delete("/api/v1/orders/" + id).with(customer()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
+
+        // the in-flight capture lands anyway: the money must come back -> REFUND_PENDING (refund saga)
+        kafkaTemplate.send("payments.events", orderRef, paymentEvent("PaymentCaptured", orderRef, null));
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                mockMvc.perform(get("/api/v1/orders/" + id).with(customer()))
+                        .andExpect(jsonPath("$.status").value("REFUND_PENDING")));
+
+        // payment-service refunds -> the cancelled order ends REFUNDED (money back, stock already released)
+        kafkaTemplate.send("payments.events", orderRef, paymentEvent("PaymentRefunded", orderRef, null));
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                mockMvc.perform(get("/api/v1/orders/" + id).with(customer())).andExpect(jsonPath("$.status").value("REFUNDED")));
+    }
+
+    @Test
     void confirmedOrdersAreCountedAsStuckButNeverAutoCancelled() throws Exception {
         stubReserve(201);
         String body = mockMvc.perform(createOrder("PIXEL-9", 1)).andReturn().getResponse().getContentAsString();

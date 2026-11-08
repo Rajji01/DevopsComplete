@@ -130,6 +130,10 @@ public class Order {
         return status == OrderStatus.REFUND_PENDING;
     }
 
+    boolean isCancelled() {
+        return status == OrderStatus.CANCELLED;
+    }
+
     boolean isCancellable() {
         return status == OrderStatus.CONFIRMED || status == OrderStatus.FAILED;
     }

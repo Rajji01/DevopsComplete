@@ -120,12 +120,26 @@ public class OrderService {
         return saveWithEvent(order);
     }
 
-    /** Saga step 3: payment-service answered. Both branches are idempotent (status-guarded). */
+    /** Saga step 3: payment-service answered. Every branch is idempotent (status-guarded). */
     public void onPaymentCaptured(String orderRef) {
-        orderRepository.findByOrderRef(orderRef).filter(Order::isConfirmed).ifPresent(order -> {
-            order.markPaid();
-            saveWithEvent(order);
-            log.info("order {} PAID", orderRef);
+        orderRepository.findByOrderRef(orderRef).ifPresent(order -> {
+            if (order.isConfirmed()) {
+                order.markPaid();
+                saveWithEvent(order);
+                log.info("order {} PAID", orderRef);
+            } else if (order.isCancelled()) {
+                // Cancel/charge race (Walk 43): the customer cancelled the CONFIRMED order while
+                // payment-service was still charging — with consumer lag that window is minutes, not
+                // millis. The money HAS been captured for an order we already cancelled, so compensate:
+                // REFUND_PENDING re-enters the normal refund saga (OrderRefundPending event ->
+                // payment-service refunds -> PaymentRefunded -> REFUNDED). Stock was already released
+                // by cancel(); the release in onPaymentRefunded is idempotent, so the replay is safe.
+                order.requestRefund();
+                saveWithEvent(order);
+                meterRegistry.counter("orders.cancel.charge.race").increment();
+                log.warn("order {} was CANCELLED but the payment captured anyway (cancel/charge race) -> REFUND_PENDING, refunding", orderRef);
+            }
+            // PAID / REFUND_PENDING / REFUNDED: duplicate or late delivery, nothing to do
         });
     }
 
