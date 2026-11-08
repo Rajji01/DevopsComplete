@@ -48,8 +48,9 @@ pipeline {
             steps {
                 dir('shopflow') {
                     sh '''
-                      curl -sSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE}/kustomize_${KUSTOMIZE}_linux_amd64.tar.gz | tar xz
-                      curl -sSL https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM}/kubeconform-linux-amd64.tar.gz | tar xz
+                      curl -fsSL --retry 3 --retry-delay 5 -o kustomize.tar.gz https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE}/kustomize_${KUSTOMIZE}_linux_amd64.tar.gz
+                      curl -fsSL --retry 3 --retry-delay 5 -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM}/kubeconform-linux-amd64.tar.gz
+                      tar xzf kustomize.tar.gz && tar xzf kubeconform.tar.gz
                       for overlay in k8s/overlays/*/; do
                         ./kustomize build "$overlay" | ./kubeconform -strict -summary -ignore-missing-schemas -
                       done
