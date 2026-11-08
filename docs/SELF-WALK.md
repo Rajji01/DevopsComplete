@@ -1046,3 +1046,15 @@ Scope: `recording-rules.yml` + `slo-rules.yml` semantic read. The SLI family is 
 | `HighErrorRate` computed its own ratio **without** the `uri!~"/actuator.*"` exclusion that the recorded `service:http_error_ratio:rate5m` (and every dashboard panel) applies; `HighP99Latency` likewise inlined a private copy of the recorded p99 | Actuator scrapes (Prometheus, every 15s) + kubelet probes (liveness/readiness, every 5–10s) are a *constant* stream of fast 2xx. On a low-traffic service they dominate the denominator, so "5% of requests failing" silently meant "well over 5% of *business* requests failing" — the page fires late exactly where traffic is thin. And two definitions of one number is the dashboard-vs-alert drift machine | Both alerts now consume the recorded rules. promtool evaluates recording rules inside unit tests, so Walk 70's new cases (incl. the actuator-exclusion case) and the original HighErrorRate pair verify the switch — same thresholds, same labels, one definition |
 
 Walk 74 lesson: **recording rules exist precisely so "error rate" is defined once — an alert that re-derives the number inline will drift from it** (here: the exclusion list). The audit is mechanical: any alert expr that could be `recorded_rule > threshold` but isn't, is a second definition waiting to disagree.
+
+## Walk 75: the ArchUnit guardrails, verified clean (Nov 9, 2026)
+
+Scope: `ArchitectureTest` — the 7 build-failing rules — read adversarially for false confidence.
+
+- The scope claim is honest everywhere it's made: rules analyze `com.shopflow.order` only, and the notes say "in order-service" rather than implying repo-wide enforcement. (inventory's `ProductController` uses its repository directly — a deliberate thin-read-layer choice that would fail rule 1 if the rules were blindly copied over; extending them is a conscious decision, not a TODO.)
+- The DTO rule works at the right granularity: `OrderResponse` is a nested record — a separate class in bytecode — so the `@RestController` class itself stays clear of `@Entity` dependencies while the mapper lives beside it.
+- `DoNotIncludeTests` keeps test fixtures from polluting the analysis; the three GeneralCodingRules (no field injection, no System.out, no JUL) hold across main code.
+
+Nothing to change. **Verified clean.**
+
+Walk 75 lesson: architecture tests are claims with a scope — the honest form is "these N rules hold in THIS module", and the audit is checking that the prose never quietly widens the scope the test actually enforces.
