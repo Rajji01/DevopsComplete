@@ -49,7 +49,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.SERVICE_UNAVAILABLE, "Inventory unavailable", "Try again later");
     }
 
-    // two concurrent first-time requests with the same Idempotency-Key
+    // Last resort for an unexpected constraint violation. The Idempotency-Key race no longer lands
+    // here: placeOrder catches it and returns the winner's order (Walk 45); this now only fires for
+    // a constraint we did not anticipate (which is worth the 409 + a look at the logs).
     @ExceptionHandler(DataIntegrityViolationException.class)
     ProblemDetail handleConflict(DataIntegrityViolationException ex) {
         return problem(HttpStatus.CONFLICT, "Concurrent request", "Request is already being processed, retry");
