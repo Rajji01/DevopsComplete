@@ -82,7 +82,7 @@ The principle the team wrote down: *a state where **no money has moved** (PENDIN
 <details>
 <summary>E — Spot-the-flaw</summary>
 
-10. Order X reserves stock → `CONFIRMED` → `OrderConfirmed` emitted. payment-service is briefly lagging (pod restart), so `PaymentCaptured` is delayed by ~3 minutes. At minute 2, the "simplified" reconciler sees X still `CONFIRMED` and auto-cancels it: `release` stock + `CANCELLED`. At minute 3, payment-service's charge **succeeds** and emits `PaymentCaptured` — but order-service's `onPaymentCaptured` only moves `CONFIRMED` orders, and X is now `CANCELLED`, so it's a no-op. Result: **the customer's card was charged, the stock was given away, and the order says CANCELLED** — money lost, no product, no record. It violated the principle: `CONFIRMED` is a "money might have moved" state and must never be auto-cancelled.
+10. Order X reserves stock → `CONFIRMED` → `OrderConfirmed` emitted. payment-service is briefly lagging (pod restart), so `PaymentCaptured` is delayed by ~3 minutes. At minute 2, the "simplified" reconciler sees X still `CONFIRMED` and auto-cancels it: `release` stock + `CANCELLED`. At minute 3, payment-service's charge **succeeds** and emits `PaymentCaptured` for an order that is now `CANCELLED`. Before Walk 43 that was a silent no-op — **card charged, stock given away, order says CANCELLED, money lost**. Since Walk 43 there is a backstop: a capture on a `CANCELLED` order moves it to `REFUND_PENDING` and the refund saga returns the money. But the backstop doesn't excuse the design error — the customer still sees a charge + days-later refund, and refunds are not free. The principle stands: `CONFIRMED` is a "money might have moved" state and must never be auto-cancelled.
 </details>
 
 ---

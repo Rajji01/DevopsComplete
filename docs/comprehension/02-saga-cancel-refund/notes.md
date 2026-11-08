@@ -17,7 +17,7 @@ Aur PAID order ka cancel seedha delete/release isliye galat hai kyunki **paisa c
 1. `OrderService.placeOrder` → inventory reserve (REST) → `CONFIRMED` + `OrderConfirmed` event (outbox).
 2. payment-service `OrderConfirmedListener.charge` → gateway charge → `payment` row + `PaymentCaptured`/`PaymentFailed` ek local txn (outbox).
 3. order-service `PaymentEventListener`:
-   - `PaymentCaptured` → `onPaymentCaptured` → sirf `CONFIRMED` ho to `PAID`.
+   - `PaymentCaptured` → `onPaymentCaptured` → `CONFIRMED` ho to `PAID`; **`CANCELLED` ho to (cancel/charge race, Walk 43) `REFUND_PENDING`** — charge in-flight tha jab customer ne cancel kiya, paisa wapas aana hai, wahi refund saga chalti hai.
    - `PaymentFailed` → `onPaymentFailed` → `release` stock + `CANCELLED("payment failed: …")`. **(compensation — money kabhi capture nahi hua)**
 
 **Refund saga (PAID cancel):**

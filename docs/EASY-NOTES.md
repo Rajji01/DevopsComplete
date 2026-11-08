@@ -261,6 +261,7 @@ Ab `isNew()==true` → `persist()` → sidha INSERT, SELECT gaya.
 4. order-service `payments.events` sunta hai: Captured → `PAID`; Failed → **compensation**: inventory release (idempotent) + `CANCELLED` + `OrderCancelled` event.
 5. notification-service har step pe customer ko batata hai.
 6. Har consumer idempotent (eventId), har producer outbox. Isliye koi service ghante bhar down rahe to bhi kuch gum nahi hota, sirf late hota hai (consumer lag alert).
+7. **Late event ≠ duplicate (Walk 43):** customer ne CONFIRMED order cancel kiya jab charge in-flight tha (lag = minutes ki window) → `PaymentCaptured` CANCELLED order pe aata hai. Pehle ye chupchaap drop hota (paisa gaya!); ab compensation: order `REFUND_PENDING` → wahi refund saga paisa wapas karta hai. **Choreography ka rule: har "ye state ho hi nahi sakti" ek state HAI.**
 
 **Kab kya choose karo:** Customer wait kar raha hai aur jawab chahiye → orchestration (ya sync call). Background flow, multiple reactions, services loosely coupled chahiye → choreography. Choreography ka cost: flow ek jagah dikhta nahi; isliye tracing zaroori hai.
 

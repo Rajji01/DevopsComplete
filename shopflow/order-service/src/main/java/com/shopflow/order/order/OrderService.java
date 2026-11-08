@@ -6,6 +6,7 @@ import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -66,7 +67,27 @@ public class OrderService {
             }
         }
 
-        Order order = orderRepository.save(Order.pending(sku, quantity, idempotencyKey, caller.customerId()));
+        Order order;
+        try {
+            order = orderRepository.save(Order.pending(sku, quantity, idempotencyKey, caller.customerId()));
+        } catch (DataIntegrityViolationException e) {
+            // Two requests with the same Idempotency-Key raced past the pre-check above (a double
+            // click lands both before either commits); the unique index on idempotency_key made one
+            // of them lose. Same answer as inventory's reservation race (Walk 45): the loser returns
+            // the winner's order instead of a 409 — the pre-check is an optimization, the constraint
+            // is the guarantee, and this catch is the recovery.
+            var winner = idempotencyKey == null ? java.util.Optional.<Order>empty()
+                    : orderRepository.findByIdempotencyKey(idempotencyKey);
+            if (winner.isEmpty()) {
+                throw e; // some other constraint: not the key race, don't swallow it
+            }
+            if (!winner.get().isOwnedBy(caller.customerId())) {
+                throw new IdempotencyKeyConflictException(idempotencyKey);
+            }
+            meterRegistry.counter("orders.idempotency.race").increment();
+            log.info("idempotency race for key {}: returning winner order {}", idempotencyKey, winner.get().getId());
+            return new PlacedOrder(winner.get(), false);
+        }
         try {
             inventoryClient.reserve(order.getOrderRef(), sku, quantity);
             order.confirm();

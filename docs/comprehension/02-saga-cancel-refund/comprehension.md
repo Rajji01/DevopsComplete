@@ -10,7 +10,7 @@
 
 ShopFlow has no central "order manager" that drives the whole flow. Each service reacts to the previous step's event — **choreography**. Placing an order reserves stock over REST (the customer needs an answer now); everything after that travels over Kafka.
 
-When stock is reserved, the order is `CONFIRMED` and an `OrderConfirmed` event goes out. payment-service listens, charges the card through a `PaymentGateway`, writes a `payment` row and a `PaymentCaptured` (or `PaymentFailed`) event in **one local transaction**, and publishes it. order-service listens back: `PaymentCaptured` → `PAID`; `PaymentFailed` → release the stock and `CANCELLED`. Only orders still in `CONFIRMED` are moved, so a duplicate event is a no-op.
+When stock is reserved, the order is `CONFIRMED` and an `OrderConfirmed` event goes out. payment-service listens, charges the card through a `PaymentGateway`, writes a `payment` row and a `PaymentCaptured` (or `PaymentFailed`) event in **one local transaction**, and publishes it. order-service listens back: `PaymentCaptured` → `PAID`; `PaymentFailed` → release the stock and `CANCELLED`. Duplicates are no-ops (`processed_event` dedupe + status guards). One late-event case is **not** a no-op (Walk 43): a `PaymentCaptured` that lands on an order the customer already **CANCELLED** (cancel/charge race — the charge was in flight) moves it to `REFUND_PENDING` and re-enters the refund saga, because money was actually taken and must come back.
 
 Now the hard case: **the customer cancels an order that is already `PAID`.** You cannot just delete the order or release the stock — the money has already left the customer's card. Deleting would leave them charged for nothing. So cancelling a paid order is **not a delete; it is a refund saga**:
 

@@ -233,6 +233,36 @@ class OrderServiceApplicationTests {
     }
 
     @Test
+    void concurrentRequestsWithTheSameIdempotencyKeyCreateOnlyOneOrder() throws Exception {
+        // Both requests pass the findByIdempotencyKey pre-check before either commits (a double
+        // click); the unique index makes one save lose. Walk 45: the loser must return the winner's
+        // order (like inventory's reservation race), never a 409/500 and never a second order.
+        stubReserve(201);
+        var barrier = new java.util.concurrent.CyclicBarrier(2);
+        var bodies = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+        Runnable attempt = () -> {
+            try {
+                barrier.await();
+                bodies.add(mockMvc.perform(createOrder("PS5-SLIM", 1).header("Idempotency-Key", "race-key-1"))
+                        .andReturn().getResponse().getContentAsString());
+            } catch (Exception e) {
+                bodies.add("ERROR " + e);
+            }
+        };
+        Thread t1 = new Thread(attempt);
+        Thread t2 = new Thread(attempt);
+        t1.start();
+        t2.start();
+        t1.join(10_000);
+        t2.join(10_000);
+
+        assertThat(bodies).hasSize(2).noneMatch(b -> b.startsWith("ERROR"));
+        var ids = bodies.stream().map(b -> JsonPath.<Integer>read(b, "$.id")).distinct().toList();
+        assertThat(ids).as("both callers must see the SAME order").hasSize(1);
+        inventory.verify(1, postRequestedFor(urlEqualTo("/api/v1/reservations")));
+    }
+
+    @Test
     void cancelReleasesReservedStock() throws Exception {
         stubReserve(201);
         inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*")).willReturn(aResponse().withStatus(204)));
