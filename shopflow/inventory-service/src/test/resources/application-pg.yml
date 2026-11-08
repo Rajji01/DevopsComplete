@@ -1,0 +1,6 @@
+# Used only by PostgresSchemaValidationTest in CI's postgres-smoke job (real Postgres on localhost).
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/inventory
+    username: postgres
+    password: postgres

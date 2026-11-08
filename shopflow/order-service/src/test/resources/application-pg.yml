@@ -1,0 +1,8 @@
+# Used only by PostgresSchemaValidationTest in CI's postgres-smoke job: a real Postgres
+# service container on localhost. Everything else (Kafka etc.) keeps application.yml defaults;
+# a missing broker does not block context startup.
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/orders
+    username: postgres
+    password: postgres

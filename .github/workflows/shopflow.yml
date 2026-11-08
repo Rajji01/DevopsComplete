@@ -83,6 +83,47 @@ jobs:
           name: surefire-reports
           path: shopflow/**/target/surefire-reports/
 
+  postgres-smoke:
+    # Every other test runs on H2; production runs Postgres. This job boots each service's full
+    # Spring context (Flyway DDL + ddl-auto=validate) against a real Postgres — the engine can
+    # reject types H2 forgives (e.g. Hibernate 6's Instant -> TIMESTAMP_UTC vs plain timestamp).
+    name: Schema vs real Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Create one database per service
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for db in orders inventory payments notifications; do
+            psql -h localhost -U postgres -c "create database $db"
+          done
+      - name: Boot every service context against Postgres
+        env:
+          PG_SMOKE: "true"
+        # -Dtest selects only the smoke test in each service module;
+        # failIfNoSpecifiedTests=false lets modules without it (shopflow-outbox) pass
+        run: |
+          ./mvnw -B test -Dtest=PostgresSchemaValidationTest \
+            -Dsurefire.failIfNoSpecifiedTests=false
+
   validate-manifests:
     name: Validate K8s + monitoring config
     runs-on: ubuntu-latest
