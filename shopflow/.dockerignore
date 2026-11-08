@@ -7,3 +7,7 @@ docker-compose.yml
 *.md
 argocd/
 Jenkinsfile
+# not inputs to the image either; without these a helm/loadtest edit invalidates
+# the COPY . . layer and busts the GHA build cache of all 4 services (Walk 49)
+helm/
+loadtest/

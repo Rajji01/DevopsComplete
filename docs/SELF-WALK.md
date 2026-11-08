@@ -756,3 +756,13 @@ Scope: `infra/ansible/` (the one-VM compose deploy), the last unreviewed corner.
 The rest of the role reviewed clean: template→systemd unit→started, readiness poll (`uri` + `retries: 30/delay: 10` — module failure retries under `until`), handler restarts on checkout/unit change.
 
 Walk 48 lesson: **syntax checks validate shape, never truth.** A branch name, a metric name (Walk 36's story), a URL — all look identical to the linter whether right or wrong. Anything that names an external thing needs one real execution, or at least a check against the real system (`git ls-remote` here), before "validated" means anything.
+
+## Walk 49: the helm edit that rebuilt four images (Nov 8, 2026)
+
+Scope: the Dockerfiles + build context. Both Dockerfiles reviewed clean (multi-stage, BuildKit `.m2` cache mount, layered jar extraction, fixed non-root UID 10001, `MaxRAMPercentage=75` + `ExitOnOutOfMemoryError`; the distroless variant keeps parity and documents its preStop trade-off honestly). The find was next to them:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `shopflow/.dockerignore` excluded k8s/, monitoring/, *.md — but **not `helm/` and `loadtest/`** | The CI build uses `cache-from/cache-to: type=gha`, and stage 1 is `COPY . .` — so the cache key includes the whole build context. An edit to a helm values file or the k6 script (never inputs to the image) invalidated the COPY layer and re-ran `mvn package` for **all four services** on the next CI run | Added `helm/` and `loadtest/` to `.dockerignore`. (Deliberately did NOT add `.trivyignore`/`.hadolint.yaml` — they live at the repo root, outside the `shopflow/` build context; dead ignore entries are their own kind of doc-rot) |
+
+Walk 49 lesson: **with `COPY . .` + a remote layer cache, your `.dockerignore` IS your cache key.** Everything in the context that isn't an input to the image is a false rebuild trigger. The checklist: for each top-level path in the context, ask "does the image change if this changes?" — if no, ignore it.

@@ -8,12 +8,15 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ## ▶ RESUME HERE — 2026-11-08
 **Mode:** **AUTONOMOUS self-walk + teach, non-stop** (Abhishek ne 2026-11-08 ko wapas on kiya: "self walk krta rah, concept via project, karta rah"). Goal: ShopFlow improve karte hue Abhishek ko DevOps+Java+interview king banana — asli bug/gap dhoondho+fix+verify+commit, aur concepts project se samjhao. Ruko mat, baar-baar na poochho.
-**State:** in-sync; Walks done **up to 48**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
+**State:** in-sync; Walks done **up to 49**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
 **Verify note:** is machine pe JDK21/Docker **ho bhi sakta, nahi bhi** (session pe depend) — jo chale chalao, warna CI (GitHub token `git credential fill` se logs/status) verifier.
 **Start topic:** **E — app correctness** (interview gold): refund-decline saga (Walk 20 → `payment-service/OrderConfirmedListener.refund`, `order-service/.../OrderService.onRefundFailed`), outbox persist (Walk 21 → `shopflow-outbox/OutboxEvent`), flaky-test fix (Walk 11 → `OutboxCleanupTest`). Self-test interactive: `labs/comprehension.html`.
 **Study map (jo humne banaya):** neeche ke entries + `SELF-WALK.md` (Walks 8–21, har change ki poori story = textbook). Deep-dives: `INDEXING-HIBERNATE.md`, `LLD-DESIGN-PATTERNS.md`, `HLD-SYSTEM-DESIGN.md`, `VISUAL-FLOWS.md`.
 
 ---
+
+## 2026-11-08 — CLI (Opus 4.8) — Walk 49 (.dockerignore = cache key)
+**Branch:** `master`. **Found:** CI buildx `type=gha` cache + `COPY . .` ke saath `shopflow/.dockerignore` mein `helm/` + `loadtest/` missing — helm values ya k6 script ki edit (image ka input nahi) chaaron services ka COPY layer invalidate karke poora `mvn package` dobara chalwati thi. **Fix:** dono add; `.trivyignore`/`.hadolint.yaml` jaan-bujh ke NAHI (repo root pe hain, context se bahar — dead entries bhi doc-rot hain). Dockerfiles khud dono clean (alpine + distroless parity). **Lesson:** `COPY . .` + remote cache mein .dockerignore hi cache key hai. **GitHub degradation note:** a731e36 ka Lint job `setup-tflint` download pe 504/502 se do baar gira (checkout fetch bhi) — delayed rerun scheduled; code-side jobs (tests, k6 compile, 4×images+SBOM) sab green the.
 
 ## 2026-11-08 — CLI (Opus 4.8) — Walk 48 (ansible deploys a nonexistent branch)
 **Branch:** `master`. **Found:** `infra/ansible/group_vars/shopflow.yml` mein `repo_version: main` — par repo mein sirf `master` hai (`git ls-remote` verified; `main` kabhi tha hi nahi). `make ansible-deploy` pehle task pe hamesha fail hota. `--syntax-check` ise kabhi nahi pakad sakta — galat VALUE syntactically perfect hai. **Fix:** `repo_version: master` + comment. Baaki role clean (readiness poll retries sahi, handlers sahi). Workflow ka main-only publish-gating alag, documented cheez hai. **Lesson:** syntax check shape validate karta hai, sach nahi — jo cheez external naam leti hai (branch/metric/URL) use ek baar asli system ke against check karo.
