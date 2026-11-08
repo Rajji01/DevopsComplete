@@ -997,3 +997,25 @@ Docs-only walk: the repo's most-repeated finding class (Walks 48/50/58/65/66/67 
 - **Quick map** row: "gate flip kiya, phir bhi pipeline tuta (alag error)" → census rule.
 
 No code changed.
+
+## Walk 70: four alerts nobody ever tested (Nov 8, 2026)
+
+Scope: `alert-rules.yml`, full semantic pass — every expr read against the metrics it names (ServiceDown's `job="shopflow"` matches `prometheus.yml`'s one `job_name` ✓; every metric name verified in Walk 62) and against the test file that is supposed to pin it.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| Of the 10 alerts, four had **no promtool test at all**: `HighP99Latency`, `ServiceDown`, `KafkaConsumerLagHigh`, `PaymentFailureRateHigh` — including two pages | Walk 36's own lesson ("an alert that was never tested is a hope, not an alert") had been applied only to alerts added *since*; the founding four were grandfathered in untested. `HighP99Latency` is exactly the kind that fails silently: one histogram_quantile subtlety (e.g. all mass in `+Inf` returns the highest finite bucket bound — `> 1` would then never fire with 1.0 as the top bucket) and the ticket never comes | 8 new test cases (now 17): p99 fires at ~2.5s / stays silent when fast / **stays silent when only `/actuator` is slow** (the `uri!~` filter now has a test earning its keep), ServiceDown pages with the right instance label, lag tickets at 2000 and not at 500, payment-failure pages at 60% and not at 10% (declined cards are normal) |
+
+Walk 70 lesson: **coverage debt hides at the founding — rules written before the "every alert gets a test" norm existed never got back-filled, and nothing flags them.** The audit is one grep: every `alert:` name must appear in the test file at least twice (a firing case and a silence case). The silence cases are half the value: they pin what must NOT wake a human.
+
+## Walk 71: the double-money windows and the contract that never mentioned them (Nov 9, 2026)
+
+Scope: `OrderConfirmedListener` end-to-end — the money path — against the Walk 53/55 concurrency lens plus the "crash between two effects" lens.
+
+The DB side is tight: charge dedupes by eventId PK (a racing loser hits the PK, rolls back, retries into the exists-check), refund is state-guarded by CAPTURED and every no-op branch logs *why* (Walk 42). But two windows move money **outside** the transaction's protection:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| (1) Crash between `gateway.charge()` and the commit: the row never lands, redelivery re-runs `charge()`. (2) A rebalance can deliver the same event to two consumers: both pass `existsById`, both call the gateway; the DB converges (PK) but the processor saw **two charges**. Same shape for `refund()`. Nothing anywhere said what makes this safe — `PaymentGateway`'s javadoc was one line about swapping implementations | The thing that makes at-least-once + remote money movement safe is **processor-side idempotency keyed on orderRef** (Stripe `Idempotency-Key`, Razorpay `receipt`) — and the person who writes the real adapter learns the requirements from the interface contract. A silent contract here means the first real integration double-charges under exactly the failures Kafka guarantees will happen | The contract now states it: orderRef IS the idempotency key, the adapter MUST send it, with both failure windows named — and why the ordering is deliberate (commit-first-charge-after is worse: a crash then fakes a CAPTURED row for money never moved). Listener javadoc carries the honest caveat. No behavior change: the fake gateway is test-only, and a claim-first "fix" in the listener would trade double-charge for charge-lost |
+
+Walk 71 lesson: **a transaction boundary that contains a remote call has exactly two orderings, and both lose — the only real fix lives on the other side of the wire (idempotency keys), which makes it a CONTRACT requirement, not an implementation detail.** Interfaces that hide a money-safety requirement in the implementor's imagination are how "we retried and charged him twice" post-mortems start.

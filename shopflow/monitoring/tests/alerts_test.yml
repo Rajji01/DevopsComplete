@@ -194,3 +194,121 @@ tests:
       - eval_time: 10m
         alertname: KafkaMessageDeadLettered
         exp_alerts: []
+
+  # 10. HighP99Latency: most requests land in the (1s, 2.5s] bucket -> p99 ~2.5s -> ticket (Walk 70)
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="0.5"}'
+        values: '0+1x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="1.0"}'
+        values: '0+1x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="2.5"}'
+        values: '0+20x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="+Inf"}'
+        values: '0+20x25'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HighP99Latency
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              application: order-service
+            exp_annotations:
+              summary: "order-service: p99 latency above 1s"
+              runbook: docs/runbooks/HighP99Latency.md
+
+  # 10b. everything under 0.5s -> silent
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="0.5"}'
+        values: '0+20x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="1.0"}'
+        values: '0+20x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="2.5"}'
+        values: '0+20x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="+Inf"}'
+        values: '0+20x25'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HighP99Latency
+        exp_alerts: []
+
+  # 10c. ONLY the actuator being slow must not ticket (the uri!~"/actuator.*" filter earns its keep)
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/actuator/prometheus", le="0.5"}'
+        values: '0+1x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/actuator/prometheus", le="1.0"}'
+        values: '0+1x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/actuator/prometheus", le="2.5"}'
+        values: '0+20x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/actuator/prometheus", le="+Inf"}'
+        values: '0+20x25'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HighP99Latency
+        exp_alerts: []
+
+  # 11. ServiceDown: a scrape target gone for 3 minutes -> page (Walk 70)
+  - interval: 1m
+    input_series:
+      - series: 'up{job="shopflow", instance="order-service:8081"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              job: shopflow
+              instance: order-service:8081
+            exp_annotations:
+              summary: "order-service:8081 is not being scraped"
+              runbook: docs/runbooks/ServiceDown.md
+
+  # 12. KafkaConsumerLagHigh: 2000 records behind for 11 minutes -> ticket; 500 -> silent (Walk 70)
+  - interval: 1m
+    input_series:
+      - series: 'kafka_consumer_fetch_manager_records_lag_max{application="notification-service", partition="0"}'
+        values: '2000x15'
+      - series: 'kafka_consumer_fetch_manager_records_lag_max{application="payment-service", partition="0"}'
+        values: '500x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: KafkaConsumerLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              application: notification-service
+            exp_annotations:
+              summary: "notification-service: Kafka consumer lag above 1000 records"
+              runbook: docs/runbooks/KafkaConsumerLagHigh.md
+
+  # 13. PaymentFailureRateHigh: 60% of payments FAILED for >10m -> page (Walk 70)
+  - interval: 1m
+    input_series:
+      - series: 'payments_total{application="payment-service", status="FAILED"}'
+        values: '0+6x25'
+      - series: 'payments_total{application="payment-service", status="CAPTURED"}'
+        values: '0+4x25'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: PaymentFailureRateHigh
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "more than half of all payments are failing"
+              runbook: docs/runbooks/PaymentFailureRateHigh.md
+
+  # 13b. 10% declined cards are normal -> silent
+  - interval: 1m
+    input_series:
+      - series: 'payments_total{application="payment-service", status="FAILED"}'
+        values: '0+1x25'
+      - series: 'payments_total{application="payment-service", status="CAPTURED"}'
+        values: '0+9x25'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: PaymentFailureRateHigh
+        exp_alerts: []

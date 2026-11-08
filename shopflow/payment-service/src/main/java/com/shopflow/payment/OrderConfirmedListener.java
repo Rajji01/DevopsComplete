@@ -17,6 +17,9 @@ import io.micrometer.core.instrument.MeterRegistry;
  * Saga step 2 (choreography): nobody tells payment-service what to do; it reacts to OrderConfirmed.
  * Charge + payment row + outgoing PaymentCaptured/PaymentFailed event are one local transaction
  * (outbox), so a crash can never leave a charge without its event or an event without its charge.
+ * One honest caveat (Walk 71): the gateway call itself cannot join the DB transaction, so a crash
+ * between charge() and the commit re-runs charge() on redelivery — safe ONLY because orderRef is
+ * the gateway idempotency key (see the PaymentGateway contract).
  */
 @Component
 public class OrderConfirmedListener {
