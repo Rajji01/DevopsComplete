@@ -8,12 +8,19 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ## ▶ RESUME HERE — 2026-11-08
 **Mode:** **AUTONOMOUS self-walk + teach, non-stop** (Abhishek ne 2026-11-08 ko wapas on kiya: "self walk krta rah, concept via project, karta rah"). Goal: ShopFlow improve karte hue Abhishek ko DevOps+Java+interview king banana — asli bug/gap dhoondho+fix+verify+commit, aur concepts project se samjhao. Ruko mat, baar-baar na poochho.
-**State:** in-sync; Walks done **up to 51**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
+**State:** in-sync; Walks done **up to 52**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
 **Verify note:** is machine pe JDK21/Docker **ho bhi sakta, nahi bhi** (session pe depend) — jo chale chalao, warna CI (GitHub token `git credential fill` se logs/status) verifier.
 **Start topic:** **E — app correctness** (interview gold): refund-decline saga (Walk 20 → `payment-service/OrderConfirmedListener.refund`, `order-service/.../OrderService.onRefundFailed`), outbox persist (Walk 21 → `shopflow-outbox/OutboxEvent`), flaky-test fix (Walk 11 → `OutboxCleanupTest`). Self-test interactive: `labs/comprehension.html`.
 **Study map (jo humne banaya):** neeche ke entries + `SELF-WALK.md` (Walks 8–21, har change ki poori story = textbook). Deep-dives: `INDEXING-HIBERNATE.md`, `LLD-DESIGN-PATTERNS.md`, `HLD-SYSTEM-DESIGN.md`, `VISUAL-FLOWS.md`.
 
 ---
+
+## 2026-11-08 — CLI (Opus 4.8) — Walk 52 (alertmanager receivers)
+**Branch:** `master`. **Found:** (1) `slack-incidents` ka text single-quoted YAML mein `
+` rakhta tha — single quotes mein wo 2 literal chars hain, Slack message ek line mein `
+` ke saath dikhta. (2) Ticket channel ko runbook link milta hi nahi tha — jabki har ticket alert runbook ke liye hi bana hai. **Fix:** dono receivers double-quoted summary+runbook template; python yaml-parse se real newline verify. Routing/inhibits audit clean. **Lesson:** YAML mein `'
+'` ≠ `"
+"` — quoting semantics hai, style nahi.
 
 ## 2026-11-08 — CLI (Opus 4.8) — Walk 51 (canary gate graded the whole class)
 **Branch:** `master`. **Found:** AnalysisTemplate ka filter `rollouts_pod_template_hash!=""` — par Rollouts ye label **stable pods pe bhi** lagata hai (dono RS isi se manage hote) → gate blended ratio naapta tha. `setWeight: 10` pe 15%-errors wala canary blend ko sirf ~1.5% (<2%) pe le jaata → **kharab canary promote**. Jitna chhota (safe) pehla step, utna andha gate. **Fix:** template ab `canary-hash` arg leta hai (`rollouts_pod_template_hash="{{args.canary-hash}}"`); canary Rollout + blue-green prePromotion dono `valueFrom: podTemplateHashValue: Latest` pass karte. Template pe honest note: cluster-Prometheus ko pod labels labelmap karne chahiye. **Verify:** CI (kubeconform + Rollouts CRD schemas); live run labs ka. **Baaki green bhi:** `a731e36` ka delayed rerun2 success — Walks 42–48 ab poora verified; Walk 49+50 push `6ddbb10` CI pending.
