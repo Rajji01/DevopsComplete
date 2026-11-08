@@ -96,8 +96,10 @@ jobs:
         # download to files with retries, THEN extract: "curl | tar" fails the job on one truncated
         # byte and a retry mid-pipe can't help tar (this exact flake failed a run — Walk 44)
         run: |
-          curl -fsSL --retry 3 --retry-delay 5 -o kustomize.tar.gz https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_amd64.tar.gz
-          curl -fsSL --retry 3 --retry-delay 5 -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          curl -fsSL --retry 3 --retry-delay 5 -o kustomize.tar.gz \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_amd64.tar.gz
+          curl -fsSL --retry 3 --retry-delay 5 -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
           curl -fsSL --retry 3 --retry-delay 5 -o helm.tar.gz https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz
           tar xzf kustomize.tar.gz
           tar xzf kubeconform.tar.gz
@@ -118,7 +120,8 @@ jobs:
           kubeconform -strict -summary -schema-location default -schema-location "$CRDS" k8s/policies/kyverno/*.yaml
       - name: "Kyverno policies: prod overlay passes, bad pod fails"
         run: |
-          curl -fsSL --retry 3 --retry-delay 5 -o kyverno.tar.gz https://github.com/kyverno/kyverno/releases/download/v1.19.1/kyverno-cli_v1.19.1_linux_x86_64.tar.gz
+          curl -fsSL --retry 3 --retry-delay 5 -o kyverno.tar.gz \
+            https://github.com/kyverno/kyverno/releases/download/v1.19.1/kyverno-cli_v1.19.1_linux_x86_64.tar.gz
           tar xzf kyverno.tar.gz kyverno
           POLICIES=$(ls k8s/policies/kyverno/*.yaml | grep -v verify-image-signature)   # signature check needs a registry
           kustomize build k8s/overlays/prod > /tmp/prod.yaml
@@ -214,12 +217,20 @@ jobs:
           trivyignores: .trivyignore   # triaged, documented accepts (see the file); new CVEs still fail
       # Supply chain: an SBOM (what is inside the image) is kept with the build so a future CVE
       # can be answered with "which images contain log4j 2.14?" without rebuilding anything.
+      # Direct pinned syft instead of anchore/sbom-action: the action's own syft download has no
+      # retry and "failed to install syft" flaked 3 of 4 parallel image jobs (same Walk 44 class
+      # of failure as the curl|tar installs — a bad hour for GitHub release downloads kills CI).
       - name: SBOM (CycloneDX)
-        uses: anchore/sbom-action@v0
+        run: |
+          curl -fsSL --retry 3 --retry-delay 5 -o syft.tar.gz \
+            https://github.com/anchore/syft/releases/download/v1.57.0/syft_1.57.0_linux_amd64.tar.gz
+          tar xzf syft.tar.gz syft
+          ./syft ${{ env.IMAGE }}:${{ github.sha }} -o cyclonedx-json > sbom-${{ matrix.service }}.cdx.json
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
         with:
-          image: ${{ env.IMAGE }}:${{ github.sha }}
-          format: cyclonedx-json
-          artifact-name: sbom-${{ matrix.service }}.cdx.json
+          name: sbom-${{ matrix.service }}.cdx.json
+          path: sbom-${{ matrix.service }}.cdx.json
       - name: Log in to GHCR
         if: github.ref == 'refs/heads/main'
         uses: docker/login-action@v4
@@ -291,7 +302,8 @@ jobs:
       - name: Install kustomize
         working-directory: ${{ runner.temp }}
         run: |
-          curl -fsSL --retry 3 --retry-delay 5 -o kustomize.tar.gz https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_amd64.tar.gz
+          curl -fsSL --retry 3 --retry-delay 5 -o kustomize.tar.gz \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_amd64.tar.gz
           tar xzf kustomize.tar.gz
           echo "$PWD" >> "$GITHUB_PATH"
       - name: Set image tags to the commit SHA
