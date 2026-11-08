@@ -903,3 +903,11 @@ Scope: `InventoryClient` + the whole `resilience4j:` block, adversarially, again
 Nothing to change. **Verified clean** — Walks 39/42/47 already closed this area's real gaps; today's pass confirms no regression and no next-layer trap.
 
 Walk 61 lesson: a resilience review is four questions — what wraps what, what exactly gets retried, what does the breaker count vs ignore, and what's the worst-case latency budget. If all four have deliberate answers in config + comments that match the library's real semantics, the stack is done; don't invent a fifth knob to turn.
+
+## Walk 62: every dashboard query, name-checked (Nov 8, 2026)
+
+Scope: `shopflow-red.json` — all 16 panel expressions extracted and verified against what actually exists (pattern #2's favourite hiding place: a dashboard quietly graphing a metric nobody emits).
+
+Verified: the 5 `service:`/`sli:` recording-rule names all exist in `recording-rules.yml`; `orders_total`/`payments_total`/`payments_refund_failed_total`/`kafka_dead_lettered_total`/`orders_stuck_confirmed`/`outbox_unpublished` all match their Micrometer registrations (dot→underscore + `_total` for counters); `kafka_consumer_fetch_manager_records_lag_max`, `resilience4j_circuitbreaker_not_permitted_calls_total` and the two Hikari gauges are standard binder names. **No orphan queries, no change.**
+
+Walk 62 lesson: a dashboard is a pile of claims about metric names, and nothing validates it — promtool checks rules, kubeconform checks manifests, but a Grafana JSON panel pointing at a typo'd metric renders a perfectly healthy empty graph. Extract-and-grep is the whole audit, and it's five minutes.
