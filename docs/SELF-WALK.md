@@ -732,3 +732,15 @@ Scope: `placeOrder`'s Idempotency-Key path. The sequential case is covered (pre-
 Note the layering: the **pre-check is an optimization, the constraint is the guarantee, the catch is the recovery** — all three are needed. (The race loser can see the winner's order still `PENDING` if it's mid-flight; that's the same contract as polling `GET /orders/{id}`.)
 
 Walk 45 lesson: **a read-then-write uniqueness check is always a race; the DB constraint is the real guard, so code must expect the constraint to fire and recover, not 500/409.** When one service in the repo already solves a shape correctly (reservation race), every other instance of that shape should match it — self-inconsistency is where reviewers (and interviewers) dig.
+
+## Walk 47: the load test that would fail itself for working correctly (Nov 8, 2026)
+
+Scope: `loadtest/flash-sale.js`, the one file this block hadn't reviewed. Its threshold comment says "5xx are failures; 409/429 are not" — but k6's `http_req_failed` counts **every 4xx** as a failure unless you override the expected statuses, and no `setResponseCallback` existed anywhere in the script.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `http_req_failed: ['rate<0.01']` with k6's default failure definition | The flash sale **by design** produces 409s (297 of 300 buyers must lose — stock is 3) wait, no: losers get 201+REJECTED via the API's design; but the rate limiter (50/s/pod) throttling the 300-VU burst produces **429s**, and those are k6-"failed" by default. The run would breach its own 1% threshold *because the rate limiter worked* — a gate that fails on correct behaviour trains people to delete the gate | `http.setResponseCallback(http.expectedStatuses({min:200,max:399}, 409, 429))` — now "failed" means what the comment always claimed: 5xx and transport errors. (409 included for safety: the API returns conflict for double-cancel etc.) |
+
+Honest verification note: no Docker locally and CI only *compiles* the k6 script, so this is verified by k6's documented semantics + the compile job; the first real `k6 run` will confirm. The bug class is the same as Walk 36/40 — **a claim in a comment that the code never implemented** — just in the test layer this time.
+
+Walk 47 lesson: **k6's `http_req_failed` is opinionated: 4xx = failure unless you say otherwise.** Any API that deliberately returns 409/429 under load needs `expectedStatuses`, or the load test fails precisely when the system behaves. Comments that describe intended behaviour are claims to verify, not documentation to trust.

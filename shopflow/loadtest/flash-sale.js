@@ -33,6 +33,11 @@ export const options = {
   },
 };
 
+// Without this, k6 counts EVERY 4xx as http_req_failed — so the expected 409s (out of stock)
+// and 429s (rate limiter doing its job) would breach the rate<0.01 threshold and fail the run
+// for behaving correctly (Walk 47). Expected = 2xx/3xx + the two deliberate business statuses.
+http.setResponseCallback(http.expectedStatuses({ min: 200, max: 399 }, 409, 429));
+
 const BASE = __ENV.BASE_URL || 'http://localhost:8081';
 const INVENTORY = __ENV.INVENTORY_URL || 'http://localhost:8082';
 const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${__ENV.TOKEN}` };

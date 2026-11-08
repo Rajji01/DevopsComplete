@@ -8,12 +8,15 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ## ▶ RESUME HERE — 2026-11-08
 **Mode:** **AUTONOMOUS self-walk + teach, non-stop** (Abhishek ne 2026-11-08 ko wapas on kiya: "self walk krta rah, concept via project, karta rah"). Goal: ShopFlow improve karte hue Abhishek ko DevOps+Java+interview king banana — asli bug/gap dhoondho+fix+verify+commit, aur concepts project se samjhao. Ruko mat, baar-baar na poochho.
-**State:** in-sync; Walks done **up to 46** (46 = clean security/infra sweep). (Earlier a GUIDED-STUDY pause tha; ab lifted.)
+**State:** in-sync; Walks done **up to 47**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
 **Verify note:** is machine pe JDK21/Docker **ho bhi sakta, nahi bhi** (session pe depend) — jo chale chalao, warna CI (GitHub token `git credential fill` se logs/status) verifier.
 **Start topic:** **E — app correctness** (interview gold): refund-decline saga (Walk 20 → `payment-service/OrderConfirmedListener.refund`, `order-service/.../OrderService.onRefundFailed`), outbox persist (Walk 21 → `shopflow-outbox/OutboxEvent`), flaky-test fix (Walk 11 → `OutboxCleanupTest`). Self-test interactive: `labs/comprehension.html`.
 **Study map (jo humne banaya):** neeche ke entries + `SELF-WALK.md` (Walks 8–21, har change ki poori story = textbook). Deep-dives: `INDEXING-HIBERNATE.md`, `LLD-DESIGN-PATTERNS.md`, `HLD-SYSTEM-DESIGN.md`, `VISUAL-FLOWS.md`.
 
 ---
+
+## 2026-11-08 — CLI (Opus 4.8) — Walk 47 (k6 self-failing threshold) + runbook/diagram syncs
+**Branch:** `master`. **Walk 47:** `flash-sale.js` ka comment kehta "409/429 are not failures" par k6 default mein **har 4xx** ko `http_req_failed` ginta hai — `setResponseCallback` tha hi nahi. 300-VU burst pe rate limiter ke 429s threshold (`rate<0.01`) tod dete — **test sahi behaviour pe fail hota**. Fix: `http.expectedStatuses({min:200,max:399}, 409, 429)`. Verify: k6 semantics + CI compile job (local run Docker ke bina possible nahi — honest note walk mein). **Syncs:** OrdersStuckConfirmed runbook mein 2 naye REFUND_PENDING causes (W42 no-payment-row log, W43 race = normal compensation), VISUAL-FLOWS #16 zero-trust network map. **Decision:** `orders.cancel.charge.race` ko alert NahI — compensation automatic, failure modes pehle se alerted (restraint bhi design hai).
 
 ## 2026-11-08 — CLI (Opus 4.8) — Walk 46: security/infra sweep (all clean, no change)
 **Branch:** `master`. Zero-trust layer ka full audit — **sab verified, koi change nahi banta** (honesty: ye bhi result hai):
