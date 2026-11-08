@@ -86,6 +86,8 @@ pipeline {
         }
 
         stage('Push images') {
+            // NOTE (Walk 67): 'main' does not exist (master is canonical) — this gate is one of the
+            // six copies of the publish-on-main decision (STATE §4 / Walk 50); flip them together.
             when { branch 'main' }
             steps {
                 withCredentials([usernamePassword(credentialsId: 'ghcr', usernameVariable: 'USER', passwordVariable: 'TOKEN')]) {

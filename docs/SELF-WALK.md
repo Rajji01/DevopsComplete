@@ -964,3 +964,15 @@ Clean parts: both `CorsConfig`s default to `http://localhost:*` origin patterns 
 | The `shopflow-web` client had `"webOrigins": ["*"]` while its `redirectUris` were already scoped to `http://localhost:*` | The wildcard tells Keycloak to answer CORS for its token/userinfo endpoints from **any** origin — broader than the client's own redirect scope, and a copy-paste seed: dev realm exports have a way of becoming prod realm imports. Keycloak has a dedicated idiom for "same as my redirect URIs": `"+"` | `webOrigins: ["+"]` — origins now derive from the redirect URIs, so tightening one tightens both. Same file serves compose and k8s (one source, no second copy to drift) |
 
 Walk 66 lesson: `*` in any security-adjacent list is a claim that "anyone" is the right audience — almost always it's a stand-in for "whatever my redirect URIs say", and Keycloak literally spells that `+`. Grep your realm exports for `"*"` before they graduate from dev.
+
+## Walk 67: the complete census of "main" (Nov 8, 2026)
+
+Scope: `argocd/` — the one deploy surface no walk had opened — plus, on finding the problem there, finally doing what Walk 58's lesson prescribed: grep the *whole* repo and IaC for the branch literal instead of finding one copy per walk.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `application-prod.yaml` has `targetRevision: main` — and the Jenkinsfile gates its `Push images` and `Pin prod overlay` stages on `when { branch 'main' }`. With Walks 50/58 that makes the publish-on-main decision live in **six copies across five systems**: GitHub workflow (8 ifs), Kyverno keyless subject, AWS OIDC trust `sub`, Argo CD Application, Jenkins ×2 | The Argo CD copy is the sharpest: `kubectl apply` this Application today and it errors `revision main not found` — the *prod GitOps entry point* points at a void. And each copy fails differently (skipped job, rejected pod, STS AccessDenied, sync error, skipped stage), so flipping N−1 of them still leaves a broken pipeline with a misleading error at the Nth | NOTE on the Application + the Jenkinsfile stage; **STATE §4 now carries the complete census** so decision (a) is a checklist, not an archaeology project. Gates themselves unchanged — same outward-facing-decision stance as Walks 50/58 |
+
+Argo CD manifests otherwise reviewed clean: dev app is manual-sync on HEAD (inspect-then-apply), prod has prune+selfHeal+ServerSideApply, retry backoff, the HPA `ignoreDifferences` on `/spec/replicas` matching the no-`spec.replicas` deployment choice, and the finalizer documented.
+
+Walk 67 lesson: when you find the second copy of a constant, stop and take the census — the cost of the full grep is minutes, and every copy found later costs a walk (this one took three: 50, 58, 67). "How many systems know this fact?" belongs in the first copy's review.
