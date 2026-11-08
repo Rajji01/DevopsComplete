@@ -626,6 +626,16 @@ Har dependency ke liye poochho: **slow ho to? down ho to? galat jawab de to?**
 ### Step 6: Self-walk regularly
 - Mahine mein ek baar `SELF-WALK.md` wala checklist chalao. Code padho jaise reviewer. Jo mile, fix ya likho.
 
+### Step 7: Ek fact ki N copies gino (census rule — Walks 48/50/58/67)
+
+**Problem:** Humne "publish `main` branch pe hota hai" wala fact dhoondha — **chhe copies, paanch systems** mein: GitHub workflow ke 8 `if:`, Kyverno keyless `subject`, AWS OIDC trust ka `sub` (Terraform), Argo CD Application ka `targetRevision`, Jenkinsfile ke 2 `when { branch }`. Aur `main` exist hi nahi karta. Har copy **alag tarah** fail hoti: skipped job, rejected pod, STS AccessDenied, "revision not found", skipped stage — N−1 flip karo to Nth jagah pe sabse confusing error milta.
+
+**Rule:** Jaise hi kisi constant ki **doosri** copy mile (branch name, port, retention, pool size, metric name) — ruk ke **census** lo: `grep -rn "<literal>"` poore repo + IaC + CI pe. Har copy ya to ek source se derive karo (var, configmap, `"+"` jaise idioms), ya decision-doc mein poori list likho taaki flip ek checklist ho, archaeology nahi.
+
+**ShopFlow mein:** STATE §4 ka publishing decision ab chhao copies list karta hai; connection-budget formula (Walk 65) teen files mein same likha gaya; Keycloak `webOrigins: ["+"]` redirectUris se derive hota hai (Walk 66).
+
+**Ek line mein:** *Doosri copy dikhe to poora grep karo — har baad mein mili copy ek aur outage-shaped surprise hai.*
+
 > Tip: Interview mein "how would you improve this system?" ka jawab yahi 6 steps hain, kisi bhi system ke liye. Pehle measure, phir bottleneck, phir failure modes, phir test+alert+runbook, phir load test, phir repeat.
 
 ---
@@ -804,3 +814,4 @@ ShopFlow: `k8s/base` = RollingUpdate (default), `k8s/rollouts` = Argo Rollouts c
 | `:latest` prod mein ghus gaya | sirf review | Kyverno/Gatekeeper admission policy |
 | Backup hai par restore kabhi nahi kiya | RPO/RTO socha nahi | CronJob/PITR + restore runbook + practice |
 | CI late bolta hai YAML galat hai | shift-left nahi | pre-commit + lint job |
+| Gate flip kiya, phir bhi pipeline tuta (alag error) | ek fact ki N copies (branch/port/retention) | census rule: doosri copy pe poora grep, list decision-doc mein (Step 7) |

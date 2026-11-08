@@ -988,3 +988,12 @@ Clean parts: the template is a faithful parameterisation of the base (same probe
 | The chart rendered `replicas:` whenever a user set it — even with `hpa.enabled: true` (the default). The base's own comment explains the failure: a fixed `replicas` resets the count on every `helm upgrade` and fights the autoscaler. The guard was only a comment in values.yaml — nothing enforced it | This is the classic Helm footgun shape: a convention documented next to a default, silently violated by one values override. HPA scales to 6, the next deploy slams it back to 2, repeat — a sawtooth that looks like a capacity mystery | `{{ fail }}` when both `replicas` and `hpa.enabled` are set: the chart now refuses to render the contradiction, with the reason in the error message. CI's `helm lint` + `template \| kubeconform` verify the happy paths still render |
 
 Walk 68 lesson: **in a chart, a convention that lives only in a values comment is not a guard — `fail` is how a chart states its invariants.** Anywhere two values can contradict each other (fixed count vs autoscaler, both TLS modes, replicas vs PDB minAvailable), the template should refuse, not pick silently.
+
+## Walk 69: teach-back — the census rule (Nov 8, 2026)
+
+Docs-only walk: the repo's most-repeated finding class (Walks 48/50/58/65/66/67 — a constant copied across systems, each copy failing differently) graduated into method:
+
+- **EASY-NOTES Part 6, Step 7** — "Ek fact ki N copies gino": the six-copies-of-`main` story as a worked example, the grep-on-second-copy rule, and the two acceptable end-states (derive from one source, or a complete list in the decision doc).
+- **Quick map** row: "gate flip kiya, phir bhi pipeline tuta (alag error)" → census rule.
+
+No code changed.
