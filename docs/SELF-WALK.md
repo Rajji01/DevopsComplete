@@ -1119,3 +1119,15 @@ Walk 83 lesson: in k6, status 0 exists and every `< N` comparison must decide wh
 ## Walk 84: alert → runbook → README, all twelve accounted for (Nov 9, 2026)
 
 Docs-only audit of CLAUDE.md's rule #2 ("new alert → runbook + test + README row, teeno"): all 12 alert names cross-checked against `docs/runbooks/` files and the README table. Complete — every alert has its runbook and row; the two burn-rate alerts share `CheckoutSLOBurnRate.md` deliberately (same symptom, different window) and both annotations point there; the three non-alert runbooks (restore, rollback, post-mortem template) are the documented extras. With Walk 70's tests, the triad now genuinely holds: **12 alerts × (runbook + README row + firing-and-silence tests).** Verified clean.
+
+## Walk 85: the last unwalked classes, verified clean (Nov 9, 2026)
+
+Scope: the three remaining never-walked classes — `Caller`, payment's `JpaConfig`, inventory's `CacheConfig`.
+
+- **Caller**: `name` = JWT `sub` (set explicitly by `JwtRolesConverter`), `mayAccess` = support-or-owner. The interesting cross-check: support can *read* anything but **cannot cancel** — not because Caller says so, but because the `DELETE` matcher requires `customer`. Two layers, consistent with the realm's "support: read-only" description.
+- **JpaConfig**: `@EntityScan`/`@EnableJpaRepositories` spanning the shared outbox module, kept off the application class so `@WebMvcTest` slices stay light — deliberate and explained.
+- **CacheConfig**: JSON values (the serialization trap Walk-era fix, pinned by `CacheSerializationTest`), and `LoggingCacheErrorHandler` = fail-open. One interaction worth verifying after Walk 54: **`sync=true` with Redis down** — Spring's `AbstractCacheInvoker.doGet(cache, key, loader)` catches the provider error via `handleCacheGetError` and invokes the loader directly, so the fail-open promise survives the sync path. It does.
+
+Nothing to change. **Verified clean** — and with this, every main-source class in the four services + shared module has been walked at least once.
+
+Walk 85 lesson: when two features are added at different times (fail-open error handler; `sync=true` years-of-walks later), their INTERACTION is a new, unreviewed surface — "both verified separately" is not "verified together".
