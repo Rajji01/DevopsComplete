@@ -1131,3 +1131,7 @@ Scope: the three remaining never-walked classes — `Caller`, payment's `JpaConf
 Nothing to change. **Verified clean** — and with this, every main-source class in the four services + shared module has been walked at least once.
 
 Walk 85 lesson: when two features are added at different times (fail-open error handler; `sync=true` years-of-walks later), their INTERACTION is a new, unreviewed surface — "both verified separately" is not "verified together".
+
+## Walk 86: teach product — drill D16, phantom stock (Nov 9, 2026)
+
+Docs-only: Walk 55's bug rebuilt as a symptom-first debugging drill (`docs/debugging/D16-phantom-stock.md` + README row): no alert, a weekly reconciliation finds stock higher than the warehouse, and the solver must (1) find the two-transaction interleaving a green sequential test can't see, (2) name the replay-vs-race distinction, (3) defend the conditional-UPDATE fix against @Version and FOR UPDATE *in this codebase's terms*, (4) write the barrier test, (5) design the drift detector that would have caught it in one tick. The walkthrough carries the full answers.
