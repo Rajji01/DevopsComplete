@@ -18,7 +18,7 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 ## 2026-11-08 — CLI (Opus 4.8) — Walk 52 (alertmanager receivers)
 **Branch:** `master`. **Found:** (1) `slack-incidents` ka text single-quoted YAML mein `
 ` rakhta tha — single quotes mein wo 2 literal chars hain, Slack message ek line mein `
-` ke saath dikhta. (2) Ticket channel ko runbook link milta hi nahi tha — jabki har ticket alert runbook ke liye hi bana hai. **Fix:** dono receivers double-quoted summary+runbook template; python yaml-parse se real newline verify. Routing/inhibits audit clean. **Lesson:** YAML mein `'
+` ke saath dikhta. (2) Ticket channel ko runbook link milta hi nahi tha — jabki har ticket alert runbook ke liye hi bana hai. **Fix:** dono receivers double-quoted summary+runbook template; python yaml-parse se real newline verify. Routing/inhibits audit clean. **CI GREEN (block close):** `f0dbd62` pe CI + shopflow dono success — Walks 49–52 ka sab content verified (yamllint, kubeconform+Rollouts CRDs, amtool, tests, k6, 4×images+SBOM). Walk 51 ki PromQL lines ka line-length own-goal CI ne pakda, selector break karke fix; local yamllint ab installed (push se pehle lint). **Lesson:** YAML mein `'
 '` ≠ `"
 "` — quoting semantics hai, style nahi.
 
