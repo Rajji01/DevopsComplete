@@ -913,3 +913,15 @@ Verified: the 5 `service:`/`sli:` recording-rule names all exist in `recording-r
 Walk 62 lesson: a dashboard is a pile of claims about metric names, and nothing validates it — promtool checks rules, kubeconform checks manifests, but a Grafana JSON panel pointing at a typo'd metric renders a perfectly healthy empty graph. Extract-and-grep is the whole audit, and it's five minutes.
 
 **Walk 57 addendum — the verdict (run on `dbfc4f4`):** the `postgres-smoke` job is GREEN, non-vacuously: the logs show `Tests run: 1, Failures: 0` per service with profile `pg`, each context taking 6–10s to start (real Flyway migrations + `ddl-auto: validate` against Postgres 16). So the researched hazard (Hibernate 6 `Instant` → `TIMESTAMP_UTC` vs our plain `timestamp` columns) does **not** bite this Hibernate 6.6 / Boot 3.5 combination — the hypothesis is dead, and that's fine: the walk's deliverable was never the bug, it was the missing verification. "The schema works on the engine production uses" is now a CI-checked fact on every push instead of an assumption, and any future type drift (a new `timestamptz` column, a UUID/text mismatch, a seed that only H2 accepts) fails in CI instead of at deploy. Honest failures of a hypothesis get recorded too — that's what keeps the rest of this file trustworthy.
+
+## Walk 63: Order entity + controller edges, verified clean (Nov 8, 2026)
+
+Scope: `Order.java` (state machine) + `OrderController` — hunting the edges Walks 43/45/53 didn't already close.
+
+- **Transitions**: entity setters are deliberately dumb; every caller in `OrderService` is status-guarded and `@Version` catches concurrent writers (the Walk 53/55 lesson applied where it was already right). `isCancellable()` = CONFIRMED|FAILED only — PENDING (in flight) and terminal states refuse, PAID detours to the refund saga.
+- **Oversized `Idempotency-Key`** (the Walk 45 catch's blind spot I went hunting for): a >100-char key would hit the `varchar(100)` column as `DataIntegrityViolationException`, where the race-recovery would find no winner and rethrow → 500 for a client mistake. But the chain holds: `@Size(max = 100)` on the `@RequestHeader` + Spring 6.1+ native method validation → `HandlerMethodValidationException` → the advice's 400 with field messages. The DB never sees the long key.
+- **Pagination**: `size ≤ 100`, sort `createdAt desc` rides `idx_orders_customer_created`. Replay semantics: 201+Location on create, 200 on idempotent replay — correct REST shape.
+
+Nothing to change. **Verified clean.**
+
+Walk 63 lesson: when a recovery path exists (the Walk-45 constraint catch), ask what ELSE can throw the same exception type — here the length overflow — and check each alternate cause has its own guard upstream. An exception type is a bucket, not a cause.
