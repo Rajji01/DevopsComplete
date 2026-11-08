@@ -744,3 +744,15 @@ Scope: `loadtest/flash-sale.js`, the one file this block hadn't reviewed. Its th
 Honest verification note: no Docker locally and CI only *compiles* the k6 script, so this is verified by k6's documented semantics + the compile job; the first real `k6 run` will confirm. The bug class is the same as Walk 36/40 — **a claim in a comment that the code never implemented** — just in the test layer this time.
 
 Walk 47 lesson: **k6's `http_req_failed` is opinionated: 4xx = failure unless you say otherwise.** Any API that deliberately returns 409/429 under load needs `expectedStatuses`, or the load test fails precisely when the system behaves. Comments that describe intended behaviour are claims to verify, not documentation to trust.
+
+## Walk 48: the deploy that checked out a branch that doesn't exist (Nov 8, 2026)
+
+Scope: `infra/ansible/` (the one-VM compose deploy), the last unreviewed corner. First task: `ansible.builtin.git` with `repo_version: main`. But `git ls-remote --heads origin` shows the repository has **only `master`** — `main` has never existed. So `make ansible-deploy` dies at its very first task, on every host, always.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `group_vars/shopflow.yml` pinned `repo_version: main` for a repo whose only branch is `master` | The whole playbook is unrunnable — and `make validate`'s `ansible-playbook --syntax-check` can never catch it, because a wrong *value* is syntactically perfect. A "validated" deploy that has never actually been run end-to-end | `repo_version: master` with a comment. (The GitHub workflow's main-only gating on push/sign/deploy is a *different, documented* thing — those steps are deliberately never reached; the Ansible path was just wrong) |
+
+The rest of the role reviewed clean: template→systemd unit→started, readiness poll (`uri` + `retries: 30/delay: 10` — module failure retries under `until`), handler restarts on checkout/unit change.
+
+Walk 48 lesson: **syntax checks validate shape, never truth.** A branch name, a metric name (Walk 36's story), a URL — all look identical to the linter whether right or wrong. Anything that names an external thing needs one real execution, or at least a check against the real system (`git ls-remote` here), before "validated" means anything.
