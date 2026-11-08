@@ -1135,3 +1135,9 @@ Walk 85 lesson: when two features are added at different times (fail-open error 
 ## Walk 86: teach product — drill D16, phantom stock (Nov 9, 2026)
 
 Docs-only: Walk 55's bug rebuilt as a symptom-first debugging drill (`docs/debugging/D16-phantom-stock.md` + README row): no alert, a weekly reconciliation finds stock higher than the warehouse, and the solver must (1) find the two-transaction interleaving a green sequential test can't see, (2) name the replay-vs-race distinction, (3) defend the conditional-UPDATE fix against @Version and FOR UPDATE *in this codebase's terms*, (4) write the barrier test, (5) design the drift detector that would have caught it in one tick. The walkthrough carries the full answers.
+
+## Walk 87: the block's vocabulary, filed (Nov 9, 2026)
+
+Docs-only: five terms this block coined or sharpened — replay- vs race-idempotent, phantom stock, replayable window, the census rule, bootstrap dependency — added to GLOSSARY with one-line Hinglish definitions and walk pointers, so the Ctrl+F path finds them.
+
+**CI pin:** `edf5fd8` GREEN (CI + shopflow) — the cumulative run verifying every code change of Walks 73–83: prod-overlay JWT_AUDIENCE + STS egress (kubeconform/kyverno), the recorded-definition alert switch against all 17 promtool cases, the in-cluster issuer pin, and the k6 fixes (`k6 inspect`).
