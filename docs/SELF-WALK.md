@@ -1096,3 +1096,11 @@ Walk 80 lesson: **an issuer URL is two promises in one string — "this is who s
 ## Walk 81: Walk 80's census (Nov 9, 2026)
 
 Docs-only, by the Step-7 rule: grepped `keycloak.shopflow.local` repo-wide after Walk 80's issuer change. Three stale copies in interview-notes (05's ConfigMap quote, 11's issuer table and its 401-debug answer) now state the in-cluster issuer; the ingress host rule and the `/etc/hosts` line stay — those are the browser's path and still correct. The census habit paid for itself within one walk of teaching it.
+
+## Walk 82: the copied contracts, verified in lockstep (Nov 9, 2026)
+
+Scope: the event records that exist as per-service copies (the repo's stated alternative to a Schema Registry): producer `OrderEvent` vs notification's and payment's copies, producer `PaymentEvent` vs order-service's copy.
+
+Field-for-field identical (names, types, order), the one deliberate divergence is sound — the producer types `status` as the `OrderStatus` enum while consumers take `String` (serialises identically, and a new status value can't break a consumer's deserialisation) — and all three consumer copies carry `@JsonIgnoreProperties(ignoreUnknown = true)`, so the producer can add fields freely. **Verified clean.** (The structural risk stays what STATE §4 says it is: nothing but this walk's grep enforces the lockstep — that's the Schema Registry item's whole case.)
+
+Walk 82 lesson: copied contracts are a census (Step 7) that recurs on every producer change — if you choose copies over a registry, the diff of the copies IS your compatibility check, so actually run it.
