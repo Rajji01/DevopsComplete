@@ -940,3 +940,15 @@ Scope: CLAUDE.md §4's promise — "verify karo: jo CI chalata hai wahi (`make l
 Verification note, honestly: this machine has no Docker/ansible/hadolint, so the new recipes are verified **textually** against the exact CI commands+flags (and `make help`/syntax by inspection), not by running them — same standing as the rest of the local-tooling story in STATE §3.
 
 Walk 64 lesson: **a parity promise ("local runs what CI runs") is a contract with no enforcement — it only stays true if someone re-diffs it after every CI change.** Every Walk that touched the workflows (40, 44, 51, 57) owed this file a visit; the debt collected today. The tell was the kyverno step: a local command that *cannot* succeed means nobody has run the target since it broke.
+
+## Walk 65: the connection math three files told three ways (Nov 8, 2026)
+
+Scope: `k8s/base` — the four service manifests diffed against each other (normalized names/ports), then the one claim they all make — the DB connection budget — chased across every file that states it.
+
+The manifests themselves audit clean and tightly parallel: HPA owns replicas (no `spec.replicas`), `maxUnavailable: 0`, startup/liveness/readiness split correctly (readiness = own DB only), preStop sleep + 45s grace, non-root + read-only rootfs + dropped caps + seccomp, topology spread, `automountServiceAccountToken: false`. The only drift between the four deployments is the intended env.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| Three copies of the connection arithmetic, all stale, each differently: deployments said "10 pods (HPA max) × 5 = 100 total" (base HPA max is **6**, and there are **4** services), `postgres/statefulset.yaml` said "2 services × 10 pods" (it's 4 × 6), `rds.tf` said "2 services × 10 × 5 = 100 plus notification-service" (prod is 4 × 10 × 5 = **200**) | The real numbers happen to still fit — base 120 < 200 (in-cluster PG), prod 200 < 300 (RDS parameter group) — but anyone *re-deriving* capacity from these comments (e.g. before raising an HPA max or shrinking RDS) would start from numbers that were never true together. Connection exhaustion is exactly the failure where readiness (`db` check) flaps every pod at once | All three now state the same worst-case formula with both environments' numbers; rds.tf's note also names the transient consumers (Flyway, reconcilers, `superuser_reserved_connections`) that eat into headroom |
+
+Walk 65 lesson: **numbers quoted in comments are the most-copied, least-verified claims in a repo — and the same budget stated in N files is the same constant copied N times** (Walk 58's lesson, arithmetic edition). State the formula, not just the result, and re-run it whenever any factor (service count, HPA max, pool size) changes.

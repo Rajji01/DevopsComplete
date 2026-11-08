@@ -34,7 +34,8 @@ resource "aws_db_parameter_group" "postgres" {
   name_prefix = "${var.name}-pg16-"
   family      = "postgres16"
 
-  # 2 services x 10 pods x 5 connections = 100, plus notification-service and headroom
+  # worst case: 4 services x HPA max 10 (prod overlay) x pool 5 = 200, plus reconcilers/Flyway
+  # transients and superuser_reserved_connections -> 300 leaves real headroom (Walk 65)
   parameter {
     name         = "max_connections"
     value        = "300"

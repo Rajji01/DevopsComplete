@@ -48,7 +48,7 @@ spec:
             - name: http
               containerPort: 8084
           env:
-            # 10 pods (HPA max) x 5 connections = 50 per service, 100 total < max_connections=200
+            # worst case: 4 services x HPA max (6 base / 10 prod) x 5 = 120 base < 200, 200 prod < RDS 300 (Walk 65)
             - name: DB_POOL_SIZE
               value: "5"
             - name: DB_URL
