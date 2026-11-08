@@ -1,5 +1,8 @@
 # Closes the loop with CI: images are signed keyless by the GitHub Actions workflow (cosign, OIDC).
 # A pod whose image is not signed by THAT workflow identity is rejected. Prod namespace only.
+# NOTE (Walk 50): signing is gated on refs/heads/main, which does not exist yet — no image has been
+# signed so far, so applying this policy today blocks every shopflow image. If publishing is enabled
+# by gating on master instead, change the keyless subject below to ...@refs/heads/master to match.
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:

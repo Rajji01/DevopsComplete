@@ -8,12 +8,15 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ## ▶ RESUME HERE — 2026-11-08
 **Mode:** **AUTONOMOUS self-walk + teach, non-stop** (Abhishek ne 2026-11-08 ko wapas on kiya: "self walk krta rah, concept via project, karta rah"). Goal: ShopFlow improve karte hue Abhishek ko DevOps+Java+interview king banana — asli bug/gap dhoondho+fix+verify+commit, aur concepts project se samjhao. Ruko mat, baar-baar na poochho.
-**State:** in-sync; Walks done **up to 49**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
+**State:** in-sync; Walks done **up to 50**. (Earlier a GUIDED-STUDY pause tha; ab lifted.)
 **Verify note:** is machine pe JDK21/Docker **ho bhi sakta, nahi bhi** (session pe depend) — jo chale chalao, warna CI (GitHub token `git credential fill` se logs/status) verifier.
 **Start topic:** **E — app correctness** (interview gold): refund-decline saga (Walk 20 → `payment-service/OrderConfirmedListener.refund`, `order-service/.../OrderService.onRefundFailed`), outbox persist (Walk 21 → `shopflow-outbox/OutboxEvent`), flaky-test fix (Walk 11 → `OutboxCleanupTest`). Self-test interactive: `labs/comprehension.html`.
 **Study map (jo humne banaya):** neeche ke entries + `SELF-WALK.md` (Walks 8–21, har change ki poori story = textbook). Deep-dives: `INDEXING-HIBERNATE.md`, `LLD-DESIGN-PATTERNS.md`, `HLD-SYSTEM-DESIGN.md`, `VISUAL-FLOWS.md`.
 
 ---
+
+## 2026-11-08 — CLI (Opus 4.8) — Walk 50 (supply chain that supplies nothing)
+**Branch:** `master`. **Found (Walk 48 ka thread):** GHCR push + cosign sign + ECR + prod-pin — aath `if: refs/heads/main` gates, aur `main` **exist nahi karta** → publish/sign kabhi chala hi nahi: GHCR mein koi `shopflow-*` image nahi, kabhi kuch sign nahi hua, prod overlay un images ko point karta jo bani hi nahi, Kyverno signature policy aaj apply karo to har pod reject. STATE §3 "signing/SBOM on main" bolta tha (SBOM galat bhi — wo har build pe chalta hai). **Fix (docs = sach):** STATE §3 row rewritten, §4 mein decision item (a: master pe gate + policy subject flip = sach mein publish; b: publish off, prod overlay design-only), policy file pe NOTE. **Gate khud NAHI badla** — public publishing outward-facing decision hai, Abhishek ki. **Lesson:** jo security control kabhi fire hi nahi hua, wo broken se alag nahi dikhta.
 
 ## 2026-11-08 — CLI (Opus 4.8) — Walk 49 (.dockerignore = cache key)
 **Branch:** `master`. **Found:** CI buildx `type=gha` cache + `COPY . .` ke saath `shopflow/.dockerignore` mein `helm/` + `loadtest/` missing — helm values ya k6 script ki edit (image ka input nahi) chaaron services ka COPY layer invalidate karke poora `mvn package` dobara chalwati thi. **Fix:** dono add; `.trivyignore`/`.hadolint.yaml` jaan-bujh ke NAHI (repo root pe hain, context se bahar — dead entries bhi doc-rot hain). Dockerfiles khud dono clean (alpine + distroless parity). **Lesson:** `COPY . .` + remote cache mein .dockerignore hi cache key hai. **GitHub degradation note:** a731e36 ka Lint job `setup-tflint` download pe 504/502 se do baar gira (checkout fetch bhi) — delayed rerun scheduled; code-side jobs (tests, k6 compile, 4×images+SBOM) sab green the.
