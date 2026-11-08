@@ -50,3 +50,27 @@ No alert fired. A weekly manual stock reconciliation finds `product.quantity` fo
 
 **The transferable pattern:** every "X is idempotent, double-call is safe" claim has two tiers — replay and race. If the guard is a read, you have only the first. Make the state transition itself atomic (conditional UPDATE / unique constraint / version check) and gate the side effect on *winning* it — and test it with a barrier, not a loop.
 </details>
+
+---
+
+## Reproduce / test (apne haath se)
+
+```bash
+# 1. The deterministic race test (the fix's proof) — JDK 21:
+cd shopflow && ./mvnw -pl inventory-service test -Dtest='InventoryServiceApplicationTests#concurrentReleasesRestoreStockOnlyOnce'
+
+# 2. Re-create the bug: revert the guard and watch the same test fail
+#    (in ReservationService.release, replace the transition() gate with the old shape:
+#     r unused + always incrementStock) -> run the test again -> stock comes back before+3.
+
+# 3. Manual two-terminal race against the compose stack (timing-dependent, try a few times):
+docker compose up -d
+ORDER=$(uuidgen)
+curl -s -X POST localhost:8082/api/v1/reservations -H 'Content-Type: application/json' \
+  -d "{\"orderRef\":\"$ORDER\",\"sku\":\"IPHONE-15\",\"quantity\":3}"
+# terminal A and terminal B, as close to simultaneously as you can:
+curl -s -X DELETE localhost:8082/api/v1/reservations/$ORDER &
+curl -s -X DELETE localhost:8082/api/v1/reservations/$ORDER &
+wait
+curl -s localhost:8082/api/v1/products/IPHONE-15   # quantity must equal the pre-reserve value
+```
