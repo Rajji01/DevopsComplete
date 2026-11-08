@@ -1104,3 +1104,14 @@ Scope: the event records that exist as per-service copies (the repo's stated alt
 Field-for-field identical (names, types, order), the one deliberate divergence is sound — the producer types `status` as the `OrderStatus` enum while consumers take `String` (serialises identically, and a new status value can't break a consumer's deserialisation) — and all three consumer copies carry `@JsonIgnoreProperties(ignoreUnknown = true)`, so the producer can add fields freely. **Verified clean.** (The structural risk stays what STATE §4 says it is: nothing but this walk's grep enforces the lockstep — that's the Schema Registry item's whole case.)
 
 Walk 82 lesson: copied contracts are a census (Step 7) that recurs on every producer change — if you choose copies over a registry, the diff of the copies IS your compatibility check, so actually run it.
+
+## Walk 83: the check that called a dead server "no error" (Nov 9, 2026)
+
+Scope: `loadtest/flash-sale.js` end-to-end (Walk 47 had only fixed the expectedStatuses callback).
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `check(res, { 'no server error': r.status < 500 })` — in k6 a network-level failure (connection refused, timeout before response) is **status 0**, and 0 < 500 | The one check named "no server error" would pass while the server was literally unreachable. The `http_req_failed` threshold still catches it (status 0 isn't an expected status), so the run fails — but with the check lying GREEN next to a red threshold, pointing the reader away from the cause | `r.status >= 200 && r.status < 500` |
+| Two implicit assumptions undocumented: `orders_confirmed==3` needs a FRESH seeded stack (a re-run finds 0 units and fails "correctly" but confusingly), and `handleSummary` silently **replaces** k6's default end-of-run report | Both are the "works once, confuses the second person" class | Header note for the fresh-stack requirement; comment stating the summary replacement is a deliberate trade-off (thresholds still gate the exit code) |
+
+Walk 83 lesson: in k6, status 0 exists and every `< N` comparison must decide what it means; and a load test's hidden fixture assumptions (seed state) belong in its header, because the second run is always by someone else.

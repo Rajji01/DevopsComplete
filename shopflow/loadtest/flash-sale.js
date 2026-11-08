@@ -1,6 +1,8 @@
 // k6 load test: 300 virtual buyers rush the 3 PS5 units, while others browse products.
 //   docker compose up -d && TOKEN=$(...) k6 run -e TOKEN=$TOKEN loadtest/flash-sale.js
 // Pass/fail is encoded in thresholds, so this can gate a CI job.
+// NOTE: orders_confirmed==3 assumes a FRESH stack (seeded PS5-SLIM stock = 3). A re-run against
+// the same database finds 0 units left and fails the threshold — reset the stack between runs.
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Counter, Trend } from 'k6/metrics';
@@ -53,7 +55,8 @@ export function buy() {
   } else if (res.status === 429) {
     throttled.add(1);
   }
-  check(res, { 'no server error': (r) => r.status < 500 });
+  // status 0 = network-level failure in k6 — a plain `< 500` would count it as "no error" (Walk 83)
+  check(res, { 'no server error': (r) => r.status >= 200 && r.status < 500 });
 }
 
 export function browse() {
@@ -62,6 +65,8 @@ export function browse() {
   sleep(0.1);
 }
 
+// Deliberate trade-off (Walk 83): defining handleSummary REPLACES k6's default end-of-run report.
+// The thresholds still gate the exit code either way; this one business line is what a human needs.
 export function handleSummary(data) {
   const c = data.metrics.orders_confirmed ? data.metrics.orders_confirmed.values.count : 0;
   const r = data.metrics.orders_rejected ? data.metrics.orders_rejected.values.count : 0;
