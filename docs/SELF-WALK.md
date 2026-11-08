@@ -1082,3 +1082,13 @@ Walk 78 lesson: the entry-point doc is the one place drift is cheapest to fix an
 ## Walk 79: the 30-second snapshot was 20 days old (Nov 9, 2026)
 
 Docs-only: `SUMMARY.md` — the "context reset ke baad yahi padho" page — was dated 2026-10-20 and still listed the Walk-20-resolved `RefundFailed` path as pending, while missing the two decisions STATE §4 actually waits on (publishing gates, dependabot PRs). Status block now carries today's truth: 78 walks, 51 tests + postgres-smoke, 17 alert test cases, publish/sign off with the six-gate census pointer. The irony is noted: a snapshot whose whole job is freshness had no mechanism reminding anyone to refresh it — it now rides the same rule as STATE ("counted things changed → re-walk the entry docs", Walk 78).
+
+## Walk 80: the issuer only the laptop could resolve (Nov 9, 2026)
+
+Scope: the base infra pods nobody had walked — kafka (headless service for `kafka-0.kafka` quorum ✓, single-node RF=1s consistent and documented), redis (allkeys-lru, cache-loss-is-cheap Deployment ✓), postgres — and keycloak, where the find was:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `KC_HOSTNAME: http://keycloak.shopflow.local` pinned every token's `iss` to the **ingress** hostname — which exists only in the laptop's `/etc/hosts`. order-service's `JWT_ISSUER_URI` matched the string, but the pod can't resolve it: cluster DNS has `keycloak.shopflow.svc`, not `.local` ingress names. interview-notes/11 even claimed "in K8s both sides use the same hostname, so no trick is needed" — the compose file NEEDED a trick (`extra_hosts: localhost:host-gateway`) and got one; k8s needed one and didn't | Every pod boots healthy (SupplierJwtDecoder is lazy; readiness checks only the DB) and then **every authenticated request 401s** on the first JWKS fetch — the exact D09 drill shape, shipped as config. Hidden from all 51 tests (they mint local JWTs) and from kubeconform (valid YAML, wrong world) | `KC_HOSTNAME` pinned to the **in-cluster** URL (`http://keycloak:8180`) and the ConfigMap issuer matched: `iss` no longer depends on which host the browser used, and it names something pods CAN resolve. The browser never validates `iss` — it only needs the token endpoint to answer, and `KC_HOSTNAME_STRICT=false` keeps the ingress path working. Notes/11 now explains the real mechanism instead of denying the need for one |
+
+Walk 80 lesson: **an issuer URL is two promises in one string — "this is who signed it" (a comparison) and "fetch my keys here" (a network call) — and they're validated from different network vantage points.** Any time one URL must serve both the browser's world and the cluster's world, pin it to the vantage point that actually dials it, and check the other side merely tolerates it.

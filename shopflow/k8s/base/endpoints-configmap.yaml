@@ -7,5 +7,6 @@ metadata:
 data:
   kafka-bootstrap-servers: kafka:9092
   redis-host: redis
-  jwt-issuer-uri: http://keycloak.shopflow.local/realms/shopflow
+  # must equal keycloak's KC_HOSTNAME-derived issuer AND be resolvable from the pods (Walk 80)
+  jwt-issuer-uri: http://keycloak:8180/realms/shopflow
   otlp-endpoint: http://tempo.monitoring:4318/v1/traces   # Tempo/OTel collector in the monitoring namespace

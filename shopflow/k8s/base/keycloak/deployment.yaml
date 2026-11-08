@@ -27,8 +27,15 @@ spec:
                 secretKeyRef:
                   name: keycloak-admin
                   key: password
+            # Pinned to the IN-CLUSTER url (Walk 80): KC_HOSTNAME fixes the `iss` in every token no
+            # matter which host the browser used. Only order-service validates iss and fetches JWKS,
+            # and `keycloak:8180` is what IT can resolve — `keycloak.shopflow.local` only exists in
+            # the laptop's /etc/hosts, so with the old value the pod's JWKS fetch failed and every
+            # authenticated call 401'd (lazily, after a healthy-looking startup). The browser doesn't
+            # care what iss says; it just needs the token endpoint to answer (strict=false allows
+            # reaching it via the ingress host).
             - name: KC_HOSTNAME
-              value: http://keycloak.shopflow.local   # the issuer in every token; must be reachable by the browser AND order-service
+              value: http://keycloak:8180
             - name: KC_HOSTNAME_STRICT
               value: "false"
           ports:
