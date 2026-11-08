@@ -99,6 +99,17 @@ class PaymentServiceApplicationTests {
     }
 
     @Test
+    void unknownSkuIsDeclinedNotChargedAMadeUpPrice() {
+        // the old PriceList fallback silently charged 999.00 for a sku it didn't know (Walk 42);
+        // now the charge is declined so the order cancels and the stock is released
+        String orderRef = UUID.randomUUID().toString();
+        kafkaTemplate.send("orders.events", orderRef, orderConfirmed(UUID.randomUUID(), orderRef, "NOT-IN-PRICE-LIST", 1));
+
+        String event = awaitPaymentEvent(orderRef);
+        assertThat(event).contains("\"type\":\"PaymentFailed\"").contains("no price for sku NOT-IN-PRICE-LIST");
+    }
+
+    @Test
     void redeliveredEventChargesOnlyOnce() {
         UUID eventId = UUID.randomUUID();
         String orderRef = UUID.randomUUID().toString();

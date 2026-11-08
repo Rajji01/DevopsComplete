@@ -9,6 +9,7 @@ kn exec postgres-0 -- psql -U postgres -d payments -c "select failure_reason, co
 | failure_reason | Cause | Fix |
 |---|---|---|
 | `card limit exceeded` for normal amounts | PriceList / quantity bug, or a bad `OrderConfirmed` payload | compare `amount` in events vs catalogue; rollback the producer if a deploy changed the contract |
+| `no price for sku <X>` | a product exists in inventory but was never added to payment-service's `PriceList` (Walk 42: we decline instead of charging a made-up price) | add the sku + price to `PriceList`, redeploy payment-service; affected orders were CANCELLED with stock released — customers re-order |
 | gateway timeouts / 5xx (real gateway) | provider outage | check provider status page; enable retry with idempotency key at the gateway; inform support |
 | everything declined for one SKU | wrong price (₹0 or huge) | fix the price; replay the affected `OrderConfirmed` events from the DLT / outbox |
 

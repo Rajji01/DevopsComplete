@@ -56,8 +56,20 @@ public class OrderConfirmedListener {
             meterRegistry.counter("payments.duplicates").increment();
             return; // redelivery: already charged (or declined) for this exact event
         }
-        BigDecimal amount = priceList.priceOf(event.sku()).multiply(BigDecimal.valueOf(event.quantity()));
-        var result = gateway.charge(event.orderRef(), amount);
+        BigDecimal amount;
+        PaymentGateway.Result result;
+        var price = priceList.priceOf(event.sku());
+        if (price.isPresent()) {
+            amount = price.get().multiply(BigDecimal.valueOf(event.quantity()));
+            result = gateway.charge(event.orderRef(), amount);
+        } else {
+            // A sku inventory sells but we cannot price must never be charged a made-up amount
+            // (the old 999.00 fallback did exactly that — Walk 42). Decline: the FAILED payment +
+            // PaymentFailed event flow through the normal path, so the order cancels and the
+            // reserved stock is released instead of the customer paying a wrong price.
+            amount = BigDecimal.ZERO;
+            result = PaymentGateway.Result.declined("no price for sku " + event.sku());
+        }
 
         Payment payment = new Payment(event.eventId(), event.orderRef(), amount,
                 result.approved() ? Payment.Status.CAPTURED : Payment.Status.FAILED, result.reason());
@@ -78,27 +90,38 @@ public class OrderConfirmedListener {
      * A redelivered OrderRefundPending finds it already REFUNDED and does nothing.
      */
     private void refund(OrderEvent event) {
-        payments.findByOrderRef(event.orderRef())
-                .filter(p -> p.getStatus() == Payment.Status.CAPTURED)
-                .ifPresent(payment -> {
-                    var result = gateway.refund(payment.getOrderRef(), payment.getAmount());
-                    if (result.approved()) {
-                        payment.markRefunded();
-                        outbox.publish(PaymentEvent.TOPIC, "Payment", payment.getOrderRef(),
-                                "PaymentRefunded", PaymentEvent.refunded(payment.getOrderRef(), payment.getAmount()));
-                        meterRegistry.counter("payments", "status", "REFUNDED").increment();
-                        log.info("refunded order {} amount {}", payment.getOrderRef(), payment.getAmount());
-                    } else {
-                        // Refund declined by the processor. Do NOT mark REFUNDED (the money did not come back);
-                        // the payment stays CAPTURED so a redelivered OrderRefundPending retries. Emit
-                        // PaymentRefundFailed so the order stays REFUND_PENDING and the OrdersStuckConfirmed
-                        // alert (which counts REFUND_PENDING) pages a human — we never fake a refund that failed.
-                        outbox.publish(PaymentEvent.TOPIC, "Payment", payment.getOrderRef(),
-                                "PaymentRefundFailed", PaymentEvent.refundFailed(payment.getOrderRef(), payment.getAmount(), result.reason()));
-                        meterRegistry.counter("payments.refund.failed").increment();
-                        log.warn("refund DECLINED for order {}: {} (stays CAPTURED; order stays REFUND_PENDING)",
-                                payment.getOrderRef(), result.reason());
-                    }
-                });
+        var payment = payments.findByOrderRef(event.orderRef()).orElse(null);
+        if (payment == null) {
+            // No payment row at all for a REFUND_PENDING order: upstream data problem, and silence
+            // here would leave the stuck order a mystery (Walk 42). OrdersStuckConfirmed will flag
+            // the order; this log is what tells the human WHY no refund ever happened.
+            log.warn("refund requested for order {} but no payment row exists — needs a human", event.orderRef());
+            return;
+        }
+        if (payment.getStatus() != Payment.Status.CAPTURED) {
+            // REFUNDED = duplicate OrderRefundPending after a successful refund (normal, idempotent
+            // no-op). FAILED = a refund for a payment that never captured (state-machine violation
+            // upstream) — still a no-op, but one worth seeing in the log.
+            log.info("refund for order {} skipped: payment is {}", event.orderRef(), payment.getStatus());
+            return;
+        }
+        var result = gateway.refund(payment.getOrderRef(), payment.getAmount());
+        if (result.approved()) {
+            payment.markRefunded();
+            outbox.publish(PaymentEvent.TOPIC, "Payment", payment.getOrderRef(),
+                    "PaymentRefunded", PaymentEvent.refunded(payment.getOrderRef(), payment.getAmount()));
+            meterRegistry.counter("payments", "status", "REFUNDED").increment();
+            log.info("refunded order {} amount {}", payment.getOrderRef(), payment.getAmount());
+        } else {
+            // Refund declined by the processor. Do NOT mark REFUNDED (the money did not come back);
+            // the payment stays CAPTURED so a redelivered OrderRefundPending retries. Emit
+            // PaymentRefundFailed so the order stays REFUND_PENDING and the OrdersStuckConfirmed
+            // alert (which counts REFUND_PENDING) pages a human — we never fake a refund that failed.
+            outbox.publish(PaymentEvent.TOPIC, "Payment", payment.getOrderRef(),
+                    "PaymentRefundFailed", PaymentEvent.refundFailed(payment.getOrderRef(), payment.getAmount(), result.reason()));
+            meterRegistry.counter("payments.refund.failed").increment();
+            log.warn("refund DECLINED for order {}: {} (stays CAPTURED; order stays REFUND_PENDING)",
+                    payment.getOrderRef(), result.reason());
+        }
     }
 }
