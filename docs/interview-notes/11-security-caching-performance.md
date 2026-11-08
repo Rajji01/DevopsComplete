@@ -65,7 +65,7 @@ OIDC = OAuth2 + identity: adds the **`id_token`** (who the user is) and `/userin
 
 | | Keycloak (compose / minikube) | Amazon Cognito (prod, `cognito.tf`) |
 |---|---|---|
-| Issuer | `http://localhost:8180/realms/shopflow` (compose), `http://keycloak.shopflow.local/realms/shopflow` (K8s `KC_HOSTNAME`) | `https://cognito-idp.ap-south-1.amazonaws.com/<pool-id>` |
+| Issuer | `http://localhost:8180/realms/shopflow` (compose), `http://keycloak:8180/realms/shopflow` (K8s — in-cluster `KC_HOSTNAME`, Walk 80) | `https://cognito-idp.ap-south-1.amazonaws.com/<pool-id>` |
 | Roles claim | `realm_access.roles: ["customer"]` | `cognito:groups: ["customer"]` (groups `customer`, `support` created in Terraform) |
 | Client | public `shopflow-web`, redirect `http://localhost:*`, standard flow + direct grant | user pool client `shopflow-web` (resource `aws_cognito_user_pool_client.web`), `generate_secret = false`, `allowed_oauth_flows = ["code"]`, SRP + refresh |
 | Config | realm JSON imported at start (`--import-realm`), mounted from a ConfigMap (`keycloak-realm`, `configMapGenerator`) | managed |
@@ -647,7 +647,7 @@ Nothing visible except latency and log noise: `CacheConfig` implements `CachingC
 ## F. Scenarios
 
 **S1. After deploying to minikube every `POST /orders` returns 401, but curl with a Keycloak token worked in compose.**
-`iss` mismatch: compose tokens say `http://localhost:8180/realms/shopflow`, K8s expects `http://keycloak.shopflow.local/realms/shopflow` (`shopflow-endpoints` ConfigMap) — get the token from the K8s Keycloak, not the compose one. Other causes: JWKS unreachable (order-service egress NetworkPolicy must allow keycloak:8180 — it does; `KC_HOSTNAME` wrong), clock skew > 60s (`exp`), token expired (900s), or `JWT_ISSUER_URI` env not wired. Debug: decode the token at jwt.io (never paste prod tokens), compare `iss`, check order-service logs for `JwtValidationException`.
+`iss` mismatch: compose tokens say `http://localhost:8180/realms/shopflow`, K8s expects `http://keycloak:8180/realms/shopflow` (`shopflow-endpoints` ConfigMap) — get the token from the K8s Keycloak, not the compose one. Other causes: JWKS unreachable (order-service egress NetworkPolicy must allow keycloak:8180 — it does; `KC_HOSTNAME` wrong), clock skew > 60s (`exp`), token expired (900s), or `JWT_ISSUER_URI` env not wired. Debug: decode the token at jwt.io (never paste prod tokens), compare `iss`, check order-service logs for `JwtValidationException`.
 
 **S2. Security review: "support staff can cancel orders".**
 Check the rule order: `GET /api/v1/orders/**` → `customer|support` comes **before** `/api/v1/orders/**` → `customer`; `DELETE` is not GET, so it falls to the second rule and `support` gets 403 (tested). If someone reordered the matchers so the broad rule came first, both roles would pass — matcher order matters; keep the test.
