@@ -890,3 +890,16 @@ Docs-only walk (the ritual's other half): the two new concepts earned their EASY
 - **VISUAL-FLOWS #17** — double-release race ke do mermaid sequence diagrams: bug wala interleaving (phantom stock +6) vs fix wala (row lock + WHERE re-check → 0 rows → skip), with the @Version-vs-conditional-UPDATE design note.
 
 No code changed.
+
+## Walk 61: the resilience stack, verified clean (Nov 8, 2026)
+
+Scope: `InventoryClient` + the whole `resilience4j:` block, adversarially, against the known trap list:
+
+- **Aspect order**: the comment claims `Retry(CircuitBreaker(call))` — matches resilience4j-spring-boot3's real default order (Retry outermost), so the breaker records every attempt's true outcome and an open breaker is NOT retried (`CallNotPermittedException` isn't in the retry whitelist — a whitelist means everything else fails fast). ✓
+- **Retry whitelist** (`ResourceAccessException`, `HttpServerErrorException`): transient-only; business 409/404 become `InventoryRejectedException` before the retry aspect sees them, and the CB `ignore-exceptions` the same type. Lost-response retry is safe because reserve is idempotent by orderRef (and since Walk 55, release is even race-idempotent). ✓
+- **Budget math**: worst case ≈ 3 × 2s reads + jittered backoffs ≈ 7s inside `placeOrder` — bounded, and the breaker (window 10, min 5, 50%) opens after ~2 outage-hit user calls because each call records 3 attempt-failures. Deliberate fast-open, documented in notes. ✓
+- **Compose startup ordering**: services `depends_on` postgres/kafka with `condition: service_healthy` + own healthchecks + `restart: unless-stopped`. ✓
+
+Nothing to change. **Verified clean** — Walks 39/42/47 already closed this area's real gaps; today's pass confirms no regression and no next-layer trap.
+
+Walk 61 lesson: a resilience review is four questions — what wraps what, what exactly gets retried, what does the breaker count vs ignore, and what's the worst-case latency budget. If all four have deliberate answers in config + comments that match the library's real semantics, the stack is done; don't invent a fifth knob to turn.
