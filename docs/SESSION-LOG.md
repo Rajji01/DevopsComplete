@@ -8,12 +8,15 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ## ▶ RESUME HERE — 2026-11-08
 **Mode:** **AUTONOMOUS self-walk + teach, non-stop** (Abhishek ne 2026-11-08 ko wapas on kiya: "self walk krta rah, concept via project, karta rah"). Goal: ShopFlow improve karte hue Abhishek ko DevOps+Java+interview king banana — asli bug/gap dhoondho+fix+verify+commit, aur concepts project se samjhao. Ruko mat, baar-baar na poochho.
-**State:** in-sync; Walks done **up to 58** (57 ka CI verdict pending). (Earlier a GUIDED-STUDY pause tha; ab lifted.)
+**State:** in-sync; Walks done **up to 59** (57 ka CI verdict pending). (Earlier a GUIDED-STUDY pause tha; ab lifted.)
 **Verify note:** is machine pe JDK21/Docker **ho bhi sakta, nahi bhi** (session pe depend) — jo chale chalao, warna CI (GitHub token `git credential fill` se logs/status) verifier.
 **Start topic:** **E — app correctness** (interview gold): refund-decline saga (Walk 20 → `payment-service/OrderConfirmedListener.refund`, `order-service/.../OrderService.onRefundFailed`), outbox persist (Walk 21 → `shopflow-outbox/OutboxEvent`), flaky-test fix (Walk 11 → `OutboxCleanupTest`). Self-test interactive: `labs/comprehension.html`.
 **Study map (jo humne banaya):** neeche ke entries + `SELF-WALK.md` (Walks 8–21, har change ki poori story = textbook). Deep-dives: `INDEXING-HIBERNATE.md`, `LLD-DESIGN-PATTERNS.md`, `HLD-SYSTEM-DESIGN.md`, `VISUAL-FLOWS.md`.
 
 ---
+
+## 2026-11-08 — CLI — Walk 59 (dedupe memory < Kafka ki asli memory)
+**Branch:** `master`. **Found:** dono `ProcessedEventCleanup` (notification + order) 7d pe rows delete karte the = exactly MSK `log.retention.hours=168`. Par segment tabhi delete hota jab uska **newest** record retention paar kare → quiet partition pe record ~retention+segment-roll (14d) tak replayable; aur dono consumers `auto-offset-reset: earliest` (replay by design). Replay ka 7–14d tail = dedupe rows deleted → duplicate emails / PaymentCaptured re-processing (sirf status guards bachte). **Fix:** default 14d dono jagah + jhoothe comments ("cannot happen anymore") rewritten + notes synced. Outbox cleanup 7d jaan-bujh ke untouched (wo dedupe nahi, debugging history hai). **Lesson:** retention = delete ki *permission*, data ki guarantee nahi; idempotency store ko replayable window (retention+roll) se lamba jeena chahiye.
 
 ## 2026-11-08 — CLI — Walk 58 (teesri jagah jo "main" bolti hai)
 **Branch:** `master`. **Scope:** irsa.tf + ci-oidc.tf (infra ka aakhri unreviewed kona). IRSA audit clean nikla: kafka policy exact produce/consume (DLT `*` suffix se covered), topic/group ARNs wahi `var.name` use karte jo MSK `cluster_name` — drift impossible; ExternalSecret key/properties rds.tf se exact match. **Found:** ci-oidc.tf ki trust policy `sub` bhi `refs/heads/main` pe pinned — publishing gate ki **teesri copy** (workflow if-gates + Kyverno subject + AWS trust). STATE §4 wala decision follow karne wala bhi `sts:AssumeRoleWithWebIdentity` sub-mismatch pe atakta. **Fix:** NOTE + STATE §4 ab teeno gates list karta hai; "three ECR repos" comment bhi jhooth tha (chaar hain). **Lesson:** N systems mein ek gate = ek constant ki N copies; literal ko repo AUR IaC dono mein grep karo.

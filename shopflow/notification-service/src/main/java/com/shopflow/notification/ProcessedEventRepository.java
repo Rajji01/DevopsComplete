@@ -11,7 +11,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface ProcessedEventRepository extends JpaRepository<ProcessedEvent, UUID> {
 
-    // keep as long as the topic's retention (7d): a redelivery older than that cannot happen anymore
+    // keep LONGER than the oldest record the topic can still replay (retention + segment roll,
+    // not just retention — see ProcessedEventCleanup, Walk 59); rows are tiny, margin is cheap
     @Modifying
     @Query("delete from ProcessedEvent e where e.processedAt < :before")
     int deleteProcessedBefore(@Param("before") Instant before);

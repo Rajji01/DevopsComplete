@@ -10,7 +10,13 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-/** De-duplication bookkeeping only needs to outlive Kafka's retention; after that it is dead weight. */
+/**
+ * De-duplication bookkeeping must outlive the OLDEST record the topic can still deliver — which is
+ * NOT the 7d retention (Walk 59): a segment is deleted only when its newest record passes retention,
+ * so on a quiet partition a record survives up to retention + segment-roll (7d + 7d default), and
+ * auto-offset-reset=earliest means a reset/expired group replays all of it. Hence the 14d default:
+ * dedupe memory covers the whole replayable window, not just the nominal retention.
+ */
 @Component
 public class ProcessedEventCleanup {
 
@@ -20,7 +26,7 @@ public class ProcessedEventCleanup {
     private final Duration retention;
 
     public ProcessedEventCleanup(ProcessedEventRepository repository,
-                                 @Value("${processed-events.retention:7d}") Duration retention) {
+                                 @Value("${processed-events.retention:14d}") Duration retention) {
         this.repository = repository;
         this.retention = retention;
     }
