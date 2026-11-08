@@ -1062,3 +1062,13 @@ Walk 75 lesson: architecture tests are claims with a scope — the honest form i
 ## Walk 76: teach-back — Walks 71/73/74 as notes (Nov 9, 2026)
 
 Docs-only: EASY-NOTES §10b ("transaction ke andar remote paisa: do orderings, dono haarte hain" — the idempotency-key contract), a bootstrap-dependency note in Part 5 (STS/JWKS dial before the data plane; egress lists must cover the bootstrap), and the one-definition rule in §13 (alert = `recorded_rule > threshold`, never a private inline copy). No code changed.
+
+## Walk 77: the listener that breaks the house rule — and why that's right (Nov 9, 2026)
+
+Scope: `PaymentEventListener` — the saga's closing consumer — against the repo's own doctrine from `OrderService`: *"deliberately NOT one big @Transactional: holding a DB transaction open while waiting on a remote call exhausts the pool."*
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The listener's `@Transactional` spans `inventoryClient.release()` (with Walk-61's retry budget, ~7s worst case) inside `onPaymentFailed`/`onPaymentRefunded` — exactly what the doctrine forbids, with no comment acknowledging it | Unexplained doctrine violations rot two ways: someone "fixes" it (dropping the tx reopens the dedupe race — processed-row and state change MUST commit together or redeliveries double-apply), or someone copies it into the HTTP path where N concurrent requests would pin N connections. The listener case is actually sound: default concurrency 1 bounds it to ONE pinned connection (20% of prod's pool-5) during an inventory outage, and the failure path is designed (rollback → retries → DLT alert → OrdersStuckConfirmed surfaces the order) | Javadoc now states the exception, the reasoning, the bound, and the failure path — the Walk-71 treatment: a deliberate trade-off is only safe once it's written where the next reader will look. Dedupe shape verified consistent with notification-service (effect before processed-row, at-least-once), unknown event types are logged AND marked processed (no poison loop) |
+
+Walk 77 lesson: **a rule's exceptions need the same documentation rigor as the rule — "why this violation is safe HERE" (the bound) and "what makes it unsafe elsewhere" (the multiplier).** An undocumented exception is indistinguishable from a bug, and both possible "fixes" by a well-meaning reader make it worse.
