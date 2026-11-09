@@ -1237,3 +1237,17 @@ A new direction, not a correction: Abhishek is targeting Fintech / Payments / Hi
 Scope discipline: the module is wired into the reactor (so CI's `test` job compiles + tests it) but deliberately NOT added to the CI image matrix, k8s, helm or monitoring yet — that is increment 5. So this is CI-safe (green) while being a genuine skeleton, not a stub nobody builds.
 
 Walk 96 lesson: when a project needs to speak to a new domain, don't rebuild — **re-map first (what already fits the new frame), then add only the true gap.** Most of ShopFlow was already a payments system in e-commerce clothing; the ledger is the one missing organ, and a skeleton with a real, tested invariant core beats a fully-wired service with hand-waved correctness.
+
+## Walk 97: ledger increment 1a — persistence that can't half-post (Nov 10, 2026)
+
+First real implementation on the Walk-96 skeleton (verified green on `7d756ce` first — no building on an unverified base). Increment 1a = persistence, deliberately before REST.
+
+- `LedgerService.record()` now writes the `JournalEntry` + every `Posting` in **one `@Transactional`**, so the ledger is never left unbalanced mid-write; `DoubleEntry.validate` runs first, so a bad request never reaches the DB at all.
+- **Idempotency** by the unique `idempotency_key`: a replayed source event returns the existing entry and posts nothing more — with the order-service Walk-45 recovery (catch the unique-constraint loss of a concurrent double-post, re-fetch the winner), because the pre-check is an optimization and the constraint is the guarantee.
+- **Chart of accounts is controlled** (`AccountService`): a posting to an unknown account code is rejected (`AccountNotFoundException`), not silently auto-created — a typo can't conjure an account that quietly absorbs money. Account create is itself idempotent (same race recovery).
+- **Balance is derived** (`balanceOf` = signed sum of an account's postings), never a stored column — the property reconciliation will rely on, kept visible rather than cached.
+- 5 persistence tests (`@SpringBootTest` + H2, `@Transactional` rollback for isolation): balanced entry persists + balances derived, idempotent replay posts once, unbalanced rejected, unknown account rejected, wrong-currency account rejected.
+
+Still skeleton-honest elsewhere: outbound `LedgerEntryRecorded` event + the inbound saga consumer are increment 2; REST is 1b. Nothing in the existing stack touched.
+
+Walk 97 lesson: for a ledger, the two invariants that must hold at the *persistence* boundary — "never half-post" (one transaction) and "post once" (unique key + race recovery) — come before any API. Build the thing that can't corrupt money first; the HTTP shape on top is the easy part.
