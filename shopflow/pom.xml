@@ -23,6 +23,7 @@
         <module>order-service</module>
         <module>notification-service</module>
         <module>payment-service</module>
+        <module>ledger-service</module>
     </modules>
 
     <properties>

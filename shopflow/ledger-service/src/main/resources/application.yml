@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: ledger-service
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/ledger}
+    username: ${DB_USERNAME:ledger}
+    password: ${DB_PASSWORD:ledger}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:5}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate       # schema owned by Flyway; Hibernate only checks it matches
+  threads:
+    virtual:
+      enabled: true
+  mvc:
+    problemdetails:
+      enabled: true
+
+server:
+  port: ${SERVER_PORT:8085}
+  shutdown: graceful
+
+management:
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE:1.0}
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db
+  metrics:
+    tags:
+      application: ${spring.application.name}
