@@ -1194,3 +1194,23 @@ Scope: `postgres/backup-cronjob.yaml` re-walked with Walk 91's outcome-watchdog 
 | Nothing watches whether the backup actually HAPPENS. `failedJobsHistoryLimit: 3` keeps evidence for a human who never looks; a suspended CronJob, a schedule typo, a full 2Gi PVC or a rotated password all fail (or skip) silently, forever | Backups are the textbook silent-failure: the first person to notice a year of missed backups is the person doing the restore. RPO is a promise about the WORST day, kept or broken on all the ordinary days nobody checked | `PostgresBackupMissed` (ticket): `time() - kube_cronjob_status_last_successful_time > 26h` — **freshness, not failure-count**, so "failed" and "never ran" are the same alert. Promtool tests #15/#15b (21 cases now), runbook (triage order: suspended → history → PVC/secret/deadline/policy; manual `create job --from=cronjob` verify; restore-drill reminder), README row. Honest dependency stated in the rule: metric needs kube-state-metrics — the lab cluster's part, same class as Walk 51's labelmap note |
 
 Walk 92 lesson: **a scheduled job's success history answers "did it work when it ran" — freshness answers "is it running at all", and only freshness survives the failure modes where the job never starts.** Alert on `last_successful_time`, not on failure counts.
+
+## Walk 93: the exporters that were on but walled off (Nov 9, 2026)
+
+Scope: `msk.tf`, re-walked with Walk 90's two-ended-contract lens. The cluster config is sound (RF 3 / minISR 2 / auto-create off, IAM-only auth, TLS in transit + at rest, broker logs to CloudWatch). The gap mirrors Walk 90 exactly:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `open_monitoring.prometheus` enables the JMX exporter (:11001) and node exporter (:11002) "scraped by the in-cluster Prometheus" — but the MSK security group's only ingress was 9092–9098 (the Kafka listeners). Ports 11001/11002 were **enabled on the broker and blocked at the SG** | Same shape as Walk 90's Redis TLS: a feature switched on at one end, its port closed at the other, and a comment ("scraped by Prometheus") asserting a path the security group silently denies. Broker dashboards/alerts would be permanently empty with no error — just no data | Second ingress rule for 11001–11002 from the cluster SG only, with the why. Same `security_groups = local.cluster_sg_ids` scoping as the Kafka rule — brokers stay unreachable from anywhere but the nodes |
+
+Walk 93 lesson: `open_monitoring` / "enable exporter" flags turn the metric *source* on; the *path* to it is a separate firewall/SG/NetworkPolicy decision in another resource. Every "enabled_in_broker = true" (or its Redis/RDS equivalent) owes a port-reachability check at the other end.
+
+## Walk 94: the fix was right, the test couldn't see it fire (Nov 10, 2026)
+
+Scope: a RED CI — Walk 92's push (`58baa41`) failed the `shopflow` validate job on `promtool test rules`. Not a flaky infra download (those were Walks 44/48); a real test defect I shipped in Walk 91.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `ProductCacheSilentlyDead` carried `for: 15m`, and its promtool test evaluated at `eval_time: 16m` expecting the alert to fire — but got `[]`. `rate(...[15m])` needs ≥2 points before it returns anything, so the alert condition can only start being true at minute ~2; from there to minute 16 is 14 minutes of pending time, **less than the 15m `for`** — so at eval time the alert was still PENDING, correctly un-fired. The alert logic was fine; the `for` was both too long and untested-against | A green local reason ("the expr is obviously right") shipped a red CI, because I didn't run promtool before pushing (no Docker this session) and the 16m window hid a 15m `for`. The 15m `for` on top of a 15m rate window was also just slow — double-counting the smoothing | `for: 15m → 5m` (the `[15m]` rate window already supplies the sustained-behaviour smoothing; 5m only guards a single-eval blip), with a comment explaining both the semantics and the test trap. Now fires by minute ~7, well inside the 16m test. Walk 92's PostgresBackupMissed tests had passed — only this one was red |
+
+Walk 94 lesson: **`for:` and a `rate([window])` both impose latency, and they stack** — a `for` as long as the rate window roughly doubles detection time for no extra signal. And the honest one: I pushed a monitoring change I couldn't run locally and trusted the expression's obviousness; the test existed precisely to catch what obviousness misses, and it did — the process worked, my pre-push check didn't. Where promtool can't run locally, the alert-under-test deserves extra scrutiny of `for` vs the test's eval window.
