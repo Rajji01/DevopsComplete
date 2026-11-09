@@ -19,6 +19,12 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+      ssl:
+        # ElastiCache has transit_encryption_enabled=true (Walk 90): without TLS the client's
+        # plaintext handshake fails on EVERY operation — and the fail-open error handler would
+        # swallow it silently, leaving prod with a permanently-missing cache that looks green.
+        # In-cluster/compose redis is plaintext, so the default stays false; prod sets REDIS_SSL.
+        enabled: ${REDIS_SSL:false}
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/inventory}
     username: ${DB_USERNAME:inventory}

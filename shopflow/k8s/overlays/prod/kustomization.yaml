@@ -162,6 +162,13 @@ patches:
             configMapKeyRef:
               name: shopflow-endpoints
               key: rds-endpoint
+      # ElastiCache enforces TLS (transit_encryption_enabled) — without this the Lettuce handshake
+      # fails on every call and the fail-open handler hides it: a silently dead cache (Walk 90)
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: REDIS_SSL
+          value: "true"
   - target:
       kind: Deployment
       name: payment-service
