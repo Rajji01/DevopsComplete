@@ -118,10 +118,15 @@ groups:
         # (wrong host, missing TLS — Walk 90) degrades to silent misses, not errors. So watch the
         # outcome: sustained read traffic with ZERO hits means the cache is effectively off and
         # Postgres is taking the full read load. Requires spring.cache.redis.enable-statistics.
+        # for: 5m, not 15m — the [15m] rate window already supplies the smoothing (a real cache
+        # death only shows zero hits once ~15m of pre-death hits age out), so a long `for` on top
+        # just doubles detection latency. 5m guards against a single-eval blip. (Walk 94: the old
+        # for:15m also made the promtool test un-fireable inside a 16m window — rate needs 2 points
+        # before the condition can start, leaving <15m of pending time.)
         expr: |
           sum(rate(cache_gets_total{cache="products", result="hit"}[15m])) == 0
             and sum(rate(cache_gets_total{cache="products"}[15m])) > 0.1
-        for: 15m
+        for: 5m
         labels:
           severity: ticket
         annotations:
