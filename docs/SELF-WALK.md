@@ -1169,3 +1169,18 @@ Scope: the never-walked Terraform files — `vpc.tf` (subnet math non-overlappin
 | `aws_elasticache_replication_group` sets `transit_encryption_enabled = true` — but inventory-service's Redis client had **no TLS config at all** (`spring.data.redis.host/port` only). A plaintext Lettuce handshake against a TLS-only endpoint fails on every operation | The brutal part is WHO hides it: our own fail-open `LoggingCacheErrorHandler` (a correct design!) turns every failure into a logged miss — so prod ships with a **permanently dead cache that looks green**: readiness is db-only, `REDIS_HEALTH` defaults false, no alert watches cache hit-rate. Every product read goes to Postgres; the flash-sale stampede the cache (and Walk 54's `sync=true`) exists to absorb lands straight on the DB | `spring.data.redis.ssl.enabled: ${REDIS_SSL:false}` (compose/in-cluster redis stay plaintext) + `REDIS_SSL: "true"` in the prod overlay's inventory patch, both with the why. Detection gap noted here honestly: a cache hit-ratio gauge/alert is the structural fix for "fail-open hides misconfig" and goes on the roadmap with the drift detector from D16 |
 
 Walk 90 lesson: **fail-open designs convert hard failures into silent degradation — which means every fail-open path NEEDS a metric watching the thing it fails open around.** And encryption flags are a two-ended contract (Walk 80's issuer lesson, TLS edition): the side that enables TLS and the side that speaks it live in different repos' files, so grep both ends whenever either changes.
+
+## Walk 91: a watchdog for the fail-open cache (Nov 9, 2026)
+
+Walk 90's lesson, implemented the same day — "every fail-open path needs a metric watching the thing it fails open around":
+
+| Piece | What |
+|---|---|
+| Metric | `spring.cache.redis.enable-statistics: true` → `cache_gets_total{cache="products", result="hit"\|"miss"}` (Boot's Redis cache binder; the `simple` dev cache emits nothing, which is fine — the failure mode being watched is prod's) |
+| Alert | `ProductCacheSilentlyDead` (ticket): hits == 0 **while** total gets > 0.1/s, for 15m — the outcome signal that catches ANY silent-death cause (wrong host, missing TLS, auth, policy) without knowing which. The traffic guard keeps no-traffic/no-data silent |
+| Tests | #14 (steady misses, zero hits → fires) + #14b (healthy mix → silent) — 19 promtool cases now |
+| Runbook | `ProductCacheSilentlyDead.md`: logs → connectivity/TLS (`REDIS_SSL`, Walk 90) → config → blast radius; and why it's a ticket, not a page (fail-open means users are fine until the next spike) |
+
+CLAUDE.md's trio (alert + test + runbook + README row) shipped together.
+
+Walk 91 lesson: watch **outcomes, not causes** — one hit-rate alert covers every way the cache can silently die, including the ways nobody has imagined yet. Cause-shaped alerts (one per misconfig) are whack-a-mole; outcome-shaped alerts are the net under the whole act.

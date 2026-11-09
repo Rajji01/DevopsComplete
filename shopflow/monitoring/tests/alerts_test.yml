@@ -312,3 +312,32 @@ tests:
       - eval_time: 16m
         alertname: PaymentFailureRateHigh
         exp_alerts: []
+
+  # 14. ProductCacheSilentlyDead: steady reads, zero hits -> the fail-open cache is off -> ticket (Walk 91)
+  - interval: 1m
+    input_series:
+      - series: 'cache_gets_total{application="inventory-service", cache="products", result="miss"}'
+        values: '0+60x20'
+      - series: 'cache_gets_total{application="inventory-service", cache="products", result="hit"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ProductCacheSilentlyDead
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: "products cache has traffic but zero hits (fail-open cache is silently dead)"
+              runbook: docs/runbooks/ProductCacheSilentlyDead.md
+
+  # 14b. healthy mix of hits and misses -> silent; 14c-shape: no traffic at all -> silent (guard term)
+  - interval: 1m
+    input_series:
+      - series: 'cache_gets_total{application="inventory-service", cache="products", result="miss"}'
+        values: '0+20x20'
+      - series: 'cache_gets_total{application="inventory-service", cache="products", result="hit"}'
+        values: '0+40x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ProductCacheSilentlyDead
+        exp_alerts: []

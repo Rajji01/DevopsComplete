@@ -15,6 +15,10 @@ spring:
     redis:
       time-to-live: 60s          # safety net if an eviction is ever missed
       key-prefix: "inventory:"
+      # cache_gets_total{result=hit|miss} in Prometheus: the fail-open error handler turns a broken
+      # Redis into silent misses, so a metric MUST watch the hit rate (Walk 90/91 — alert
+      # ProductCacheSilentlyDead pages nobody but tickets when traffic flows and hits stay zero)
+      enable-statistics: true
   data:
     redis:
       host: ${REDIS_HOST:localhost}

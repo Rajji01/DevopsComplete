@@ -99,6 +99,21 @@ groups:
           summary: "a refund was declined by the processor (order stuck in REFUND_PENDING, money not returned)"
           runbook: docs/runbooks/PaymentRefundFailed.md
 
+      - alert: ProductCacheSilentlyDead
+        # The products cache fails OPEN (LoggingCacheErrorHandler): a broken/misconfigured Redis
+        # (wrong host, missing TLS — Walk 90) degrades to silent misses, not errors. So watch the
+        # outcome: sustained read traffic with ZERO hits means the cache is effectively off and
+        # Postgres is taking the full read load. Requires spring.cache.redis.enable-statistics.
+        expr: |
+          sum(rate(cache_gets_total{cache="products", result="hit"}[15m])) == 0
+            and sum(rate(cache_gets_total{cache="products"}[15m])) > 0.1
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "products cache has traffic but zero hits (fail-open cache is silently dead)"
+          runbook: docs/runbooks/ProductCacheSilentlyDead.md
+
       - alert: KafkaMessageDeadLettered
         # a record exhausted its retries and was moved to a .DLT topic (Walk 40). Nothing consumes
         # the DLTs, so without this alert a dead-lettered event (an order email, a payment event) is
