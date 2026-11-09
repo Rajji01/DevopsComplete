@@ -54,7 +54,14 @@ public class OutboxRelay {
                 event.markPublished();
             } catch (Exception e) {
                 log.warn("could not publish outbox event {} ({}), will retry: {}", event.getId(), event.getEventType(), e.getMessage());
-                return; // keep ordering: stop at the first failure, next run retries from here
+                // stop at the first failure so THIS pod never publishes row N+1 before row N.
+                // Honest limit (Walk 89): that keeps ordering per pod, not per aggregate — with
+                // several relay pods, SKIP LOCKED hands adjacent rows of the SAME order to
+                // different pods during a backlog drain, and they can reach the partition out of
+                // order. The consumers' status guards + the cancel/charge compensation (Walk 43)
+                // absorb the known inversions; strict per-aggregate order would need a single
+                // writer (leader election) or hash-partitioned claims — see STATE §4.
+                return;
             }
         }
         if (!batch.isEmpty()) {
