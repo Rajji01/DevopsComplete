@@ -1251,3 +1251,16 @@ First real implementation on the Walk-96 skeleton (verified green on `7d756ce` f
 Still skeleton-honest elsewhere: outbound `LedgerEntryRecorded` event + the inbound saga consumer are increment 2; REST is 1b. Nothing in the existing stack touched.
 
 Walk 97 lesson: for a ledger, the two invariants that must hold at the *persistence* boundary — "never half-post" (one transaction) and "post once" (unique key + race recovery) — come before any API. Build the thing that can't corrupt money first; the HTTP shape on top is the easy part.
+
+## Walk 98: ledger increment 1b — the HTTP surface (Nov 10, 2026)
+
+On the green 1a base (`a3c6228` test job confirmed), the REST layer:
+
+- `POST /api/v1/accounts` (create, idempotent), `POST /api/v1/journal-entries` (record — idempotent, safe to retry: same key returns the same entry, never double-posts), `GET /api/v1/accounts/{code}/balance` (derived), `GET /api/v1/journal-entries?reference=` (audit/recon view).
+- The request speaks account codes + minor-unit amounts + direction; the controller maps each line to a `PostingLine(code, direction, Money.of(amountMinor, currency))` — the API's shape is the ledger's boundary, entities stay internal (DTO records, never exposing `@Entity`, the same discipline ArchUnit enforces in order-service).
+- `LedgerExceptionHandler` (RFC-7807, mirroring inventory's): a well-formed-but-unpostable request — unbalanced, or referencing an unknown account — is **422** (the server understood it and the business rule said no), a malformed one (blank currency, empty lines, bad types) is **400** via bean validation. The 400-vs-422 split is a small interview tell: "unbalanced isn't a bad request, it's an unprocessable one."
+- 5 MockMvc tests through the full stack: balanced post → derived balances read back, replay posts once, unbalanced → 422, unknown account → 422, malformed → 400. Unique account codes per test keep balances isolated without a test transaction.
+
+Increment 1 (a+b) done: a ledger you can create accounts in, post balanced entries to idempotently, and read derived balances from — with the invariants (never half-post, post once, controlled accounts, derived balance) all enforced and tested. Increment 2 = wire it to the saga (payment events → double-entry) via an inbound consumer + outbound outbox event.
+
+Walk 98 lesson: the 400/422 boundary is exactly the validate-first design made visible — bean validation (shape) is 400 and runs before the handler; the domain invariant (balance) is 422 and runs inside the service. Two layers, two status classes, and the code path already separates them.

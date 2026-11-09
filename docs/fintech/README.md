@@ -10,7 +10,7 @@
 |---|---|---|
 | 0 | **`ledger-service` skeleton** — double-entry domain (Money, Account, JournalEntry, Posting), state machine, Flyway schema, pure invariant tested; persistence/API stubbed | **DONE (Walk 96)** — compiles + H2 context test green |
 | 1a | **Ledger persistence** — `record()` writes entry + postings in one tx; idempotent by unique key (Walk-45 race recovery); accounts must pre-exist (`AccountService`, typo'd code = rejected posting); derived balance (signed sum). 5 persistence tests | **DONE (Walk 97)** |
-| 1b | REST layer — `POST /accounts`, `POST /journal-entries`, `GET /accounts/{code}/balance`, `GET /journal-entries?reference=` + ProblemDetail handler + MockMvc tests | TODO |
+| 1b | **REST layer** — `POST /accounts`, `POST /journal-entries` (idempotent), `GET /accounts/{code}/balance`, `GET /journal-entries?reference=` + RFC-7807 handler (unbalanced/unknown-account → 422, bad → 400) + 5 MockMvc tests | **DONE (Walk 98)** |
 | 2 | Wire ledger to the saga: payment-service `PaymentCaptured`/`PaymentRefunded` → ledger posts double-entry (inbound Kafka consumer, inbox dedup) | TODO |
 | 3 | **Reconciliation** job: internal ledger vs external statement (PSP/bank CSV) → matched / unmatched / exception buckets + metric + alert + runbook | TODO |
 | 4 | Payment **state machine** hardening: explicit INITIATED→AUTHORIZED→CAPTURED→SETTLED→RECONCILED (+FAILED/REVERSED), illegal transitions blocked, auth≠capture≠settlement | TODO (enum done in skeleton) |
