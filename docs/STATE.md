@@ -48,7 +48,7 @@ Refund decline (Walk 20): if payment-service's gateway declines the refund, it e
 | Running the stack | Docker Compose on one VM via Ansible (`infra/ansible`) | EKS via Terraform + Argo CD | `infra/ansible/README.md` |
 | Where prod state lives | in-cluster Postgres/Kafka/Redis/Keycloak (dev overlay) | RDS / MSK / ElastiCache / Cognito (prod overlay) | `k8s/overlays/prod/kustomization.yaml` |
 | Secrets | `secretGenerator` literals (dev only) | External Secrets Operator ← AWS Secrets Manager (IRSA) | `k8s/overlays/prod/external-secret.yaml` |
-| Admission policy | none / review | Kyverno (YAML) **and** Gatekeeper (Rego) for the same rule | `k8s/policies/kyverno/README.md` |
+| Admission policy | none / review | Kyverno (YAML, enforced + CI-tested) **and** Gatekeeper (Rego, reference only — shopflow-scoped, not run by CI) for the "no :latest" rule | `k8s/policies/kyverno/README.md` |
 | Image | alpine JRE, shell available (`Dockerfile`) | distroless, no shell (`Dockerfile.distroless`) | header of `Dockerfile.distroless` |
 | Alerting | symptom alerts with `for:` (`alert-rules.yml`) | SLO + multi-window burn-rate alerts (`slo-rules.yml`) | `docs/runbooks/CheckoutSLOBurnRate.md` |
 | Alert delivery | Prometheus /alerts page | Alertmanager routing: page → PagerDuty+Slack, ticket → Slack, inhibition | `monitoring/alertmanager.yml` |
