@@ -1141,3 +1141,11 @@ Docs-only: Walk 55's bug rebuilt as a symptom-first debugging drill (`docs/debug
 Docs-only: five terms this block coined or sharpened — replay- vs race-idempotent, phantom stock, replayable window, the census rule, bootstrap dependency — added to GLOSSARY with one-line Hinglish definitions and walk pointers, so the Ctrl+F path finds them.
 
 **CI pin:** `edf5fd8` GREEN (CI + shopflow) — the cumulative run verifying every code change of Walks 73–83: prod-overlay JWT_AUDIENCE + STS egress (kubeconform/kyverno), the recorded-definition alert switch against all 17 promtool cases, the in-cluster issuer pin, and the k6 fixes (`k6 inspect`).
+
+## Walk 88: the aws profile, walked end to end (Nov 9, 2026)
+
+Scope: the MSK IAM chain, link by link — the exact shape of Walk 73's STS finding, one layer up: does every service that gets `SPRING_PROFILES_ACTIVE=aws` actually have the profile file AND the jar?
+
+Verified across all three Kafka services (order, notification, payment): `application-aws.yml` exists and is byte-identical (SASL_SSL + AWS_MSK_IAM + login module + callback handler), `aws-msk-iam-auth` is a runtime-scope dependency in each pom (one version, from the parent property), the prod overlay sets the profile on exactly those three, every one reads `KAFKA_BOOTSTRAP_SERVERS` from the ConfigMap whose prod value is the `:9098` IAM listener, and (since Walk 73) all three have the STS 443 egress the credential fetch needs. inventory-service correctly has none of it. One stale line found: interview-notes/10 claimed the profile file lives "in order- and notification-service" — payment's copy predates the claim's correction. Fixed. **Otherwise verified clean.**
+
+Walk 88 lesson: a profile-activated feature is a chain with four links — the env var, the profile file, the classpath dependency, and the network path — and each lives in a different file owned by a different mental model. Walk the chain per service; "the other services have it" is exactly how the fourth copy gets skipped.

@@ -172,7 +172,7 @@ ShopFlow's choice is proven by a test: `NotificationServiceApplicationTests.even
 | `@RetryableTopic` | not used | non-blocking retries via `-retry-<n>` topics + `-dlt`; breaks per-key ordering |
 | `KafkaAdmin` + `NewTopic` beans | not used (topics auto-created locally; on MSK `auto.create.topics.enable=false`, so an admin/Job creates them — Terraform's `aws_msk_*` has no topic resource) | lets the app declare partitions/RF/retention at startup — also useful in tests |
 | Kafka transactions (`transaction-id-prefix`, `KafkaTransactionManager`, `executeInTransaction`) | not used — the outbox makes them unnecessary for the DB→Kafka hop | needed for consume-transform-produce exactly-once between topics |
-| `spring.kafka.security.protocol` / `sasl.*` | PLAINTEXT locally; **profile `aws`** (`application-aws.yml` in order- and notification-service, activated by `SPRING_PROFILES_ACTIVE=aws` in the prod overlay) sets the four MSK IAM properties | MSK IAM: `SASL_SSL`, `sasl.mechanism=AWS_MSK_IAM`, `sasl.jaas.config=software.amazon.msk.auth.iam.IAMLoginModule required;`, `sasl.client.callback.handler.class=...IAMClientCallbackHandler` + the `aws-msk-iam-auth` jar |
+| `spring.kafka.security.protocol` / `sasl.*` | PLAINTEXT locally; **profile `aws`** (`application-aws.yml` in all three Kafka services — order, notification AND payment (Walk 88); activated by `SPRING_PROFILES_ACTIVE=aws` in the prod overlay) sets the four MSK IAM properties | MSK IAM: `SASL_SSL`, `sasl.mechanism=AWS_MSK_IAM`, `sasl.jaas.config=software.amazon.msk.auth.iam.IAMLoginModule required;`, `sasl.client.callback.handler.class=...IAMClientCallbackHandler` + the `aws-msk-iam-auth` jar |
 
 ### Topic sizing & configuration (what to say when asked "how many partitions?")
 
