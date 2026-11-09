@@ -15,6 +15,7 @@ One page per alert: **what it means → what to check first (commands) → likel
 | PaymentFailureRateHigh | page | [PaymentFailureRateHigh.md](PaymentFailureRateHigh.md) |
 | PaymentRefundFailed | ticket | [PaymentRefundFailed.md](PaymentRefundFailed.md) |
 | ProductCacheSilentlyDead | ticket | [ProductCacheSilentlyDead.md](ProductCacheSilentlyDead.md) |
+| PostgresBackupMissed | ticket | [PostgresBackupMissed.md](PostgresBackupMissed.md) |
 | KafkaMessageDeadLettered | ticket | [KafkaMessageDeadLettered.md](KafkaMessageDeadLettered.md) |
 | OrdersStuckConfirmed | ticket | [OrdersStuckConfirmed.md](OrdersStuckConfirmed.md) |
 | CheckoutSLOBurnRateFast / Slow | page | [CheckoutSLOBurnRate.md](CheckoutSLOBurnRate.md) |

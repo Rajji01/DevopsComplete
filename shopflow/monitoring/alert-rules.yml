@@ -99,6 +99,20 @@ groups:
           summary: "a refund was declined by the processor (order stuck in REFUND_PENDING, money not returned)"
           runbook: docs/runbooks/PaymentRefundFailed.md
 
+      - alert: PostgresBackupMissed
+        # Outcome watchdog (Walk 92): a backup that failed AND a backup that silently never ran
+        # (suspended, schedule typo, PVC full) both show up as "no success in >26h" — the nightly
+        # job leaves ~2h of slack. Metric comes from kube-state-metrics: like the Rollouts
+        # analysis labels (Walk 51), the k8s scrape config is the lab cluster's part; compose has
+        # no CronJob to watch. Dev-overlay only — prod deletes the CronJob (RDS snapshots + PITR).
+        expr: time() - kube_cronjob_status_last_successful_time{cronjob="postgres-backup"} > 26 * 3600
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "postgres-backup has not succeeded in over 26h (failed or never ran)"
+          runbook: docs/runbooks/PostgresBackupMissed.md
+
       - alert: ProductCacheSilentlyDead
         # The products cache fails OPEN (LoggingCacheErrorHandler): a broken/misconfigured Redis
         # (wrong host, missing TLS — Walk 90) degrades to silent misses, not errors. So watch the

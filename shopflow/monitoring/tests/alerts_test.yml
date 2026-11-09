@@ -341,3 +341,30 @@ tests:
       - eval_time: 16m
         alertname: ProductCacheSilentlyDead
         exp_alerts: []
+
+  # 15. PostgresBackupMissed: last success 28h ago -> ticket; fresh success -> silent (Walk 92)
+  - interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_successful_time{cronjob="postgres-backup", namespace="shopflow"}'
+        values: '7200x1800'
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: PostgresBackupMissed
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              cronjob: postgres-backup
+              namespace: shopflow
+            exp_annotations:
+              summary: "postgres-backup has not succeeded in over 26h (failed or never ran)"
+              runbook: docs/runbooks/PostgresBackupMissed.md
+
+  # 15b. success 2h ago -> silent
+  - interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_successful_time{cronjob="postgres-backup", namespace="shopflow"}'
+        values: '100800x1800'
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: PostgresBackupMissed
+        exp_alerts: []

@@ -1184,3 +1184,13 @@ Walk 90's lesson, implemented the same day — "every fail-open path needs a met
 CLAUDE.md's trio (alert + test + runbook + README row) shipped together.
 
 Walk 91 lesson: watch **outcomes, not causes** — one hit-rate alert covers every way the cache can silently die, including the ways nobody has imagined yet. Cause-shaped alerts (one per misconfig) are whack-a-mole; outcome-shaped alerts are the net under the whole act.
+
+## Walk 92: the backup nobody would miss until the restore (Nov 9, 2026)
+
+Scope: `postgres/backup-cronjob.yaml` re-walked with Walk 91's outcome-watchdog lens. The job itself is genuinely well-built — `set -euo pipefail`, dump-to-`.part`-then-rename (a truncated dump can never masquerade as a good backup), retention delete only after success, `concurrencyPolicy: Forbid`, deadline, non-root. The gap was around it:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| Nothing watches whether the backup actually HAPPENS. `failedJobsHistoryLimit: 3` keeps evidence for a human who never looks; a suspended CronJob, a schedule typo, a full 2Gi PVC or a rotated password all fail (or skip) silently, forever | Backups are the textbook silent-failure: the first person to notice a year of missed backups is the person doing the restore. RPO is a promise about the WORST day, kept or broken on all the ordinary days nobody checked | `PostgresBackupMissed` (ticket): `time() - kube_cronjob_status_last_successful_time > 26h` — **freshness, not failure-count**, so "failed" and "never ran" are the same alert. Promtool tests #15/#15b (21 cases now), runbook (triage order: suspended → history → PVC/secret/deadline/policy; manual `create job --from=cronjob` verify; restore-drill reminder), README row. Honest dependency stated in the rule: metric needs kube-state-metrics — the lab cluster's part, same class as Walk 51's labelmap note |
+
+Walk 92 lesson: **a scheduled job's success history answers "did it work when it ran" — freshness answers "is it running at all", and only freshness survives the failure modes where the job never starts.** Alert on `last_successful_time`, not on failure counts.
