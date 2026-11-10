@@ -6,6 +6,18 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-11 — CLI (Opus 4.8) — live run + Walks 100–101
+**Branch:** `master`
+**Hua:** Pehli baar poora `docker compose` stack end-to-end chalaya (teaching session: ek order ko `POST` → outbox → Kafka → saga tak live trace kiya; order PAID hua). Is "first real boot" ne **4 asli bug** nikaale (sab fix + live-verified):
+- **Walk 100:** `order-service/application.yml` mein `datasource/jpa/mvc` galti se `jwt:` ke neeche nested (hone chahiye `spring:`) → `spring.datasource.url` khaali → app kisi bhi real DB se start hi nahi hoti (prod k8s bhi affected). Tests nahi pakadte kyunki wo H2 profile se datasource override karte — *green that is red*. Fix: wapas `spring:` ke neeche.
+- **Walk 101 (3 env bugs, compose stack kabhi boot hi nahi hua tha):** (a) `init-db.sh` CRLF → postgres init fail (`/bin/sh^M`); fix LF + naya `.gitattributes` (`*.sh eol=lf`). (b) Keycloak realm `alice/bob` ke `firstName/lastName` missing → KC26 `VERIFY_PROFILE` → login fail; fix naam add. (c) order-service issuer `localhost:8180` container ke andar khud ko point karta (401); fix `KC_HOSTNAME`+`JWT_ISSUER_URI` → `host.docker.internal:8180`.
+- Dev UX (bug nahi): compose mein **Adminer** (`:8888`) + postgres `5432` expose — DB browser se dekhne ko.
+- Teaching note: `docs/comprehension/01-outbox-dual-write/LIVE-WALKTHROUGH.md` (concept→code→dry-run→CDC/Debezium→idempotent consumer→run commands); README + notes.md se link.
+**Verify:** sab live-verified (order-service UP, order id=5 PIXEL-9 → PAID, outbox rows published). CI push pe watch pending.
+**Pending / next:** self-walk jari thi (Walk 102+ new hunt) — aage badhana. STATE §4 open items waise ke waise. Docker stack abhi **down** (user ne end pe band karne ko kaha).
+
+---
+
 ## ▶ RESUME HERE — 2026-11-08
 **Mode:** **AUTONOMOUS self-walk + teach, non-stop** (Abhishek ne 2026-11-08 ko wapas on kiya: "self walk krta rah, concept via project, karta rah"). Goal: ShopFlow improve karte hue Abhishek ko DevOps+Java+interview king banana — asli bug/gap dhoondho+fix+verify+commit, aur concepts project se samjhao. Ruko mat, baar-baar na poochho.
 **State:** in-sync; Walks done **up to 96**. **NEW direction (Walk 96): fintech/payments add-on** — ShopFlow ko OSTTRA post-trade angle se defend karne ke liye concepts implement kar rahe (additive, kuch hataya nahi). Tracker: `docs/fintech/README.md`. Ledger skeleton done, increments 1–5 pending (STATE §4). **GREEN on `2432baa`** (CI + shopflow) = Walks 88–94 cumulative verified, incl. dono naye watchdog alerts ka promtool. Green pins: **dbfc4f4** (Walks 53–59 + postgres-smoke verdict), **2b73b83** (Walks 65–68, helm fail-guard samet). Walks 70–71 ka run (`605efcf`) pending/latest — promtool ke 8 naye tests isi mein verify honge. (Earlier a GUIDED-STUDY pause tha; ab lifted.)

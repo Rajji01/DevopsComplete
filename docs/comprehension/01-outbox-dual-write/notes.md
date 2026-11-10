@@ -1,6 +1,7 @@
 # 01 · Transactional outbox — concept notes (kya / kyu / kaise)
 
 > Isi topic ka comprehension round: [`comprehension.md`](comprehension.md). Code: `shopflow/shopflow-outbox/` + `order-service/…/OrderService.java#saveWithEvent`.
+> **Live hands-on** (stack chala ke `POST` se Kafka tak trace + CDC/Debezium + idempotent consumer, ek jagah): [`LIVE-WALKTHROUGH.md`](LIVE-WALKTHROUGH.md).
 
 ## Kya (one line)
 Business row **aur** uska event ek hi DB transaction mein ek `outbox_event` table mein likho; ek alag relay baad mein us table ko padh ke Kafka pe publish karta hai. Isse "DB bhi update, Kafka pe bhi event" — dono ya to saath hote hain ya dono nahi.

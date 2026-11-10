@@ -43,7 +43,7 @@ Har row mein do files: `comprehension.md` (round) + `notes.md` (concept).
 
 | # | Topic | Core concept | Round |
 |---|---|---|---|
-| 01 | [Dual write & the transactional outbox](01-outbox-dual-write/) · [notes](01-outbox-dual-write/notes.md) | DB+Kafka atomically, at-least-once, polling relay | HLD / Kafka |
+| 01 | [Dual write & the transactional outbox](01-outbox-dual-write/) · [notes](01-outbox-dual-write/notes.md) · [live walkthrough](01-outbox-dual-write/LIVE-WALKTHROUGH.md) | DB+Kafka atomically, at-least-once, polling relay | HLD / Kafka |
 | 02 | [Cancelling a paid order: refund saga](02-saga-cancel-refund/) · [notes](02-saga-cancel-refund/notes.md) | Saga choreography, compensation, money-before-stock | HLD / microservices |
 | 03 | [Three kinds of idempotency](03-idempotency-three-ways/) · [notes](03-idempotency-three-ways/notes.md) | Idempotency-Key, dedupe-by-eventId, idempotent-by-state | Backend / Kafka |
 | 04 | [Orders stuck in limbo](04-order-limbo-reconciler/) · [notes](04-order-limbo-reconciler/notes.md) | No txn around remote call, reconciler, "not every limbo auto-cancels" | Backend / reliability |
