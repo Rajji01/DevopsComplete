@@ -1298,3 +1298,20 @@ Same first-ever end-to-end run surfaced three more real bugs. None are caught by
 Also added (dev experience, not a bug): an **Adminer** service (`http://localhost:8888`) and a published `5432` port so the databases can be browsed from a UI / desktop client while learning.
 
 Walk 101 lesson: **"the tests pass" and "a human can run it" are different guarantees, and a learning/interview repo needs both.** Everything here lives in the gap CI structurally cannot see — container line endings, an IdP image's new defaults, container-vs-host network identity. The cheapest insurance is to actually boot the stack once on the target OS (and ideally in CI via a compose-up smoke job), because the first real `up` is where all of these surface at once.
+
+## Walk 102: adversarial sweep of the saga + ledger — a near-miss, then verified clean (Nov 11, 2026)
+
+Having just watched one order run CONFIRMED → payment FAILED → CANCELLED live, I went hunting for a real correctness bug in the compensation paths and the (newest) ledger code. Net result: **no bug** — but one near-miss worth recording, because the discipline is the point.
+
+**Near-miss (almost manufactured a finding):** `LedgerController.record()` returns `201 Created` on an idempotent *replay*, where the sibling `OrderController` returns `200` for a repeated `Idempotency-Key`. I started to "fix" this as an HTTP-contract inconsistency — until I read `LedgerApiTest`, which **deliberately asserts** `status().isCreated()` on the replay with the comment "idempotent: safe to retry". It is a tested design choice (201 = "the entry exists", defensible), not an accident. Overriding a deliberate, tested decision is manufacturing a finding, so I left it. *Verify the intent before calling something a bug — a sibling's different convention is not proof of a defect.*
+
+**Verified clean (each a claim I tried to break and couldn't):**
+- **`inventoryClient.release()` idempotency** — the saga calls it in five places (`cancel`, `onPaymentFailed`, `onPaymentRefunded`, `reconcile`) on the premise "release is a safe no-op if nothing was reserved". Confirmed end to end: inventory's `DELETE /reservations/{ref}` is `@ResponseStatus(NO_CONTENT)` and `ReservationService.release` is `findByOrderRef(...).filter(RESERVED).ifPresent(...)` — a missing or already-RELEASED reservation is a silent no-op, never a 404/throw. The client's lack of `onStatus` handling is therefore fine. The premise holds.
+- **Saga status guards** — `onPaymentCaptured/Failed/Refunded` are all `filter(status)`-guarded, so duplicate/late/out-of-order deliveries are no-ops; the cancel/charge race (Walk 43) is explicitly handled by routing a captured-but-cancelled order back into the refund saga.
+- **Money precision** — payment `amount` is `numeric(12,2)` and the entity declares `precision=12, scale=2` (match); amount is `price.multiply(quantity)` in `BigDecimal` (no float); ledger stores `amount_minor bigint check (>0)` with signed direction. No truncation surface.
+- **No sibling of the Walk 100 bug** — checked all five services' `application.yml`: only order-service had `datasource` mis-nested; the rest have it correctly under `spring:`.
+- **Walk 100 blast radius** — confirmed the k8s base and prod overlay inject `DB_URL` (not `SPRING_DATASOURCE_URL`), so the mis-nesting broke order-service in prod too, not only locally — the severity claim is real.
+
+Also self-caught in CI: the Walk 101 `KC_HOSTNAME` comment was 237 chars and failed the yamllint `line-length` (160) gate — the one job that went red. Split into two comment lines; every other job (tests, images, validate, terraform, schema-vs-postgres, k6) was green. *My own doc change gets the same gate as code.*
+
+Walk 102 lesson: **"verified clean" is a real outcome, and the way to earn it is to try to break each safety claim, not to admire it.** The temptation on a quiet sweep is to promote a style difference (201 vs 200) into a "bug" to have something to show; the honest move is to read the test that pins it and move on. The actual value produced was negative-space: five load-bearing assumptions now have a confirmation behind them instead of a comment.
