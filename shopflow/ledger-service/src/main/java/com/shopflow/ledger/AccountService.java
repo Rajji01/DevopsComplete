@@ -26,11 +26,14 @@ public class AccountService {
     }
 
     /**
-     * Idempotent create: a repeated call with the same {@code code} returns the existing account
-     * (same race recovery as order-service's idempotency key — the unique index is the guarantee,
-     * the pre-check is only an optimization).
+     * Idempotent create: a repeated (or concurrent) call with the same {@code code} returns the
+     * existing account — the unique index is the guarantee, the pre-check is only an optimization.
+     *
+     * Deliberately NOT @Transactional (Walk 99): each repository call is its own transaction, so a
+     * concurrent insert's unique-key violation can be caught here and recovered with a fresh
+     * re-fetch. A @Transactional method could not — the violation marks its transaction
+     * rollback-only, and its commit would then throw UnexpectedRollbackException past this catch.
      */
-    @Transactional
     public Account create(String code, AccountType type, String currency) {
         var existing = accounts.findByCode(code);
         if (existing.isPresent()) {
