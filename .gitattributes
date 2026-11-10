@@ -1,0 +1,4 @@
+# Shell scripts must stay LF even on Windows checkouts: they are executed inside
+# Linux containers (e.g. k8s/base/postgres/init-db.sh mounted into postgres), and a
+# CRLF shebang makes the kernel look for interpreter "/bin/sh\r" -> "bad interpreter".
+*.sh text eol=lf

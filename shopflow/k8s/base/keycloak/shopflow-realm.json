@@ -22,11 +22,13 @@
   "users": [
     {
       "username": "alice", "enabled": true, "email": "alice@example.com", "emailVerified": true,
+      "firstName": "Alice", "lastName": "Customer",
       "credentials": [{ "type": "password", "value": "alice", "temporary": false }],
       "realmRoles": ["customer"]
     },
     {
       "username": "bob", "enabled": true, "email": "bob@example.com", "emailVerified": true,
+      "firstName": "Bob", "lastName": "Support",
       "credentials": [{ "type": "password", "value": "bob", "temporary": false }],
       "realmRoles": ["support"]
     }
