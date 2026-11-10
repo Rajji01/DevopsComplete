@@ -94,7 +94,9 @@ services:
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
-      KC_HOSTNAME: http://host.docker.internal:8180   # issuer must be ONE url reachable from both host (to get a token) and the order-service container (to validate it); localhost is not — inside a container it is the container itself
+      # one issuer URL reachable from BOTH the host (to get a token) and the order-service
+      # container (to validate it); localhost would resolve to the container itself, not keycloak
+      KC_HOSTNAME: http://host.docker.internal:8180
     volumes:
       - ./k8s/base/keycloak/shopflow-realm.json:/opt/keycloak/data/import/shopflow-realm.json:ro
     ports:
