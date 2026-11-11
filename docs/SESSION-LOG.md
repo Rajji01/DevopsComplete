@@ -6,6 +6,14 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-11 — CLI (Opus 4.8) — Walk 103 (infra-layer sweep, verified clean)
+**Branch:** `master`
+**Hua:** CI confirm — pichhla push `970f505` **green** (dono workflows `CI` + `shopflow` success); Walk 102 lint-fix thread band. Phir 30-min adversarial hunt, **infra layer** pe (k8s/compose/overlays — jahan CI sirf syntax check karta). **Koi naya bug nahi**, par: (a) ek CRLF scare chase kiya — `grep -c $'\r'` ne `init-db.sh` mein "14 CR" dikhaye (Walk 101 ka wahi file), par byte-level pe (`od -c` + python `.count(b'\r')`) → **0 CR, 14 LF**, fix intact; grep ne line-count match kiya tha, false positive. (b) Prod overlay ke **positional env patches** (`env/1`=DB_URL replace, `env/0`=RDS_ENDPOINT insert) — repo ka sabse brittle construct — chaaron services verify: sabme `env[0]=DB_POOL_SIZE, env[1]=DB_URL`, patch sahi. Saath hi reservation concurrency, payment saga idempotency, network policies (egress vs real callees + backup PVC), Dockerfile/probes — sab verified clean.
+**Verify:** SELF-WALK.md Walk 103 entry; STATE §4 mein ek nayi latent-fragility note (positional env patch).
+**Pending / next:** Walk 104+ naya hunt. Fintech increments 2–5 (ledger saga wiring) abhi baaki. Docker stack down.
+
+---
+
 ## 2026-11-11 — CLI (Opus 4.8) — live run + Walks 100–101
 **Branch:** `master`
 **Hua:** Pehli baar poora `docker compose` stack end-to-end chalaya (teaching session: ek order ko `POST` → outbox → Kafka → saga tak live trace kiya; order PAID hua). Is "first real boot" ne **4 asli bug** nikaale (sab fix + live-verified):
