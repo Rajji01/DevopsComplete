@@ -19,10 +19,18 @@ public class FakePaymentGateway implements PaymentGateway {
     }
 
     @Override
-    public Result charge(String orderRef, BigDecimal amount) {
+    public Result authorize(String orderRef, BigDecimal amount) {
+        // The issuer's funds check lives here: this is the step that declines (card limit, no funds).
         return amount.compareTo(limit) > 0
                 ? Result.declined("card limit exceeded (" + amount + " > " + limit + ")")
                 : Result.ok();
+    }
+
+    @Override
+    public Result capture(String orderRef, BigDecimal amount) {
+        // Capturing a hold we just authorized always succeeds in the fake. A real processor can decline
+        // (expired/voided auth); that path maps to Payment.failCapture and PaymentFailed if it ever does.
+        return Result.ok();
     }
 
     @Override

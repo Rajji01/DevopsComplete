@@ -60,31 +60,48 @@ public class OrderConfirmedListener {
             return; // redelivery: already charged (or declined) for this exact event
         }
         BigDecimal amount;
-        PaymentGateway.Result result;
+        PaymentGateway.Result auth;
         var price = priceList.priceOf(event.sku());
         if (price.isPresent()) {
             amount = price.get().multiply(BigDecimal.valueOf(event.quantity()));
-            result = gateway.charge(event.orderRef(), amount);
+            auth = gateway.authorize(event.orderRef(), amount);          // step 1: hold funds (the decline point)
         } else {
             // A sku inventory sells but we cannot price must never be charged a made-up amount
             // (the old 999.00 fallback did exactly that — Walk 42). Decline: the FAILED payment +
             // PaymentFailed event flow through the normal path, so the order cancels and the
             // reserved stock is released instead of the customer paying a wrong price.
             amount = BigDecimal.ZERO;
-            result = PaymentGateway.Result.declined("no price for sku " + event.sku());
+            auth = PaymentGateway.Result.declined("no price for sku " + event.sku());
         }
 
-        Payment payment = new Payment(event.eventId(), event.orderRef(), amount,
-                result.approved() ? Payment.Status.CAPTURED : Payment.Status.FAILED, result.reason());
+        if (!auth.approved()) {
+            Payment failed = Payment.failed(event.eventId(), event.orderRef(), amount, auth.reason());
+            payments.save(failed);
+            publishOutcome(failed, PaymentEvent.failed(event.orderRef(), amount, auth.reason()));
+            return;
+        }
+
+        // Authorized: persist the hold, then capture it (step 2). Both are guarded transitions, so an
+        // out-of-order replay can never drive an illegal move. shopflow captures immediately; a delayed-
+        // capture variant would just stop here and capture on a later event.
+        Payment payment = Payment.authorized(event.eventId(), event.orderRef(), amount);
         payments.save(payment);
+        meterRegistry.counter("payments", "status", Payment.Status.AUTHORIZED.name()).increment();
 
-        PaymentEvent out = result.approved()
-                ? PaymentEvent.captured(event.orderRef(), amount)
-                : PaymentEvent.failed(event.orderRef(), amount, result.reason());
-        outbox.publish(PaymentEvent.TOPIC, "Payment", event.orderRef(), out.type(), out);
+        var captured = gateway.capture(event.orderRef(), amount);
+        if (captured.approved()) {
+            payment.capture();
+            publishOutcome(payment, PaymentEvent.captured(event.orderRef(), amount));
+        } else {
+            payment.failCapture(captured.reason());
+            publishOutcome(payment, PaymentEvent.failed(event.orderRef(), amount, captured.reason()));
+        }
+    }
 
+    private void publishOutcome(Payment payment, PaymentEvent event) {
+        outbox.publish(PaymentEvent.TOPIC, "Payment", payment.getOrderRef(), event.type(), event);
         meterRegistry.counter("payments", "status", payment.getStatus().name()).increment();
-        log.info("payment for order {}: {} {}", event.orderRef(), payment.getStatus(), amount);
+        log.info("payment for order {}: {} {}", payment.getOrderRef(), payment.getStatus(), payment.getAmount());
     }
 
     /**
@@ -110,7 +127,7 @@ public class OrderConfirmedListener {
         }
         var result = gateway.refund(payment.getOrderRef(), payment.getAmount());
         if (result.approved()) {
-            payment.markRefunded();
+            payment.refund();
             outbox.publish(PaymentEvent.TOPIC, "Payment", payment.getOrderRef(),
                     "PaymentRefunded", PaymentEvent.refunded(payment.getOrderRef(), payment.getAmount()));
             meterRegistry.counter("payments", "status", "REFUNDED").increment();
