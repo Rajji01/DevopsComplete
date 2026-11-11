@@ -48,8 +48,17 @@ public class LedgerService {
 
     /**
      * Post a balanced set of legs for one business event, exactly once per {@code idempotencyKey}.
+     * The generic (REST) path books the entry as {@link JournalEntryStatus#INITIATED} — a manually
+     * posted entry is not yet confirmed. The saga listener uses the overload below with
+     * {@link JournalEntryStatus#CAPTURED}, because an entry posted from a {@code PaymentCaptured} event
+     * records money that has ALREADY moved; reconciliation then drives it SETTLED -> RECONCILED (Walk 116).
      */
     public JournalEntry record(String idempotencyKey, String reference, String currency, List<PostingLine> lines) {
+        return record(idempotencyKey, reference, currency, lines, JournalEntryStatus.INITIATED);
+    }
+
+    public JournalEntry record(String idempotencyKey, String reference, String currency,
+                               List<PostingLine> lines, JournalEntryStatus initialStatus) {
         // 1. invariant first — an unbalanced request never reaches the database
         DoubleEntry.validate(currency, lines);
 
@@ -61,7 +70,7 @@ public class LedgerService {
 
         // 3. entry + postings in ONE transaction, so the ledger is never half-posted
         try {
-            return transactionTemplate.execute(status -> persist(idempotencyKey, reference, currency, lines));
+            return transactionTemplate.execute(status -> persist(idempotencyKey, reference, currency, lines, initialStatus));
         } catch (DataIntegrityViolationException raceLost) {
             // a concurrent request with the same key committed between our pre-check and our insert.
             // The failed transaction has fully rolled back; this re-fetch runs in a fresh one.
@@ -71,9 +80,10 @@ public class LedgerService {
     }
 
     /** The atomic write. Runs inside the TransactionTemplate; any throw rolls the whole entry back. */
-    private JournalEntry persist(String idempotencyKey, String reference, String currency, List<PostingLine> lines) {
+    private JournalEntry persist(String idempotencyKey, String reference, String currency,
+                                 List<PostingLine> lines, JournalEntryStatus initialStatus) {
         JournalEntry entry = journalEntries.save(
-                new JournalEntry(idempotencyKey, reference, currency, JournalEntryStatus.INITIATED));
+                new JournalEntry(idempotencyKey, reference, currency, initialStatus));
         for (PostingLine line : lines) {
             Account account = accounts.require(line.accountCode());
             if (!account.getCurrency().equals(currency)) {

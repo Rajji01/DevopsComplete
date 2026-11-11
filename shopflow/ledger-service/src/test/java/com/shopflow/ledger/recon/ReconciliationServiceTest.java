@@ -11,7 +11,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.shopflow.ledger.JournalEntryRepository;
 import com.shopflow.ledger.LedgerService;
+import com.shopflow.ledger.domain.JournalEntryStatus;
 import com.shopflow.ledger.domain.Money;
 import com.shopflow.ledger.domain.PostingDirection;
 import com.shopflow.ledger.domain.PostingLine;
@@ -34,16 +36,22 @@ class ReconciliationServiceTest {
     @Autowired
     private LedgerService ledger;
 
+    @Autowired
+    private JournalEntryRepository journalEntries;
+
+    // a capture posts a CAPTURED entry (money has moved) — reconciliation closes it to RECONCILED
     private void postCapture(String reference, long minor) {
         ledger.record(UUID.randomUUID().toString(), reference, LedgerAccounts.CURRENCY, List.of(
                 new PostingLine(LedgerAccounts.CASH, PostingDirection.DEBIT, Money.of(minor, LedgerAccounts.CURRENCY)),
-                new PostingLine(LedgerAccounts.SALES_REVENUE, PostingDirection.CREDIT, Money.of(minor, LedgerAccounts.CURRENCY))));
+                new PostingLine(LedgerAccounts.SALES_REVENUE, PostingDirection.CREDIT, Money.of(minor, LedgerAccounts.CURRENCY))),
+                JournalEntryStatus.CAPTURED);
     }
 
     private void postRefund(String reference, long minor) {
         ledger.record(UUID.randomUUID().toString(), reference, LedgerAccounts.CURRENCY, List.of(
                 new PostingLine(LedgerAccounts.SALES_REVENUE, PostingDirection.DEBIT, Money.of(minor, LedgerAccounts.CURRENCY)),
-                new PostingLine(LedgerAccounts.CASH, PostingDirection.CREDIT, Money.of(minor, LedgerAccounts.CURRENCY))));
+                new PostingLine(LedgerAccounts.CASH, PostingDirection.CREDIT, Money.of(minor, LedgerAccounts.CURRENCY))),
+                JournalEntryStatus.CAPTURED);
     }
 
     private static SettlementLine line(String reference, long minor) {
@@ -105,5 +113,40 @@ class ReconciliationServiceTest {
         // nothing to settle, so it is neither matched nor an exception
         assertThat(report.exceptions()).isZero();
         assertThat(report.matched()).isZero();
+    }
+
+    @Test
+    void matchedReferenceIsAdvancedToReconciled() {
+        postCapture("order-F", 50000);
+        assertThat(journalEntries.findByReference("order-F")).singleElement()
+                .extracting(e -> e.getStatus()).isEqualTo(JournalEntryStatus.CAPTURED);
+
+        reconciliation.reconcile(List.of(line("order-F", 50000)));   // ties out -> settle + reconcile
+
+        assertThat(journalEntries.findByReference("order-F")).singleElement()
+                .extracting(e -> e.getStatus()).isEqualTo(JournalEntryStatus.RECONCILED);
+    }
+
+    @Test
+    void reconcileIsIdempotentForAnAlreadyReconciledEntry() {
+        postCapture("order-G", 50000);
+        reconciliation.reconcile(List.of(line("order-G", 50000)));   // -> RECONCILED
+
+        // a second run re-sees the same match; it must NOT throw an illegal-transition on the terminal entry
+        reconciliation.reconcile(List.of(line("order-G", 50000)));
+
+        assertThat(journalEntries.findByReference("order-G")).singleElement()
+                .extracting(e -> e.getStatus()).isEqualTo(JournalEntryStatus.RECONCILED);
+    }
+
+    @Test
+    void mismatchedReferenceIsNotSettledAndStaysCaptured() {
+        postCapture("order-H", 50000);
+
+        reconciliation.reconcile(List.of(line("order-H", 40000)));   // AMOUNT_MISMATCH, not matched
+
+        // an exception reference must never be quietly closed — it stays CAPTURED for a human to resolve
+        assertThat(journalEntries.findByReference("order-H")).singleElement()
+                .extracting(e -> e.getStatus()).isEqualTo(JournalEntryStatus.CAPTURED);
     }
 }

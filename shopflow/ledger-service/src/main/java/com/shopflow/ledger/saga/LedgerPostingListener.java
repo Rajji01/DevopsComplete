@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shopflow.ledger.LedgerService;
+import com.shopflow.ledger.domain.JournalEntryStatus;
 import com.shopflow.ledger.domain.Money;
 import com.shopflow.ledger.domain.PostingDirection;
 import com.shopflow.ledger.domain.PostingLine;
@@ -88,8 +89,11 @@ public class LedgerPostingListener {
                 new PostingLine(LedgerAccounts.CASH, cashDirection, amount),
                 new PostingLine(LedgerAccounts.SALES_REVENUE, revenueDirection, amount));
 
-        // eventId -> idempotencyKey (the inbox guard); orderRef -> reference (what recon groups by)
-        ledger.record(event.eventId().toString(), event.orderRef(), LedgerAccounts.CURRENCY, lines);
+        // eventId -> idempotencyKey (the inbox guard); orderRef -> reference (what recon groups by).
+        // Born CAPTURED, not INITIATED: a PaymentCaptured/PaymentRefunded event records money that has
+        // ALREADY moved. Reconciliation drives the matched entry CAPTURED -> SETTLED -> RECONCILED (Walk 116).
+        ledger.record(event.eventId().toString(), event.orderRef(), LedgerAccounts.CURRENCY, lines,
+                JournalEntryStatus.CAPTURED);
 
         meterRegistry.counter("ledger.postings", "type", event.type()).increment();
         log.info("ledger posted {} for order {}: {} {} (event {})",
