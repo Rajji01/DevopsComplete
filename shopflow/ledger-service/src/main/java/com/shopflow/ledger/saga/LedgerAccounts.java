@@ -1,27 +1,21 @@
 package com.shopflow.ledger.saga;
 
-import org.springframework.boot.ApplicationRunner;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-
-import com.shopflow.ledger.AccountService;
-import com.shopflow.ledger.domain.AccountType;
-
 /**
- * The platform's control accounts for the payment flow, created deliberately at startup — not
- * auto-conjured by a posting (AccountService's rule: a typo'd code must be a rejected posting, not
- * a silent new account that absorbs money). Seeding them up front is the "deliberate" creation.
+ * The platform's control accounts for the payment flow, and the currency the flow uses. The
+ * accounts themselves are seeded as reference data by Flyway ({@code V2__control_accounts.sql}),
+ * NOT by an ApplicationRunner — a runner runs after context refresh, but the @KafkaListener that
+ * posts to these accounts starts consuming during refresh, so a runner-based seed could lose the
+ * startup race and let the first event hit a missing account (Walk 106). A migration runs before
+ * any listener consumes, so the accounts always exist first.
  *
- * The capture double-entry is: DEBIT {@code CASH} (an ASSET — cash we received goes up on the debit
- * side) and CREDIT {@code SALES_REVENUE} (a REVENUE account — revenue goes up on the credit side).
- * A refund is the exact reverse. Because every entry balances, CASH and SALES_REVENUE always move
- * together and the sum of all balances stays zero.
- *
- * {@code AccountService.create} is idempotent (unique code + race-safe), so running this on every
- * boot is safe and also self-heals a fresh database.
+ * The capture double-entry is: DEBIT {@code CASH} (an ASSET — cash received goes up on the debit
+ * side) and CREDIT {@code SALES_REVENUE} (a REVENUE account — goes up on the credit side); a refund
+ * is the exact reverse. Every entry balances, so CASH and SALES_REVENUE always move together.
  */
-@Configuration
-public class LedgerAccounts {
+public final class LedgerAccounts {
+
+    private LedgerAccounts() {
+    }
 
     /** Platform cash/settlement account (ASSET): increased by a debit when a customer pays. */
     public static final String CASH = "CASH";
@@ -31,12 +25,4 @@ public class LedgerAccounts {
 
     /** All amounts in this flow are rupees; multi-currency + FX is increment 4. */
     public static final String CURRENCY = "INR";
-
-    @Bean
-    ApplicationRunner seedLedgerAccounts(AccountService accounts) {
-        return args -> {
-            accounts.create(CASH, AccountType.ASSET, CURRENCY);
-            accounts.create(SALES_REVENUE, AccountType.REVENUE, CURRENCY);
-        };
-    }
 }

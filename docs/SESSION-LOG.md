@@ -6,6 +6,14 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-11 — CLI (Opus 4.8) — Walks 104–106 (fintech inc 2–3 build + self-walk on own code)
+**Branch:** `master`
+**Hua:** Non-stop build sprint — fintech **increment 2** (ledger→saga inbox wiring: `LedgerPostingListener`, inbox = journal entry's unique idempotency_key, no separate table; `Money.fromMajor` HALF_EVEN) + **increment 3** (`ReconciliationService` ledger-vs-settlement, 3 exception buckets, `ledger_recon_*` gauges, `LedgerReconExceptions` alert + promtool test + runbook). Phir **Walk 106** = adversarial walk on that fresh code, 2 real bugs mile+fix: (a) `reconcile()` `@Transactional` self-invocation se scheduled path pe ineffective (Walk-99 class) → annotation hataya (reads ko tx chahiye hi nahi + fetch I/O tx mein pin nahi karni); (b) control accounts `ApplicationRunner` se seed the, par `@KafkaListener` usse pehle start hota (SmartLifecycle vs callRunners) → cold start pe `AccountNotFoundException`/dead-letter race → Flyway `V2__control_accounts.sql` se seed (migration listener se pehle chalti). Teaching note: `docs/fintech/02-inbox-and-reconciliation.md`.
+**Verify:** inc 2 (`7d30afc`), 3a (`75d24bd`), 3b (`d12eadc`) sab CI green (mvnw verify JDK21 + promtool). Walk 106 fix push ke baad CI confirm.
+**Pending / next:** inc 4 (payment state machine auth/capture/settle + FX — reshape, deliberately), inc 5 (ledger k8s/helm/CI-image/postgres-smoke — abhi ledger sirf reactor-test, deploy nahi).
+
+---
+
 ## 2026-11-11 — CLI (Opus 4.8) — Walk 103 (infra-layer sweep, verified clean)
 **Branch:** `master`
 **Hua:** CI confirm — pichhla push `970f505` **green** (dono workflows `CI` + `shopflow` success); Walk 102 lint-fix thread band. Phir 30-min adversarial hunt, **infra layer** pe (k8s/compose/overlays — jahan CI sirf syntax check karta). **Koi naya bug nahi**, par: (a) ek CRLF scare chase kiya — `grep -c $'\r'` ne `init-db.sh` mein "14 CR" dikhaye (Walk 101 ka wahi file), par byte-level pe (`od -c` + python `.count(b'\r')`) → **0 CR, 14 LF**, fix intact; grep ne line-count match kiya tha, false positive. (b) Prod overlay ke **positional env patches** (`env/1`=DB_URL replace, `env/0`=RDS_ENDPOINT insert) — repo ka sabse brittle construct — chaaron services verify: sabme `env[0]=DB_POOL_SIZE, env[1]=DB_URL`, patch sahi. Saath hi reservation concurrency, payment saga idempotency, network policies (egress vs real callees + backup PVC), Dockerfile/probes — sab verified clean.

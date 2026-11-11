@@ -13,7 +13,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import com.shopflow.ledger.AccountService;
 import com.shopflow.ledger.JournalEntryRepository;
@@ -89,9 +88,17 @@ public class ReconciliationService {
 
     /**
      * Pure reconciliation: compare the ledger's net CASH movement per reference against the
-     * statement's net per reference, bucket every disagreement, and publish the gauges. Read-only.
+     * statement's net per reference, bucket every disagreement, and publish the gauges.
+     *
+     * Deliberately NOT @Transactional (Walk 106): the only caller inside this bean is
+     * {@link #scheduledReconcile()}, and a self-invocation bypasses the Spring proxy — so a
+     * @Transactional here would silently do nothing on the scheduled path (it would appear to work
+     * only when called directly, e.g. from a test, which masks the gap). The reads need no
+     * transaction anyway: they are committed-read batch queries with no write and no lazy loading,
+     * and every CASH posting's entry is committed in the same unit as the posting, so the two reads
+     * can never see a posting whose entry is missing. Wrapping the scheduled path in a transaction
+     * would also risk pinning a DB connection across the (potentially remote) statement fetch.
      */
-    @Transactional(readOnly = true)
     public ReconciliationReport reconcile(List<SettlementLine> statement) {
         Map<String, Long> ledgerNet = ledgerNetCashByReference();
         Map<String, Long> statementNet = new HashMap<>();
