@@ -5,3 +5,4 @@ resources:
   - analysis-template.yaml
   - order-service-canary.yaml
   - inventory-service-bluegreen.yaml
+  - hpa.yaml   # retarget the two services' HPAs from the Deployment to the Rollout (Walk 109)
