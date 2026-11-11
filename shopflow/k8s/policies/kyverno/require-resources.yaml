@@ -26,3 +26,16 @@ spec:
                     memory: "?*"
                   limits:
                     memory: "?*"
+            # initContainers consume cpu/memory and schedule like any container; an unbounded one can
+            # OOM the node or evade the scheduler's reservation. Cover them too (Walk 110) — the same
+            # init-container hardening disallow-latest (Walk 16) and require-non-root (Walk 17) already
+            # got, but this policy was left out. Conditional anchor: pods without initContainers aren't
+            # rejected. Ephemeral (debug) containers are NOT covered: the Kubernetes API forbids
+            # setting resources on them, so requiring it would make every debug attach fail.
+            "=(initContainers)":
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    memory: "?*"
