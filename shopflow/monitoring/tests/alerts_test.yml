@@ -368,3 +368,35 @@ tests:
       - eval_time: 30h
         alertname: PostgresBackupMissed
         exp_alerts: []
+
+  # 16. LedgerReconExceptions: the daily recon finds an unmatched reference -> ticket (increment 3).
+  #     The aggregated expr drops all labels, so the fired alert carries only severity: ticket.
+  - interval: 1m
+    input_series:
+      - series: 'ledger_recon_unmatched{application="ledger-service"}'
+        values: '1x20'
+      - series: 'ledger_recon_mismatch{application="ledger-service"}'
+        values: '0x20'
+      - series: 'ledger_recon_matched{application="ledger-service"}'
+        values: '7x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LedgerReconExceptions
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: "ledger reconciliation has unexplained exceptions (ledger vs settlement statement disagree)"
+              runbook: docs/runbooks/LedgerReconExceptions.md
+
+  # 16b. a clean reconciliation (everything tied out) -> silent
+  - interval: 1m
+    input_series:
+      - series: 'ledger_recon_unmatched{application="ledger-service"}'
+        values: '0x20'
+      - series: 'ledger_recon_mismatch{application="ledger-service"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LedgerReconExceptions
+        exp_alerts: []

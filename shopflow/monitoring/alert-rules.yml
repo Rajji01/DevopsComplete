@@ -146,3 +146,21 @@ groups:
         annotations:
           summary: "{{ $labels.application }} dead-lettered a Kafka record (event lost until replayed from the DLT)"
           runbook: docs/runbooks/KafkaMessageDeadLettered.md
+
+      - alert: LedgerReconExceptions
+        # The daily reconciliation (ReconciliationService, increment 3) compares the ledger's net
+        # cash per reference against the external settlement statement (PSP/bank). A non-zero
+        # unmatched (present on only one side) or mismatch (same ref, different net) count means
+        # money moved on one side without the other — a settlement we never booked, an entry the
+        # statement does not show, or a differing amount. The money is not lost, it is UNEXPLAINED:
+        # the post-trade control that must be worked the same day, not paged at 3am.
+        # The gauges hold the LAST run's result (updated once/day), so this is a raw-value check,
+        # not a rate — no rate window, so a short `for` is safely fireable (Walk 94). max() across
+        # pods because each replica may run the job (no leader election yet) and they agree.
+        expr: max(ledger_recon_unmatched) + max(ledger_recon_mismatch) > 0
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "ledger reconciliation has unexplained exceptions (ledger vs settlement statement disagree)"
+          runbook: docs/runbooks/LedgerReconExceptions.md
