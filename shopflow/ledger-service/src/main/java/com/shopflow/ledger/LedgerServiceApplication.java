@@ -2,6 +2,7 @@ package com.shopflow.ledger;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Double-entry ledger service (payments / post-trade core).
@@ -19,6 +20,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * tested; persistence, the REST API and the inbound saga consumer are stubbed TODOs by increment.
  */
 @SpringBootApplication
+@EnableScheduling   // the daily reconciliation job (increment 3)
 public class LedgerServiceApplication {
 
     public static void main(String[] args) {
