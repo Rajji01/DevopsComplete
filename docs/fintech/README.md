@@ -4,7 +4,7 @@
 >
 > **Edge (yaad rakh):** generic backend engineer se tera farq = tu asli paisa/trade handle karta hai. Har pattern ko OSTTRA trade lifecycle pe map kar: **capture → confirmation → clearing → settlement (T+1/T+2) → reconciliation → reg reporting**. Pattern + jahan use kiya + uske bina kya tootega = defensible.
 
-> **Teaching notes:** [`02-inbox-and-reconciliation.md`](02-inbox-and-reconciliation.md) — increments 2+3 (inbox pattern without an inbox table, double-entry from payment events, reconciliation + exception buckets), asli code ke saath.
+> **Teaching notes:** [`02-inbox-and-reconciliation.md`](02-inbox-and-reconciliation.md) — increments 2+3 (inbox pattern without an inbox table, double-entry from payment events, reconciliation + exception buckets). · [`03-payment-state-machine.md`](03-payment-state-machine.md) — increment 4a (auth≠capture, guarded lifecycle, illegal transition impossible), asli code ke saath.
 
 ## Build order (skeleton-first, step by step)
 
