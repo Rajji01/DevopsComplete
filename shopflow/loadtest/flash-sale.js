@@ -28,17 +28,20 @@ export const options = {
     },
   },
   thresholds: {
-    http_req_failed: ['rate<0.01'],          // 5xx are failures; 409/429 are not (see check below)
+    http_req_failed: ['rate<0.01'],          // 5xx + any other UNexpected status are failures; 429 is not
     'http_req_duration{scenario:browse}': ['p(99)<300'],
     'order_latency': ['p(95)<800'],
     'orders_confirmed': ['count==3'],        // exactly the stock, never more: the whole point
   },
 };
 
-// Without this, k6 counts EVERY 4xx as http_req_failed — so the expected 409s (out of stock)
-// and 429s (rate limiter doing its job) would breach the rate<0.01 threshold and fail the run
-// for behaving correctly (Walk 47). Expected = 2xx/3xx + the two deliberate business statuses.
-http.setResponseCallback(http.expectedStatuses({ min: 200, max: 399 }, 409, 429));
+// Without this, k6 counts EVERY non-2xx as http_req_failed. In this buy-only flood the one
+// DELIBERATE non-2xx is 429 (the rate limiter doing its job, Walk 47) — whitelist it so it does
+// not breach rate<0.01. Out-of-stock is NOT a 409 to this client: order-service catches inventory's
+// internal 409 and returns 201 with body status REJECTED (OrderService.placeOrder), so the 297
+// losers are 201s, not errors. order-service only emits a 409 on the cancel / idempotency-race
+// paths — which a pure-buy test never exercises — so a 409 HERE is a real anomaly and SHOULD fail.
+http.setResponseCallback(http.expectedStatuses({ min: 200, max: 399 }, 429));
 
 const BASE = __ENV.BASE_URL || 'http://localhost:8081';
 const INVENTORY = __ENV.INVENTORY_URL || 'http://localhost:8082';
