@@ -6,6 +6,14 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-11 — CLI (Opus 4.8) — Walks 107–112 (non-stop self-walk: 4 real bugs + 2 clean)
+**Branch:** `master`
+**Hua:** Continuous adversarial sweep across layers CI only syntax-checks. **Real bugs fixed:** (108) Helm prod ran order-service with JWT **audience check OFF** — Kustomize prod pinned `JWT_AUDIENCE`, Helm didn't (security drift); fix in `order-service-prod.yaml` (full env list, since Helm replaces lists). (109) Argo Rollouts: base HPA targets the Deployment that the Rollout scales to 0 → serving pods never autoscale; fix `k8s/rollouts/hpa.yaml` retargets HPA to the Rollout. (110) Kyverno `require-resources` skipped `initContainers` (siblings disallow-latest/require-non-root cover them, Walk 16/17); fix + `bad-init-resources-pod` fixture + CI assertion. **Verified clean (tried to break each):** (107) AWS Terraform security (ingress EKS-only, encryption on, private subnets, IAM least-priv), (111) checkout SLI burn-rate math + notification at-least-once ordering, (112) Gatekeeper vs Kyverno disallow-latest parity. Plus earlier (106) two bugs in own inc 2–3 code (@Transactional self-invocation; listener-vs-seeder race → Flyway V2).
+**Verify:** every fix commit CI green (108 `50a62df`, 109 `7a1cd3d`, 110 `46ed91e` all CI+shopflow success); clean walks docs-only. Each SELF-WALK.md Walk 106–112 has concept→finding→lesson.
+**Pending / next:** fintech inc 4 (payment state machine auth/capture/settle + FX) + inc 5 (ledger k8s/helm/CI-image/postgres-smoke). Self-walk continues on request (next: k6 loadtest / Ansible / Jenkinsfile / grafana dashboards unswept).
+
+---
+
 ## 2026-11-11 — CLI (Opus 4.8) — Walks 104–106 (fintech inc 2–3 build + self-walk on own code)
 **Branch:** `master`
 **Hua:** Non-stop build sprint — fintech **increment 2** (ledger→saga inbox wiring: `LedgerPostingListener`, inbox = journal entry's unique idempotency_key, no separate table; `Money.fromMajor` HALF_EVEN) + **increment 3** (`ReconciliationService` ledger-vs-settlement, 3 exception buckets, `ledger_recon_*` gauges, `LedgerReconExceptions` alert + promtool test + runbook). Phir **Walk 106** = adversarial walk on that fresh code, 2 real bugs mile+fix: (a) `reconcile()` `@Transactional` self-invocation se scheduled path pe ineffective (Walk-99 class) → annotation hataya (reads ko tx chahiye hi nahi + fetch I/O tx mein pin nahi karni); (b) control accounts `ApplicationRunner` se seed the, par `@KafkaListener` usse pehle start hota (SmartLifecycle vs callRunners) → cold start pe `AccountNotFoundException`/dead-letter race → Flyway `V2__control_accounts.sql` se seed (migration listener se pehle chalti). Teaching note: `docs/fintech/02-inbox-and-reconciliation.md`.
