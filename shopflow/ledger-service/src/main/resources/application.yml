@@ -1,6 +1,15 @@
 spring:
   application:
     name: ledger-service
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:                   # consumes payments.events to post double entries
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      properties:
+        isolation.level: read_committed   # only see records the producer transaction committed
+    listener:
+      observation-enabled: true           # trace context travels in the Kafka headers
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/ledger}
     username: ${DB_USERNAME:ledger}

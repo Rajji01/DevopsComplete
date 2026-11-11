@@ -1,5 +1,8 @@
 package com.shopflow.ledger.domain;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+
 /**
  * Money as (minor units, currency) — never a float/double (the classic payments filter question).
  * `minorUnits` is the smallest indivisible unit of the currency: paise for INR, cents for USD.
@@ -21,6 +24,26 @@ public record Money(long minorUnits, String currency) {
 
     public static Money of(long minorUnits, String currency) {
         return new Money(minorUnits, currency);
+    }
+
+    /**
+     * Convert a major-unit decimal amount (e.g. 749.99 rupees, as it arrives on a PaymentCaptured
+     * event) into minor units, making the rounding decision explicitly, ONCE, right here at the
+     * boundary — the whole point of the (minorUnits, currency) design (see the type javadoc).
+     *
+     * Rounding is HALF_EVEN (banker's rounding): it rounds a half to the nearest even digit, so a
+     * stream of .005 amounts does not bias systematically upward the way HALF_UP would — the
+     * convention mandated for financial sums. {@code movePointRight(2)} assumes a 2-dp minor unit
+     * (paise/cents); a 0-dp currency like JPY and multi-currency scaling arrive with FX in
+     * increment 4, so this deliberately takes the currency only to carry it onto the Money, not yet
+     * to vary the exponent.
+     */
+    public static Money fromMajor(BigDecimal major, String currency) {
+        if (major == null) {
+            throw new IllegalArgumentException("amount required");
+        }
+        long minor = major.movePointRight(2).setScale(0, RoundingMode.HALF_EVEN).longValueExact();
+        return new Money(minor, currency);
     }
 
     public Money plus(Money other) {

@@ -6,3 +6,9 @@ spring:
   jpa:
     hibernate:
       ddl-auto: validate       # Flyway migrates H2, Hibernate validates the entities against it
+  kafka:
+    listener:
+      auto-startup: false      # no broker in the test: start no consumer container, call the
+                               # listener method directly (its idempotency + posting is the logic
+                               # under test, not Kafka wiring — that is covered by the shared
+                               # embedded-Kafka tests in the saga-driving services)

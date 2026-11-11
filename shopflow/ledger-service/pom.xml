@@ -12,9 +12,16 @@
     <name>ledger-service</name>
     <description>Double-entry ledger: every money movement as balanced immutable postings (payments/post-trade core)</description>
 
-    <!-- Skeleton (Walk 96): domain + double-entry invariant + state machine + Flyway schema.
-         No Kafka yet; the inbound saga consumer (post from PaymentCaptured) is increment 2.
-         All deps (web, jpa, actuator, flyway, postgres, test, h2) come from the shared parent. -->
+    <!-- Increment 1 (Walk 96): domain + double-entry invariant + state machine + Flyway schema.
+         Increment 2 (Walk 104): inbound saga consumer — posts a balanced entry from each
+         PaymentCaptured / PaymentRefunded on payments.events. That is the one dependency this
+         module adds over the parent (web, jpa, actuator, flyway, postgres, test, h2). -->
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+    </dependencies>
 
     <build>
         <finalName>app</finalName>

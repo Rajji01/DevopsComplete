@@ -11,7 +11,7 @@
 | 0 | **`ledger-service` skeleton** — double-entry domain (Money, Account, JournalEntry, Posting), state machine, Flyway schema, pure invariant tested; persistence/API stubbed | **DONE (Walk 96)** — compiles + H2 context test green |
 | 1a | **Ledger persistence** — `record()` writes entry + postings in one tx; idempotent by unique key (Walk-45 race recovery); accounts must pre-exist (`AccountService`, typo'd code = rejected posting); derived balance (signed sum). 5 persistence tests | **DONE (Walk 97)** |
 | 1b | **REST layer** — `POST /accounts`, `POST /journal-entries` (idempotent), `GET /accounts/{code}/balance`, `GET /journal-entries?reference=` + RFC-7807 handler (unbalanced/unknown-account → 422, bad → 400) + 5 MockMvc tests | **DONE (Walk 98)** |
-| 2 | Wire ledger to the saga: payment-service `PaymentCaptured`/`PaymentRefunded` → ledger posts double-entry (inbound Kafka consumer, inbox dedup) | TODO |
+| 2 | Wire ledger to the saga: payment-service `PaymentCaptured`/`PaymentRefunded` → ledger posts double-entry (inbound Kafka consumer, inbox dedup) | **DONE (Walk 104)** — `LedgerPostingListener` on `payments.events`; DR CASH / CR SALES_REVENUE (refund = reverse); `Money.fromMajor` HALF_EVEN at the boundary; **inbox = the journal entry's own unique `idempotency_key` (= eventId), no separate table** — avoids the Walk-99 `@Transactional` trap; 4 listener tests + 2 rounding tests |
 | 3 | **Reconciliation** job: internal ledger vs external statement (PSP/bank CSV) → matched / unmatched / exception buckets + metric + alert + runbook | TODO |
 | 4 | Payment **state machine** hardening: explicit INITIATED→AUTHORIZED→CAPTURED→SETTLED→RECONCILED (+FAILED/REVERSED), illegal transitions blocked, auth≠capture≠settlement | TODO (enum done in skeleton) |
 | 5 | k8s/helm/monitoring/networkpolicy for ledger-service + CI image matrix + postgres-smoke test | TODO |
@@ -22,7 +22,7 @@
 | Item | ShopFlow | Status | OSTTRA defense line |
 |---|---|---|---|
 | **Idempotency** (key + payload-hash bind, dedup table) | `OrderService.placeOrder` (Idempotency-Key + unique constraint race, Walk 45); consumer `processed_event` inbox | 🟡 key hai, payload-hash binding nahi | "Trade capture pe idempotency key lagaya kyunki upstream retry karta tha; same key + alag payload = reject (replay guard)." |
-| **Double-entry ledger** | 🆕 `ledger-service` | 🆕 skeleton | "Har money movement = balanced debit+credit, immutable append-only; balance derived, stored nahi — netting/position ka base yahi hai." |
+| **Double-entry ledger** | 🆕 `ledger-service` | ✅ saga-wired (Walk 104) | "Har money movement = balanced debit+credit, immutable append-only; balance derived, stored nahi — netting/position ka base yahi hai. PaymentCaptured → DR CASH / CR SALES_REVENUE, refund = reverse." |
 | **Exactly-once illusion** | outbox (at-least-once) + `processed_event` idempotent consumer = effectively-once | ✅ | "Exactly-once network pe exist nahi karta; at-least-once delivery + idempotent consumer = effectively-once." |
 | **Saga (compensating txn)** | choreography: order↔inventory↔payment; cancel/charge race → REFUND_PENDING compensation (Walk 43) | ✅ | "Distributed txn bina 2PC; choreography events se, aur compensating transaction (refund/reversal) se failure undo." |
 | **Transactional Outbox + Inbox** | `shopflow-outbox` (FOR UPDATE SKIP LOCKED relay) + `processed_event` inbox | ✅ | "Dual-write problem: DB commit + event publish ek local txn mein (outbox row), relay baad mein publish — confirmation events reliably jaate the." |
