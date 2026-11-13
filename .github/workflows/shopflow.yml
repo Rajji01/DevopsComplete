@@ -112,7 +112,7 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: |
-          for db in orders inventory payments notifications; do
+          for db in orders inventory payments notifications ledger; do
             psql -h localhost -U postgres -c "create database $db"
           done
       - name: Boot every service context against Postgres
@@ -224,7 +224,7 @@ jobs:
     strategy:
       fail-fast: false   # independent per-service builds; one leg's problem shouldn't cancel the rest
       matrix:
-        service: [order-service, inventory-service, notification-service, payment-service]
+        service: [order-service, inventory-service, notification-service, payment-service, ledger-service]
     steps:
       - uses: actions/checkout@v7
       # OCI image references must be lowercase, but github.repository_owner keeps its original case

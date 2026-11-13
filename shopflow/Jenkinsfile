@@ -65,7 +65,7 @@ pipeline {
                 axes {
                     axis {
                         name 'SERVICE'
-                        values 'order-service', 'inventory-service', 'notification-service', 'payment-service'
+                        values 'order-service', 'inventory-service', 'notification-service', 'payment-service', 'ledger-service'
                     }
                 }
                 stages {
@@ -93,7 +93,7 @@ pipeline {
                 withCredentials([usernamePassword(credentialsId: 'ghcr', usernameVariable: 'USER', passwordVariable: 'TOKEN')]) {
                     sh '''
                       echo "$TOKEN" | docker login ghcr.io -u "$USER" --password-stdin
-                      for s in order-service inventory-service notification-service payment-service; do
+                      for s in order-service inventory-service notification-service payment-service ledger-service; do
                         docker push ${REGISTRY}/shopflow-$s:${IMAGE_TAG}
                       done
                     '''

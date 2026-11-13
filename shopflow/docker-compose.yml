@@ -3,6 +3,7 @@
 #   inventory-service     http://localhost:8082/swagger-ui.html
 #   notification-service  http://localhost:8083/actuator/health
 #   payment-service       http://localhost:8084/actuator/health
+#   ledger-service        http://localhost:8085/actuator/health
 #   keycloak              http://localhost:8180  (admin / admin; realm "shopflow", users alice/alice, bob/bob)
 #   prometheus            http://localhost:9090
 #   alertmanager          http://localhost:9093  (routing: page -> PagerDuty+Slack, ticket -> Slack)
@@ -36,6 +37,7 @@ services:
       INVENTORY_DB_PASSWORD: inventory
       NOTIFICATIONS_DB_PASSWORD: notifications
       PAYMENTS_DB_PASSWORD: payments
+      LEDGER_DB_PASSWORD: ledger
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./k8s/base/postgres/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
@@ -187,6 +189,27 @@ services:
       - "8084:8084"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8084/actuator/health/readiness"]
+      interval: 10s
+      start_period: 40s
+
+  # keeps the books: consumes payments.events and records every capture/refund as a balanced
+  # double entry (DR CASH / CR SALES_REVENUE and the reverse), then reconciles. Own DB, like every service.
+  ledger-service:
+    <<: *service-defaults
+    build:
+      context: .
+      args:
+        SERVICE: ledger-service
+    image: shopflow/ledger-service:local
+    environment:
+      <<: *service-env
+      DB_URL: jdbc:postgresql://postgres:5432/ledger
+      DB_USERNAME: ledger
+      DB_PASSWORD: ledger
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8085/actuator/health/readiness"]
       interval: 10s
       start_period: 40s
 

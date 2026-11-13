@@ -6,8 +6,8 @@ import org.springframework.test.context.ActiveProfiles;
 
 /**
  * Boots the full context against H2: proves the Flyway migration applies and the entities pass
- * ddl-auto=validate (entity columns match the schema). The real-Postgres equivalent is increment 5
- * (add ledger to the CI postgres-smoke job).
+ * ddl-auto=validate (entity columns match the schema). The real-Postgres equivalent is
+ * {@link PostgresSchemaValidationTest}, which runs in CI's postgres-smoke job (Walk 120).
  */
 @SpringBootTest
 @ActiveProfiles("test")
