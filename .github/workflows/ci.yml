@@ -16,7 +16,7 @@ jobs:
       run:
         working-directory: ${{ matrix.service }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -33,7 +33,7 @@ jobs:
     name: Validate Kubernetes manifests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: kubeconform
         # download to a file with retries, THEN extract: "curl | tar" fails the whole job on one
         # truncated byte (a retry mid-pipe can't help tar), which is exactly what flaked (Walk 44)
