@@ -78,7 +78,7 @@ jobs:
       - run: ./mvnw -B verify
       - name: Upload test reports
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: surefire-reports
           path: shopflow/**/target/surefire-reports/
@@ -272,7 +272,7 @@ jobs:
           tar xzf syft.tar.gz syft
           ./syft ${{ env.IMAGE }}:${{ github.sha }} -o cyclonedx-json > sbom-${{ matrix.service }}.cdx.json
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-${{ matrix.service }}.cdx.json
           path: sbom-${{ matrix.service }}.cdx.json
