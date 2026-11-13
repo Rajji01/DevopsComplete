@@ -14,6 +14,8 @@ images:
     newTag: dev
   - name: shopflow/payment-service
     newTag: dev
+  - name: shopflow/ledger-service
+    newTag: dev
 # dev-only throwaway passwords; prod gets them from a secret manager (see overlays/prod)
 secretGenerator:
   - name: shopflow-db
@@ -23,6 +25,7 @@ secretGenerator:
       - inventory-db-password=inventory
       - notifications-db-password=notifications
       - payments-db-password=payments
+      - ledger-db-password=ledger
   - name: keycloak-admin
     literals:
       - password=admin

@@ -192,7 +192,7 @@ jobs:
         # not the local helm/ chart directory (only `./helm` would have collided).
         run: |
           helm lint helm/shopflow-service -f helm/values/order-service.yaml
-          for v in helm/values/order-service.yaml helm/values/payment-service.yaml; do
+          for v in helm/values/order-service.yaml helm/values/payment-service.yaml helm/values/ledger-service.yaml; do
             helm template svc helm/shopflow-service -f "$v" | kubeconform -strict -summary -
           done
 
@@ -358,7 +358,8 @@ jobs:
             shopflow/order-service=ghcr.io/${{ github.repository_owner }}/shopflow-order-service:${{ github.sha }} \
             shopflow/inventory-service=ghcr.io/${{ github.repository_owner }}/shopflow-inventory-service:${{ github.sha }} \
             shopflow/notification-service=ghcr.io/${{ github.repository_owner }}/shopflow-notification-service:${{ github.sha }} \
-            shopflow/payment-service=ghcr.io/${{ github.repository_owner }}/shopflow-payment-service:${{ github.sha }}
+            shopflow/payment-service=ghcr.io/${{ github.repository_owner }}/shopflow-payment-service:${{ github.sha }} \
+            shopflow/ledger-service=ghcr.io/${{ github.repository_owner }}/shopflow-ledger-service:${{ github.sha }}
           kustomize build . > /dev/null      # still renders?
       - name: Commit and push
         run: |

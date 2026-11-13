@@ -34,7 +34,7 @@ resource "aws_iam_policy" "read_db_secret" {
   })
 }
 
-# 2. order-service / notification-service: produce and consume on MSK with IAM auth
+# 2. order-service / notification-service / payment-service / ledger-service: produce and consume on MSK with IAM auth
 module "irsa_kafka_clients" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
   version = "~> 5.0"
@@ -44,7 +44,7 @@ module "irsa_kafka_clients" {
   oidc_providers = {
     main = {
       provider_arn               = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["shopflow:order-service", "shopflow:notification-service", "shopflow:payment-service"]
+      namespace_service_accounts = ["shopflow:order-service", "shopflow:notification-service", "shopflow:payment-service", "shopflow:ledger-service"]
     }
   }
 
@@ -88,7 +88,8 @@ resource "aws_iam_policy" "kafka_clients" {
         Resource = [
           "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/notification-service",
           "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/payment-service",
-          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/order-service"
+          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/order-service",
+          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/ledger-service"
         ]
       }
     ]

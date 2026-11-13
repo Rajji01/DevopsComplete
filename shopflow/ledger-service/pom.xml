@@ -21,6 +21,13 @@
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka</artifactId>
         </dependency>
+        <!-- MSK IAM auth for the aws profile (Walk 121): same as the other Kafka clients
+             (order/notification/payment) — SASL_SSL + IAMLoginModule in application-aws.yml. -->
+        <dependency>
+            <groupId>software.amazon.msk</groupId>
+            <artifactId>aws-msk-iam-auth</artifactId>
+            <version>${aws-msk-iam-auth.version}</version>
+        </dependency>
     </dependencies>
 
     <build>

@@ -111,7 +111,8 @@ pipeline {
                             shopflow/order-service=${REGISTRY}/shopflow-order-service:${IMAGE_TAG} \
                             shopflow/inventory-service=${REGISTRY}/shopflow-inventory-service:${IMAGE_TAG} \
                             shopflow/notification-service=${REGISTRY}/shopflow-notification-service:${IMAGE_TAG} \
-                            shopflow/payment-service=${REGISTRY}/shopflow-payment-service:${IMAGE_TAG}
+                            shopflow/payment-service=${REGISTRY}/shopflow-payment-service:${IMAGE_TAG} \
+                            shopflow/ledger-service=${REGISTRY}/shopflow-ledger-service:${IMAGE_TAG}
                           git config user.name jenkins && git config user.email jenkins@example.com
                           git commit -am "deploy(prod): pin images to ${IMAGE_TAG:0:7}" && git push origin HEAD:main
                         '''

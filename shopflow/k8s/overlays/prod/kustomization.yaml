@@ -27,6 +27,9 @@ images:
   - name: shopflow/payment-service
     newName: ghcr.io/rajji01/shopflow-payment-service
     newTag: set-by-ci
+  - name: shopflow/ledger-service
+    newName: ghcr.io/rajji01/shopflow-ledger-service
+    newTag: set-by-ci
 # Endpoints of the managed services: copy from `terraform output` after apply.
 configMapGenerator:
   - name: shopflow-endpoints
@@ -195,6 +198,31 @@ patches:
           name: SPRING_PROFILES_ACTIVE
           value: aws
   - target:
+      kind: Deployment
+      name: ledger-service
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1
+        value:
+          name: DB_URL
+          value: jdbc:postgresql://$(RDS_ENDPOINT)/ledger?sslmode=require
+      - op: add
+        path: /spec/template/spec/containers/0/env/0
+        value:
+          name: RDS_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: shopflow-endpoints
+              key: rds-endpoint
+      - op: add
+        path: /spec/template/spec/serviceAccountName
+        value: ledger-service
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: SPRING_PROFILES_ACTIVE
+          value: aws
+  - target:
       kind: NetworkPolicy
       name: payment-service-egress
     patch: |-
@@ -211,6 +239,29 @@ patches:
       # MSK IAM auth fetches its credentials from STS over HTTPS (IRSA web-identity exchange):
       # without 443 the Kafka client cannot even authenticate (Walk 73). order-service already
       # had 443 for Cognito JWKS; these two Kafka consumers need it for STS the same way.
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - ipBlock:
+                cidr: 0.0.0.0/0
+          ports:
+            - port: 443
+  - target:
+      kind: NetworkPolicy
+      name: ledger-service-egress
+    patch: |-
+      - op: add
+        path: /spec/egress/-
+        value:
+          to:
+            - ipBlock:
+                cidr: 10.0.0.0/16        # RDS (ledger DB) + MSK live in the VPC
+          ports:
+            - port: 5432
+            - port: 9092
+            - port: 9098
+      # STS over HTTPS for MSK IAM credentials — same reason as payment-service (Walk 73)
       - op: add
         path: /spec/egress/-
         value:

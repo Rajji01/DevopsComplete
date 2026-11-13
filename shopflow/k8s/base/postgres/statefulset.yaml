@@ -54,6 +54,11 @@ spec:
                 secretKeyRef:
                   name: shopflow-db
                   key: payments-db-password
+            - name: LEDGER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shopflow-db
+                  key: ledger-db-password
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "postgres"]
