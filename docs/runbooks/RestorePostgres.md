@@ -17,6 +17,7 @@ ls -lh /backups
 export PGPASSWORD=postgres
 pg_restore -h postgres -U postgres -d orders --clean --if-exists /backups/orders-<ts>.dump
 ```
+The cronjob dumps **all five** databases nightly — `orders`, `inventory`, `notifications`, `payments`, `ledger` — so substitute the name for whichever you are restoring (`ledger` is the book of record: restore it first in a full recovery).
 Then `kn rollout restart deploy/order-service` (Hikari connections may hold stale state) and run the smoke test (`make token` + one order).
 
 ## Prod: point-in-time recovery on RDS
