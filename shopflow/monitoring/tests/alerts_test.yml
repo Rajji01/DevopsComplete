@@ -144,6 +144,54 @@ tests:
         alertname: CheckoutSLOBurnRateFast
         exp_alerts: []
 
+  # 7b. SLO ticket tier (chronic drain): a steady 1% bad rate — above the 0.5% budget but below the 3%
+  #     the 6h page needs and the 7.2% the 1h page needs — sustained for days. rate3d and rate6h both
+  #     exceed 0.5% -> CheckoutSLOBurnRateTicket (ticket). Neither page tier fires. (hourly samples)
+  - interval: 1h
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="201"}'
+        values: '0+99x73'
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="503"}'
+        values: '0+1x73'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="1.0"}'
+        values: '0+99x73'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="+Inf"}'
+        values: '0+99x73'
+    alert_rule_test:
+      - eval_time: 73h
+        alertname: CheckoutSLOBurnRateTicket
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              slo: checkout-availability
+            exp_annotations:
+              summary: "checkout is chronically over its error budget (1x burn, 3d window) — investigate before it exhausts"
+              runbook: docs/runbooks/CheckoutSLOBurnRate.md
+      # the same chronic 1% must NOT trip either page tier (1% is below both 3% and 7.2%)
+      - eval_time: 73h
+        alertname: CheckoutSLOBurnRateSlow
+        exp_alerts: []
+      - eval_time: 73h
+        alertname: CheckoutSLOBurnRateFast
+        exp_alerts: []
+
+  # 7c. SLO ticket tier stays silent below budget: a steady 0.4% bad rate is under the 0.5% threshold,
+  #     so even the slowest tier must not fire (no false chronic-drain ticket for in-budget noise).
+  - interval: 1h
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="201"}'
+        values: '0+996x73'
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="503"}'
+        values: '0+4x73'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="1.0"}'
+        values: '0+996x73'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="+Inf"}'
+        values: '0+996x73'
+    alert_rule_test:
+      - eval_time: 73h
+        alertname: CheckoutSLOBurnRateTicket
+        exp_alerts: []
+
   # 8. PaymentRefundFailed: the refund-failed counter ticks up once -> ticket fires
   - interval: 1m
     input_series:
