@@ -23,6 +23,7 @@
         <module>shopflow-cache</module>
         <module>shopflow-lock</module>
         <module>shopflow-id</module>
+        <module>shopflow-balance</module>
         <module>inventory-service</module>
         <module>order-service</module>
         <module>notification-service</module>
