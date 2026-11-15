@@ -6,6 +6,18 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-15 — CLI (Opus 4.8) — concept-library series part 2: resilience / sketch / stream / merkle
+**Branch:** `master`
+**Hua:** Continued the autonomous "pick-a-concept, implement-all-its-techniques, next-one-myself, non-stop" series (part 1 was cache/lock/id/balance). Four more standalone, prod-grade, fully-unit-tested (pure Java, no infra) libraries, each with a teaching README:
+- **shopflow-resilience** (`2b7634c`): CircuitBreaker (CLOSED/OPEN/HALF_OPEN, count window, clock-injected timeout), Retry (retryable-predicate + injected Sleeper), Backoffs (fixed/exponential/full+equal jitter — beat the thundering herd), Bulkhead (semaphore). 13 tests.
+- **shopflow-sketch** (`28bac4f`): BloomFilter (no false negatives, tunable fpp), CountingBloomFilter (deletable), CountMinSketch (never underestimates). 8 tests. Shared FNV+fmix64 hash.
+- **shopflow-stream** (`76dbcb5`): SpaceSavingTopK + MisraGries (heavy hitters), ReservoirSampler (Vitter R). 6 tests.
+- **shopflow-merkle** (`6a8d24a`): SHA-256 Merkle tree — root, O(log n) inclusion proofs + verify, anti-entropy firstDifferingLeaf; domain separation. 4 tests.
+**Verify:** each confirmed via the authenticated check-runs REST API. **CI note learned:** the shopflow workflow has `concurrency: cancel-in-progress: true`, so when commits are pushed back-to-back the *previous* commit's slow image-build jobs get **cancelled** (shows as non-success) while its fast `Unit + integration tests` already passed — i.e. intermediate commits show cancelled images, only the latest commit's run completes. Code is verified by the `Unit + integration tests` leg on every commit; the HEAD commit gets the full green. Not a real failure. (One genuine earlier catch: balance's HashTest distribution bound was too tight for raw FNV → added fmix64 avalanche, `2b9538a`.)
+**Pending / next:** series continues (skip list, HyperLogLog, trie/autocomplete, B-tree, LSM concepts are candidates). None wired into services (each a ready library). Fintech **inc 4c = FX** still the big open feature-change.
+
+---
+
 ## 2026-11-15 — CLI (Opus 4.8) — concept-library series: 4 new technique modules (autonomous)
 **Branch:** `master`
 **Hua:** User: "rate-limiter jaisa — koi aur concept utne hi techniques ke saath implement kar, phir agla khud pick kar, non-stop, bar-bar mat puch, jab tak token khatam na ho." So, picking each concept myself, built four standalone, prod-grade, **fully-unit-tested** (pure Java, no infra — like shopflow-outbox, never boot) technique libraries, each with a teaching README (concept + trade-offs + prod scenarios + where-it-fits-in-shopflow) and configurable knobs:
