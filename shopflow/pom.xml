@@ -21,6 +21,7 @@
         <module>shopflow-outbox</module>
         <module>shopflow-ratelimit</module>
         <module>shopflow-cache</module>
+        <module>shopflow-lock</module>
         <module>inventory-service</module>
         <module>order-service</module>
         <module>notification-service</module>
