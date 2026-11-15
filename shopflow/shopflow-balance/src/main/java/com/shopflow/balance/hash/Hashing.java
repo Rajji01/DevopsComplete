@@ -15,6 +15,17 @@ public final class Hashing {
             h ^= s.charAt(i);
             h *= 0x100000001b3L;                // FNV prime
         }
+        return fmix64(h);                      // avalanche the bits
+    }
+
+    // MurmurHash3's 64-bit finalizer. FNV alone leaves adjacent inputs with correlated high bits, which
+    // clusters ring positions and skews load; fmix64 scrambles every bit so vnodes spread evenly.
+    private static long fmix64(long h) {
+        h ^= (h >>> 33);
+        h *= 0xff51afd7ed558ccdL;
+        h ^= (h >>> 33);
+        h *= 0xc4ceb9fe1a85ec53L;
+        h ^= (h >>> 33);
         return h;
     }
 }
