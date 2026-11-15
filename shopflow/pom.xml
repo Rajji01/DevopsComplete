@@ -25,6 +25,7 @@
         <module>shopflow-id</module>
         <module>shopflow-balance</module>
         <module>shopflow-resilience</module>
+        <module>shopflow-sketch</module>
         <module>inventory-service</module>
         <module>order-service</module>
         <module>notification-service</module>
