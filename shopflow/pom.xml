@@ -28,6 +28,7 @@
         <module>shopflow-sketch</module>
         <module>shopflow-stream</module>
         <module>shopflow-merkle</module>
+        <module>shopflow-skiplist</module>
         <module>inventory-service</module>
         <module>order-service</module>
         <module>notification-service</module>
