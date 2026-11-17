@@ -3,7 +3,6 @@ package com.shopflow.ledger.settlement;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -17,8 +16,8 @@ import org.springframework.test.context.ActiveProfiles;
  *   S2 two pods       broken: settles twice   |  fixed: settles once (DB is shared)
  *   S3 credit fails   broken: debit stranded  |  fixed: whole thing rolls back (atomic)
  *
- * Account "ACC" starts at 1000, a trade moves 100 to "CP". "MISSING" is intentionally never created so a
- * credit to it fails — that is how we force the S3 half-settlement deterministically.
+ * Each test uses its OWN account + trade-id names so the tests are independent of each other and of the
+ * shared @SpringBootTest database (no cross-test cleanup to get wrong).
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -33,84 +32,89 @@ class SettlementScenarioTest {
     @Autowired
     private ProcessedSettlementRepository processed;
 
-    @BeforeEach
-    void reset() {
-        processed.deleteAll();
-        balances.deleteAll();
-        balances.save(new SettlementBalance("ACC", 1000));
-        balances.save(new SettlementBalance("CP", 0));
-    }
-
-    private SettlementEvent trade(String id) {
-        return new SettlementEvent(id, "ACC", "CP", 100, "INR");
+    private void seed(String account, long balance) {
+        balances.save(new SettlementBalance(account, balance));
     }
 
     private long balanceOf(String account) {
         return balances.findById(account).orElseThrow().getBalanceMinor();
     }
 
+    private SettlementEvent trade(String tradeId, String from, String to) {
+        return new SettlementEvent(tradeId, from, to, 100, "INR");
+    }
+
     // ---------------------------------- BROKEN ----------------------------------
 
     @Test
     void broken_S1_aRestartReprocessesTheSameTrade() {
-        var beforeRestart = new BrokenSettlementConsumer(ledger);
-        beforeRestart.onMessage(trade("T1"));
+        seed("acc-b1", 1000);
+        seed("cp-b1", 0);
 
-        var afterRestart = new BrokenSettlementConsumer(ledger); // restart = a fresh, empty HashSet
-        afterRestart.onMessage(trade("T1"));
+        new BrokenSettlementConsumer(ledger).onMessage(trade("tr-b1", "acc-b1", "cp-b1"));
+        // "restart": a fresh consumer = a fresh, empty HashSet; the same trade is redelivered
+        new BrokenSettlementConsumer(ledger).onMessage(trade("tr-b1", "acc-b1", "cp-b1"));
 
-        assertThat(balanceOf("ACC")).isEqualTo(1000 - 200); // settled TWICE — the dedup memory was lost
+        assertThat(balanceOf("acc-b1")).isEqualTo(1000 - 200); // settled TWICE — the dedup memory was lost
     }
 
     @Test
     void broken_S2_twoPodsEachDedupeInTheirOwnMemory() {
-        var podA = new BrokenSettlementConsumer(ledger);
-        var podB = new BrokenSettlementConsumer(ledger);
+        seed("acc-b2", 1000);
+        seed("cp-b2", 0);
 
-        podA.onMessage(trade("T1"));
-        podB.onMessage(trade("T1")); // podB's set never saw podA's
+        new BrokenSettlementConsumer(ledger).onMessage(trade("tr-b2", "acc-b2", "cp-b2")); // pod A
+        new BrokenSettlementConsumer(ledger).onMessage(trade("tr-b2", "acc-b2", "cp-b2")); // pod B, own set
 
-        assertThat(balanceOf("ACC")).isEqualTo(1000 - 200); // settled twice across pods
+        assertThat(balanceOf("acc-b2")).isEqualTo(1000 - 200); // settled twice across pods
     }
 
     @Test
     void broken_S3_creditFailsButTheDebitAlreadyCommitted() {
-        var pod = new BrokenSettlementConsumer(ledger);
-        var toMissingCounterparty = new SettlementEvent("T1", "ACC", "MISSING", 100, "INR");
+        seed("acc-b3", 1000);
+        // counterparty "missing-b3" is intentionally NOT seeded, so the credit fails
 
-        assertThatThrownBy(() -> pod.onMessage(toMissingCounterparty))
+        assertThatThrownBy(() ->
+                new BrokenSettlementConsumer(ledger).onMessage(trade("tr-b3", "acc-b3", "missing-b3")))
                 .isInstanceOf(UnknownAccountException.class);
 
-        assertThat(balanceOf("ACC")).isEqualTo(1000 - 100);   // money left the payer...
-        assertThat(balances.findById("MISSING")).isEmpty();   // ...and reached no one: a half-settlement
+        assertThat(balanceOf("acc-b3")).isEqualTo(1000 - 100);     // money left the payer...
+        assertThat(balances.findById("missing-b3")).isEmpty();     // ...and reached no one: a half-settlement
     }
 
     // ---------------------------------- FIXED ----------------------------------
 
     @Test
     void fixed_S1_aRedeliveryAfterRestartIsIgnored() {
-        fixed.onMessage(trade("T1"));
-        fixed.onMessage(trade("T1")); // restart / redelivery — the dedup row is still in the DB
+        seed("acc-f1", 1000);
+        seed("cp-f1", 0);
 
-        assertThat(balanceOf("ACC")).isEqualTo(1000 - 100); // settled exactly once
+        fixed.onMessage(trade("tr-f1", "acc-f1", "cp-f1"));
+        fixed.onMessage(trade("tr-f1", "acc-f1", "cp-f1")); // restart / redelivery — DB still has the row
+
+        assertThat(balanceOf("acc-f1")).isEqualTo(1000 - 100); // settled exactly once
     }
 
     @Test
     void fixed_S2_everyPodSharesTheSameDedupTruth() {
-        fixed.onMessage(trade("T1"));
-        fixed.onMessage(trade("T1")); // any other pod reads the same processed_settlement row
+        seed("acc-f2", 1000);
+        seed("cp-f2", 0);
 
-        assertThat(balanceOf("ACC")).isEqualTo(1000 - 100);
+        fixed.onMessage(trade("tr-f2", "acc-f2", "cp-f2"));
+        fixed.onMessage(trade("tr-f2", "acc-f2", "cp-f2")); // any other pod reads the same processed row
+
+        assertThat(balanceOf("acc-f2")).isEqualTo(1000 - 100);
     }
 
     @Test
     void fixed_S3_aFailedCreditRollsBackTheDebitAtomically() {
-        var toMissingCounterparty = new SettlementEvent("T1", "ACC", "MISSING", 100, "INR");
+        seed("acc-f3", 1000);
+        // counterparty "missing-f3" not seeded -> credit fails
 
-        assertThatThrownBy(() -> fixed.onMessage(toMissingCounterparty))
+        assertThatThrownBy(() -> fixed.onMessage(trade("tr-f3", "acc-f3", "missing-f3")))
                 .isInstanceOf(UnknownAccountException.class);
 
-        assertThat(balanceOf("ACC")).isEqualTo(1000);            // debit rolled back with the failed credit
-        assertThat(processed.existsById("T1")).isFalse();        // not marked done -> a redelivery can retry
+        assertThat(balanceOf("acc-f3")).isEqualTo(1000);          // debit rolled back with the failed credit
+        assertThat(processed.existsById("tr-f3")).isFalse();      // not marked done -> a redelivery can retry
     }
 }
