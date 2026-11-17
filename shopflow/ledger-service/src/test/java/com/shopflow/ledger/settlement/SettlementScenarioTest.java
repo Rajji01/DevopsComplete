@@ -89,8 +89,8 @@ class SettlementScenarioTest {
         seed("acc-f1", 1000);
         seed("cp-f1", 0);
 
-        fixed.onMessage(trade("tr-f1", "acc-f1", "cp-f1"));
-        fixed.onMessage(trade("tr-f1", "acc-f1", "cp-f1")); // restart / redelivery — DB still has the row
+        fixed.settle(trade("tr-f1", "acc-f1", "cp-f1"));
+        fixed.settle(trade("tr-f1", "acc-f1", "cp-f1")); // restart / redelivery — DB still has the row
 
         assertThat(balanceOf("acc-f1")).isEqualTo(1000 - 100); // settled exactly once
     }
@@ -100,8 +100,8 @@ class SettlementScenarioTest {
         seed("acc-f2", 1000);
         seed("cp-f2", 0);
 
-        fixed.onMessage(trade("tr-f2", "acc-f2", "cp-f2"));
-        fixed.onMessage(trade("tr-f2", "acc-f2", "cp-f2")); // any other pod reads the same processed row
+        fixed.settle(trade("tr-f2", "acc-f2", "cp-f2"));
+        fixed.settle(trade("tr-f2", "acc-f2", "cp-f2")); // any other pod reads the same processed row
 
         assertThat(balanceOf("acc-f2")).isEqualTo(1000 - 100);
     }
@@ -111,7 +111,7 @@ class SettlementScenarioTest {
         seed("acc-f3", 1000);
         // counterparty "missing-f3" not seeded -> credit fails
 
-        assertThatThrownBy(() -> fixed.onMessage(trade("tr-f3", "acc-f3", "missing-f3")))
+        assertThatThrownBy(() -> fixed.settle(trade("tr-f3", "acc-f3", "missing-f3")))
                 .isInstanceOf(UnknownAccountException.class);
 
         assertThat(balanceOf("acc-f3")).isEqualTo(1000);          // debit rolled back with the failed credit

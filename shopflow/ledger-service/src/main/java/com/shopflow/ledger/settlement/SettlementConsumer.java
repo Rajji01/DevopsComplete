@@ -6,6 +6,8 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import io.micrometer.core.instrument.MeterRegistry;
 
 /**
@@ -14,20 +16,20 @@ import io.micrometer.core.instrument.MeterRegistry;
  * problems:
  *
  *  S1 (restart): the dedup row is in {@code processed_settlement}, so it SURVIVES a restart. A redelivered
- *     trade finds its row and is skipped. (And because the offset is committed only after this method
- *     returns, a crash mid-way just redelivers — safely, since we're idempotent.)
+ *     trade finds its row and is skipped. (Offsets commit only after the handler returns, so a crash mid-way
+ *     just redelivers — safely, since we're idempotent.)
  *  S2 (many pods): every pod reads the SAME table, so a trade settled on any pod is "seen" by all. One
  *     consumer group means the pods SHARE the partitions too, rather than each reprocessing everything.
  *  S3 (half-settle): {@code @Transactional} makes debit + credit + the dedup insert commit ALL-OR-NOTHING.
  *     If the credit throws, the debit and the dedup row roll back with it — no money stranded, and the trade
  *     is NOT marked done, so a later redelivery retries it cleanly.
- *  Thread-safety: no shared in-memory set at all. Concurrency is the database's job — the {@code trade_id}
- *     PRIMARY KEY makes "settle once" a constraint, so even two threads racing the same trade end with one
- *     row (the loser's insert violates the key, its transaction rolls back, and its debit/credit roll back
- *     with it). Correctness no longer depends on listener threads cooperating.
+ *  Thread-safety: no shared in-memory set. Concurrency is the database's job — the {@code trade_id} PRIMARY
+ *     KEY makes "settle once" a constraint, so even two threads racing the same trade end with one row (the
+ *     loser's insert violates the key, its transaction — debit/credit included — rolls back).
  *
- * (This mirrors the project's existing inbox pattern — PaymentEventListener / LedgerPostingListener: an
- * existsById fast-path plus a unique-keyed write inside one transaction.)
+ * The real Kafka path takes a {@code String} payload and parses it (ledger's convention, same as
+ * {@link com.shopflow.ledger.saga.LedgerPostingListener}), so it works over a real broker; {@link #settle}
+ * holds the typed, transactional logic shared by the listener, the REST demo endpoint, and the tests.
  */
 @Component
 public class SettlementConsumer {
@@ -37,18 +39,27 @@ public class SettlementConsumer {
     private final ProcessedSettlementRepository processed;
     private final SettlementLedger ledger;
     private final MeterRegistry meterRegistry;
+    private final ObjectMapper objectMapper;
 
     public SettlementConsumer(ProcessedSettlementRepository processed, SettlementLedger ledger,
-                              MeterRegistry meterRegistry) {
+                              MeterRegistry meterRegistry, ObjectMapper objectMapper) {
         this.processed = processed;
         this.ledger = ledger;
         this.meterRegistry = meterRegistry;
+        this.objectMapper = objectMapper;
     }
 
-    // one consumer group: the pods share the partitions; offsets commit after this returns (at-least-once)
+    // one consumer group: the pods share the partitions; offsets commit after this returns (at-least-once).
+    // @Transactional wraps the parse + settle so the whole handling of one record is atomic.
     @KafkaListener(topics = "settlements", groupId = "ledger-settlement")
     @Transactional
-    public void onMessage(SettlementEvent e) {
+    public void onSettlement(String payload) throws Exception {
+        settle(objectMapper.readValue(payload, SettlementEvent.class));
+    }
+
+    /** The idempotent, atomic settle — shared by the Kafka listener, the REST demo, and the tests. */
+    @Transactional
+    public void settle(SettlementEvent e) {
         if (processed.existsById(e.tradeId())) {              // durable + shared dedup: the DB is the truth
             meterRegistry.counter("settlements.duplicates").increment();
             log.info("settlement {} already processed, skipping", e.tradeId());

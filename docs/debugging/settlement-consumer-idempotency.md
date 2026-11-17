@@ -85,3 +85,43 @@ fixed : processed_settlement(trade_id PK) + debit+credit+insert (1 txn)   <- tru
 
 Why it's good: it states the stack, the exact symptoms, the constraint (Postgres + `@Transactional`), and
 asks for the specific artifacts — so the answer is concrete and checkable, not a generic "use idempotency".
+
+---
+
+## Hit it LIVE (real API, not just the unit tests)
+`SettlementConsumer` is a real `@KafkaListener(topics = "settlements")` (it takes a String payload and parses
+it, ledger's convention, so it works over a real broker), and `SettlementDemoController` exposes REST so you
+can drive both consumers with curl. Run the stack (`docker compose up`, ledger on `:8085`) and:
+
+```sh
+B=localhost:8085/api/settlement
+# accounts
+curl -s -XPOST $B/accounts -H 'Content-Type: application/json' -d '{"account":"ACC","balanceMinor":1000}'
+curl -s -XPOST $B/accounts -H 'Content-Type: application/json' -d '{"account":"CP","balanceMinor":0}'
+TRADE='{"tradeId":"T1","account":"ACC","counterparty":"CP","amountMinor":100,"currency":"INR"}'
+
+# --- BROKEN ---
+curl -s -XPOST $B/broken -H 'Content-Type: application/json' -d "$TRADE"; curl -s $B/accounts/ACC   # 900
+# S1: restart the pod (docker compose restart ledger-service), then fire the SAME trade again:
+curl -s -XPOST $B/broken -H 'Content-Type: application/json' -d "$TRADE"; curl -s $B/accounts/ACC   # 800 — double!
+# S3: a counterparty that doesn't exist -> 409, but ACC is already debited (half-settle):
+curl -i -XPOST $B/broken -H 'Content-Type: application/json' \
+     -d '{"tradeId":"T2","account":"ACC","counterparty":"GHOST","amountMinor":100,"currency":"INR"}'
+curl -s $B/accounts/ACC   # dropped again, with nothing credited to GHOST
+
+# --- FIXED (reset ACC to 1000 first) ---
+curl -s -XPOST $B/fixed -H 'Content-Type: application/json' -d "$TRADE"; curl -s $B/accounts/ACC   # 900
+# replay / restart: same trade again -> still 900 (DB remembers)
+curl -s -XPOST $B/fixed -H 'Content-Type: application/json' -d "$TRADE"; curl -s $B/accounts/ACC   # 900 — once
+# S3 on fixed -> 409 AND ACC unchanged (atomic rollback):
+curl -i -XPOST $B/fixed -H 'Content-Type: application/json' \
+     -d '{"tradeId":"T3","account":"ACC","counterparty":"GHOST","amountMinor":100,"currency":"INR"}'
+curl -s $B/accounts/ACC   # unchanged
+
+# --- real Kafka path (fixed listener consumes async) ---
+curl -s -XPOST $B/publish -H 'Content-Type: application/json' -d "$TRADE"; sleep 1; curl -s $B/accounts/ACC
+```
+- **S1 (restart)** needs a real restart (`docker compose restart ledger-service`) — that's the whole point:
+  the broken HashSet dies, the fixed DB row survives.
+- **S2 (two pods)** needs two instances (scale the service / run a second container) and firing the same
+  trade at each; broken double-settles, fixed dedupes via the shared DB.

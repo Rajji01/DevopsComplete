@@ -8,6 +8,9 @@ spring:
       enable-auto-commit: false
       properties:
         isolation.level: read_committed   # only see records the producer transaction committed
+    producer:                   # only used by the settlement DEMO endpoint (POST /api/settlement/publish)
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
     listener:
       observation-enabled: true           # trace context travels in the Kafka headers
   datasource:
