@@ -1722,3 +1722,14 @@ Walk 134 lesson: these structures are only as safe as the *direction* of their e
 
 ### Honest status
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–35**, debugging **D01–D22**. Post-merge; 32–35 grounded in real `shopflow-lock`/`-id`/`-ratelimit`/`-sketch`. Links clean. Committed **locally**, push pending Abhishek's word.
+
+## Walk 135: topic 36 (consistent hashing + load balancing) on real shopflow-balance (Nov 19, 2026)
+
+**Topic 36 — distributing data & load.** Grounded in `shopflow-balance`: `HashRing` (consistent hashing, next-clockwise, ~1/N movement, **virtual nodes ~150** for even balance + spread), `RendezvousHash` (HRW — minimal movement without a ring, O(nodes) lookup), and the four balancers `lb/{RoundRobin,WeightedRoundRobin(smooth nginx),LeastConnections(global-view + release),PowerOfTwoChoices}`. Two distinct problems framed cleanly — **key→shard** vs **request→server** — with the shared theme "what happens when the set changes/is uneven." Highlights: `hash%N`'s full-reshuffle → sharded-cache cold-miss → DB herd (E-question, ties to topic 12/26); the P2C result (one extra sample → `O(log log n)` max load, **no global view**) as the scalable answer where least-connections can't share state.
+
+Indexed 36 (comp README row+status, RAPID §1 row 36, INDEX 01..36, STATE). Links clean.
+
+Walk 135 lesson: consistent hashing and P2C are the two "one clever twist" classics — vnodes make key-movement minimal *and even*; one extra random sample makes load near-optimal *without coordination*. Both are exactly the kind of "why not the naive thing (%N / pure-random)" question a Google HLD round asks, and the merged module implements both with the guarantees in the Javadoc.
+
+### Honest status
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–36**, debugging **D01–D22**. Post-merge; 32–36 grounded in real `shopflow-*` modules. Links clean. Committed **locally**, push pending Abhishek's word.
