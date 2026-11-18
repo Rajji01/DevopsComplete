@@ -1711,3 +1711,14 @@ Walk 133 lesson: the merged `shopflow-ratelimit` turns topic 26's hand-wave ("yo
 
 ### Honest status
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–34**, debugging **D01–D22**. Post-merge; 32–34 grounded in real `shopflow-lock`/`-id`/`-ratelimit`. Links clean. Committed **locally**, push pending Abhishek's word.
+
+## Walk 134: topic 35 (Bloom & Count-Min) on real shopflow-sketch (Nov 19, 2026)
+
+**Topic 35 — probabilistic structures: Bloom & Count-Min.** Grounded in `shopflow-sketch`: `BloomFilter` (k bits/key, no false negatives, sizing `m=-n·ln p/(ln2)²` / `k=(m/n)·ln2`), `CountingBloomFilter` (counters not bits → deletable, remove-what-you-added caveat), `CountMinSketch` (depth×width, add per row, estimate = min across rows → never underestimates; `w=⌈e/ε⌉`, `d=⌈ln(1/δ)⌉`). Central teaching: **error-direction is the design** — Bloom never false-negatives (so trust only its "absent" → safe skip-gate, the cache-penetration defence of topic 12 and a pre-dedupe gate for 03/25), Count-Min never underestimates (so trust its "at least" → safe heavy-hitter/abuse detector feeding topic 34's limiter). E-question nails the classic misuse: a Bloom as the payment-dedupe source of truth silently drops legit payments on a false positive.
+
+Indexed 35 (comp README row+status, RAPID §1 row 35, INDEX 01..35, STATE). Links clean.
+
+Walk 134 lesson: these structures are only as safe as the *direction* of their error, and the interview signal is "which answer may I trust" (Bloom's no, Count-Min's at-least) — never the structure as a source of truth. The merge's clean implementations (sizing formulas + guarantees in the Javadoc) make the topic teach from first principles.
+
+### Honest status
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–35**, debugging **D01–D22**. Post-merge; 32–35 grounded in real `shopflow-lock`/`-id`/`-ratelimit`/`-sketch`. Links clean. Committed **locally**, push pending Abhishek's word.
