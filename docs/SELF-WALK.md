@@ -1744,3 +1744,14 @@ Walk 136 lesson: Merkle is the data-integrity backbone under half the systems to
 
 ### Honest status
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–37**, debugging **D01–D22**. Post-merge; 32–37 grounded in real `shopflow-*` modules. Links clean. Committed **locally**, push pending Abhishek's word.
+
+## Walk 137: topic 38 (streaming top-K & sampling) on real shopflow-stream (Nov 19, 2026)
+
+**Topic 38 — one-pass streaming: heavy hitters & uniform sampling.** Grounded in `shopflow-stream`: `MisraGries` (frequent items `> n/k` with k-1 counters, decrement-all cancellation, over-approximation → confirm pass, ancestor of CMS), `SpaceSavingTopK` (K counters, evict-min + `count=min+1`, `error` field → true count `[count-error, count]`, never underestimates heavy), `ReservoirSampler` (Vitter's Algorithm R — uniform size-k sample, i-th replaces with prob `k/i`, each item final prob `k/n`, one pass O(k)). Completes the streaming pair with topic 35 (Count-Min answers "how many for this key"; Space-Saving answers "which keys are heavy" — compose them). Central practical point: **O(K) not O(cardinality)** — the fix for the HashMap-of-everything OOM at high key cardinality (the E-question). Feeds the limiter (34/26: heavy-hitter detection → throttle) and trace sampling (13: reservoir = unbiased 1% over bursty unknown volume, why "every 100th"/"first N" are biased).
+
+Indexed 38 (comp README row+status, RAPID §1 row 38, INDEX 01..38, STATE). Links clean.
+
+Walk 137 lesson: with 35+38 the streaming/sketch family is complete — membership (Bloom), frequency-of-key (Count-Min), which-keys-heavy (Space-Saving/Misra-Gries), fair-sample (reservoir) — each trading exactness for fixed memory, each with the invariant that makes it safe. Together they're the standard toolkit an interviewer probes with "how would you find the top-K / sample / dedup at firehose scale in fixed memory."
+
+### Honest status
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–38**, debugging **D01–D22**. Post-merge; topics 32–38 grounded in real `shopflow-*` modules (lock/id/ratelimit/sketch/balance/merkle/stream). Links clean. Committed **locally**, push pending Abhishek's word.
