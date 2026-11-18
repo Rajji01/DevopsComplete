@@ -1689,3 +1689,14 @@ Walk 131 lesson: the merge turned my planned *hypothetical* distributed-lock top
 
 ### Honest status
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–32**, debugging **D01–D22**. Post-merge with origin (its 1–123 walks + my 124–131). All new claims grounded in real `shopflow-lock`; links clean. Committed **locally**, push pending Abhishek's word.
+
+## Walk 132: topic 33 (distributed ID generation) on real shopflow-id (Nov 19, 2026)
+
+Continuing to build comprehension topics on the merged modules. **Topic 33 — distributed unique IDs**, grounded in `shopflow-id`: `SnowflakeIdGenerator` (41ms+10node+12seq layout, 4096/ms/node, ~69y epoch, clock-backwards **refusal**, seq-exhaust spin), `UlidGenerator` (48ms+80rand Crockford base32, lexicographically sortable, **same-ms monotonic via suffix increment**), `Uuidv7Generator` (RFC 9562 standard UUID, time-ordered), `SegmentIdGenerator`+`SegmentAllocator` (Hi/Lo: one atomic `UPDATE..RETURNING` per block, dense, not time-sortable, restart gaps OK). Central teaching that ties into topic 31/29: **the id's *shape* affects the DB index** — a random UUIDv4 PK scatters inserts across the B-tree (page splits, cache misses, degrades at scale/over weeks), a time-ordered id keeps inserts at the hot tail. Node-id assignment hazard for Snowflake (lease vs stable ordinal). Honest grounding: ShopFlow's `orders` PK is actually DB identity + UUID `order_ref`; the module is the toolkit for coordination-free time-sortable ids.
+
+Indexed 33 (comp README row+status, RAPID §1 row 33, INDEX 01..33, STATE). No drill pairing (pure library). Links clean.
+
+Walk 132 lesson: id generation is a top HLD interview topic and the merge handed over real, idiomatic implementations with the exact hazards (clock-backwards, same-ms ordering, node-id reuse) — so the topic teaches from code, not a blog. The strongest through-line is the non-obvious "uniqueness isn't the key's job, *locality* is" — linking id choice straight to the index-cliff of topic 31.
+
+### Honest status
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–33**, debugging **D01–D22**. Post-merge. Grounded in real `shopflow-id`/`shopflow-lock`. Links clean. Committed **locally**, push pending Abhishek's word.

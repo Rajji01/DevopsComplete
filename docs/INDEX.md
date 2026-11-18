@@ -62,7 +62,7 @@ DevopsComplete/
 │   ├── EASY-NOTES.md / LABS.md / PRACTICE-LABS.md / ROADMAP.md / SELF-WALK.md
 │   ├── runbooks/ .......... per-alert on-call steps (har alert ki file + restore/rollback/post-mortem)
 │   ├── interview-notes/ ... 01..12 + README (Q → model answer)
-│   ├── comprehension/ ..... Google-style comprehension rounds: 01..32/ (25-27 capstones, 28 concurrency, 29 silent-data, 30 replication, 31 jpa-scale, 32 distributed-locks){comprehension,notes}.md + README + ONLINE-LABS.md
+│   ├── comprehension/ ..... Google-style comprehension rounds: 01..33/ (…28-33: concurrency, silent-data, replication, jpa-scale, distributed-locks, distributed-ids){comprehension,notes}.md + README + ONLINE-LABS.md
 │   └── debugging/ ......... debugging drills (symptom → root cause → fix): D01..D22 + README
 ├── labs/ ................... interactive: lab-console.html (React, 8 panels), comprehension.html, Postman collection
 ├── shopflow/ ............... asli microservices project
