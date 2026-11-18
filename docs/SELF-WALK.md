@@ -1733,3 +1733,14 @@ Walk 135 lesson: consistent hashing and P2C are the two "one clever twist" class
 
 ### Honest status
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–36**, debugging **D01–D22**. Post-merge; 32–36 grounded in real `shopflow-*` modules. Links clean. Committed **locally**, push pending Abhishek's word.
+
+## Walk 136: topic 37 (Merkle trees / anti-entropy) on real shopflow-merkle (Nov 19, 2026)
+
+**Topic 37 — Merkle trees.** Grounded in `shopflow-merkle/MerkleTree.java`: leaves→`hash(left||right)`→root, `ProofStep` inclusion proofs, domain separation (`0x00` leaf / `0x01` node, the Certificate-Transparency second-preimage defence), Bitcoin-style odd-level duplication. Three powers from one idea: **tamper-evidence** (one root certifies the whole set — Git/Bitcoin/image layers), **O(log n) inclusion proofs** (log₂(n) sibling hashes), and **O(log n) anti-entropy diff** (compare roots → descend only the differing subtree → ship only divergent leaves — Dynamo/Cassandra replica repair). Ties directly to topic 30 (replica reconciliation) and the fintech ledger recon, and to topic 08 (content-addressed image layers = integrity + incremental pulls). E-question nails why the *tree shape* (not just the root) is the point: a flat concat gives tamper-evidence but loses the log(n) proof and diff.
+
+Indexed 37 (comp README row+status, RAPID §1 row 37, INDEX 01..37, STATE). Links clean.
+
+Walk 136 lesson: Merkle is the data-integrity backbone under half the systems topics already covered (replication repair, supply-chain digests, reconciliation) — teaching it explicitly ties them together, and the "trust the root separately" caveat is the subtle interview point (a proof is only as good as root authenticity).
+
+### Honest status
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–37**, debugging **D01–D22**. Post-merge; 32–37 grounded in real `shopflow-*` modules. Links clean. Committed **locally**, push pending Abhishek's word.
