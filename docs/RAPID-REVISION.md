@@ -36,6 +36,7 @@
 | 29 | **Silent data bugs** | **No exception ≠ correct.** Full-row overwrite (no `@DynamicUpdate` → bina `@Version` partial-edits silently revert) · enum **ORDINAL bomb** (ShopFlow `STRING`=safe) · **index cliff** (un-indexed/implicit-cast → seq scan; dev 2ms/prod 4s → `EXPLAIN ANALYZE`) · `@Transactional` **self-invocation** (proxy bypass=no txn) + **`readOnly=true`** (no flush) · **stale read-your-writes** (replica lag, intermittent). Detect: primary pe re-read (lost-write vs stale-read), EXPLAIN, node-tagged traces. |
 | 30 | **Replication / topology** | **Data boundary = failure mode.** DB-per-service (4 alag DB → no cross-service txn/JOIN → outbox/saga, eventual) · many-pods-1-DB (concurrency DB pe + `pods×pool≤max_connections`) · **sync standby** (Multi-AZ, HA/zero-loss, read ke liye nahi) vs **async replica** (read-scale, **lag→read-your-writes**) vs **CDC** vs **multi-primary** (conflict/split-brain). Payments sync, counter async. Idempotency=replay safe, conflict-resolution nahi. |
 | 31 | **JPA at scale** | ORM chhupa cost: **OSIV** (`open-in-view` default true → conn held poore request; ShopFlow **false**) · **N+1** (lazy loop; flat entities→none; `join fetch`/DTO) · **OFFSET vs keyset** (OFFSET n rows scan+discard+`count(*)`; 50M→keyset seek; ShopFlow OFFSET=limitation) · unbounded **`findAll()`** (whale-customer OOM) · big-loop **flush/clear** (relay 100-bounded). **Generated SQL dekho** (query-count ∝ rows = N+1). |
+| 32 | **Distributed locks** (real `shopflow-lock`) | 3 safety: **TTL** (crashed holder self-free) · **ownership token** (apna hi release, atomic Lua check-and-delete not GET-DEL) · **fence token** (monotonic; **resource** lower reject — **only** stall/GC-pause safety, Kleppmann). **Redlock** = N *independent* stores majority (`N/2+1`), minority release; safety disputed. Efficiency-lock (cache rebuild) Redlock-no-fence OK; **correctness** (double-pay) → fence **ya idempotency**. Money: **idempotency > lock** (lock-independent no-op). |
 
 ## 2. Symptom → cause → fix (debugging, 2am wala)
 | Symptom | Likely cause | Fix / check | Drill |
@@ -61,6 +62,7 @@
 | "Placed order, list empty" — 1-3%, staging clean | **async replica lag** → read-your-writes miss (no error) | fresh reads → primary (pin/LSN-wait), not a sleep | D19 |
 | 2ms staging, 4s prod, same SQL, no deploy | missing/defeated index → **Seq Scan** at volume | `EXPLAIN (ANALYZE)`; add index / fix implicit cast | D20 |
 | Random `deadlock detected`, only under load | two-row writes in **opposite lock order** (A→B vs B→A) | lock in consistent order (min id first) + retry | D21 |
+| Job ran twice despite a lock (double payout) | **GC pause > TTL** → 2 holders; resource ignored **fence token** | fence at resource / make op idempotent | D22 |
 
 ## 3. Quick-fire facts
 - **Status codes** (`GlobalExceptionHandler`): 404 not-found/IDOR · 409 not-cancellable / dup-key / **@Version optimistic-lock** · 422 Idempotency-Key cross-user · 429 rate-limit · 503 inventory-unavailable(+orderId) · 400 validation(problem+json).

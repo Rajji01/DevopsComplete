@@ -1674,3 +1674,18 @@ Walk 42 lesson: ShopFlow's data layer is a *positive* teaching asset — OSIV-of
 
 ### Honest status (Walks 22–42)
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–31** (25/26/27 capstones; 28 concurrency; 29 silent-data; 30 replication; 31 JPA-scale); debugging **D01–D21**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims source-verified; links clean. Committed **locally**, push pending Abhishek's word.
+
+## Walk 131: topic 32 (distributed locks/fencing) + D22, on the merged shopflow-lock module (Nov 19, 2026)
+
+After pulling origin (parallel session had added a whole ledger-service + modules: shopflow-lock, -id, -sketch, -balance, -ratelimit, -cache, -merkle, -skiplist, -stream, -resilience), built a comprehension topic on the **real** `shopflow-lock` code — continuing the concurrency thread (28 = DB locks → 32 = cross-node locks).
+
+**Topic 32 — distributed locks: TTL, ownership & the fence token.** Grounded in `DistributedLock.java` (tryAcquire/extend/release, jittered backoff), `LockToken.java` (token + `fenceToken`, with the Kleppmann comment), `LockStore.java` (atomic acquire/release/extend; InMemory + Redis+Lua), `RedLock.java` (majority quorum `N/2+1` across N independent stores, release-minority, honest Kleppmann-vs-antirez caveat). Core teaching: a lock alone is never safe — **TTL** handles crash, **ownership token** handles wrong-release, but only a **fence token checked at the resource** handles a **stalled** holder (GC pause > TTL → two holders); and for money, **idempotency > lock** (lock-independent no-op). Efficiency-vs-correctness locking distinction throughout.
+
+**D22 — the job that ran twice despite the lock:** the GC-pause double-holder, live — per-node logs look fine, rare, correlates with GC; fix = fence the resource (pass `LockToken.fenceToken()`) or make the op idempotent; a bigger TTL is NOT a fix (hides the race + slows crash recovery).
+
+Indexed 32 + D22 everywhere (comprehension README row+pairing 32↔D22, RAPID §1 row 32 + §2 D22, INDEX 01..32 / D01..D22, STATE). Links clean.
+
+Walk 131 lesson: the merge turned my planned *hypothetical* distributed-lock topic into one grounded in **real, well-commented code** — the `LockToken.fenceToken` Javadoc literally states the drill. Build comprehension topics on the new modules (lock/id/sketch/balance/ratelimit) the other session shipped, rather than inventing — that's the honesty rule paying off at scale.
+
+### Honest status
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–32**, debugging **D01–D22**. Post-merge with origin (its 1–123 walks + my 124–131). All new claims grounded in real `shopflow-lock`; links clean. Committed **locally**, push pending Abhishek's word.
