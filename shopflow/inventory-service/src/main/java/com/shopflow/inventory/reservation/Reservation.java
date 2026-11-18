@@ -52,9 +52,10 @@ public class Reservation {
         this.createdAt = Instant.now();
     }
 
-    void release() {
-        this.status = Status.RELEASED;
-    }
+    // NOTE: no in-memory status flip on purpose (Walk 55). The RESERVED -> RELEASED transition
+    // happens through ReservationRepository.transition(), a conditional UPDATE, because this
+    // entity has no @Version: a plain field write would let two concurrent releases both "win"
+    // and put the stock back twice.
 
     public String getOrderRef() {
         return orderRef;

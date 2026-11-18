@@ -347,6 +347,52 @@
           "legendFormat": "stuck"
         }
       ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Failure signals (15m): refunds declined / dead-lettered",
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(payments_refund_failed_total[15m]))",
+          "legendFormat": "refunds declined"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(increase(kafka_dead_lettered_total[15m]))",
+          "legendFormat": "dead-lettered"
+        }
+      ]
     }
   ]
 }

@@ -20,6 +20,14 @@
     enabled: true
     state: started
 
+# Handlers run at the END of the play by default. Without this flush, a code-update run would
+# checkout the new revision (notifying Restart), then health-gate the service that is STILL running
+# the OLD code (state: started is a no-op when already active), pass, and only restart into the new
+# version afterwards — unguarded. Flushing here restarts into the new code FIRST, so the readiness
+# gate below validates the version we just deployed and a broken deploy fails the play loudly.
+- name: Apply any pending restart before the health gate
+  ansible.builtin.meta: flush_handlers
+
 - name: Wait for order-service readiness
   ansible.builtin.uri:
     url: http://localhost:8081/actuator/health/readiness

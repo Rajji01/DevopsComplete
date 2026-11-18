@@ -42,6 +42,11 @@ Jab koi folder, file ya shabd samajh na aaye to yahan Ctrl+F. Deep samajh ke liy
 | **Idempotency-Key** | Client ka header jisse order do baar create na ho. |
 | **Reconciler** | Background job jo atke hue orders ko grace ke baad theek/cancel karta hai. |
 | **At-least-once** | Event kam-se-kam ek baar milega (shayad do baar) → isliye consumer idempotent chahiye. |
+| **Replay-idempotent vs race-idempotent** | Same call *baad mein* aaye to safe (read-guard kaafi) vs *ek hi waqt* do aayein to safe (atomic conditional UPDATE chahiye). Walk 55: read-guard sirf pehla deta hai. |
+| **Phantom stock** | Stock number asli units se zyada ho jana (jaise double release se) — phir oversell guard sahi number ko hi protect karta reh jaata hai. |
+| **Replayable window** | Kafka kitna purana record abhi bhi de sakta hai = retention + segment-roll (sirf retention nahi). Dedupe memory isse lambi ho (Walk 59). |
+| **Census rule** | Kisi constant ki doosri copy mile to poora grep: har copy ya ek source se derive ho ya decision-doc mein poori list ho (EASY-NOTES Step 7). |
+| **Bootstrap dependency** | Auth mechanism data-plane se pehle jo dial karta hai (STS, JWKS, token endpoint) — egress rules mein ye bhi chahiye (Walk 73). |
 | **DLT (dead-letter topic)** | Jo message baar-baar fail kare use alag topic mein daal do, baaki ruke na. |
 | **Circuit breaker** | Downstream service girne pe call karna band, thodi der baad try (Resilience4j). |
 | **Retry / timeout** | Transient fail pe dobara; lekin bounded time mein. |

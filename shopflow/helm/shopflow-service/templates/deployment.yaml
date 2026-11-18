@@ -5,6 +5,9 @@ metadata:
   labels:
     {{- include "shopflow.labels" . | nindent 4 }}
 spec:
+  {{- if and .Values.replicas .Values.hpa.enabled }}
+  {{- fail "set either .replicas (fixed count) or hpa.enabled=true (HPA owns the count), not both: a fixed replicas line resets the count on every helm upgrade and fights the autoscaler (Walk 68)" }}
+  {{- end }}
   {{- with .Values.replicas }}
   replicas: {{ . }}
   {{- end }}

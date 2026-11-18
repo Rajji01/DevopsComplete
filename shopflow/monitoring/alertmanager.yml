@@ -43,10 +43,12 @@ receivers:
       - channel: "#shopflow-incidents"
         send_resolved: true
         title: ':rotating_light: {{ .CommonLabels.alertname }} ({{ .CommonLabels.application }})'
-        text: '{{ .CommonAnnotations.summary }}{{ if .CommonAnnotations.runbook }}\nRunbook: {{ .CommonAnnotations.runbook }}{{ end }}'
+        # double-quoted so \n is a real newline; in single-quoted YAML it reached Slack as a literal "\n" (Walk 52)
+        text: "{{ .CommonAnnotations.summary }}{{ if .CommonAnnotations.runbook }}\nRunbook: {{ .CommonAnnotations.runbook }}{{ end }}"
   - name: slack-alerts
     slack_configs:
       - channel: "#shopflow-alerts"
         send_resolved: true
         title: '{{ .CommonLabels.alertname }} ({{ .CommonLabels.application }})'
-        text: '{{ .CommonAnnotations.summary }}'
+        # tickets have runbooks too (PaymentRefundFailed, KafkaMessageDeadLettered, ...) — link them (Walk 52)
+        text: "{{ .CommonAnnotations.summary }}{{ if .CommonAnnotations.runbook }}\nRunbook: {{ .CommonAnnotations.runbook }}{{ end }}"

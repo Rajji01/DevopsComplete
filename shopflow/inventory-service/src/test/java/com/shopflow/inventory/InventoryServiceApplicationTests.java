@@ -89,6 +89,35 @@ class InventoryServiceApplicationTests {
     }
 
     @Test
+    void concurrentReleasesRestoreStockOnlyOnce() throws Exception {
+        // Walk 55: the reconciler on two pods (HPA minReplicas: 2), or a customer cancel racing
+        // the reconciler, release the same order at the same moment. Both read RESERVED, so only
+        // the atomic transition() in release() keeps the loser from putting the stock back a
+        // second time — before the fix this came back as before + 3 (phantom stock).
+        String orderRef = UUID.randomUUID().toString();
+        int before = stockOf("IPHONE-15");
+        reservationService.reserve(orderRef, "IPHONE-15", 3);
+
+        int threads = 2;
+        var barrier = new java.util.concurrent.CyclicBarrier(threads);
+        try (ExecutorService pool = Executors.newFixedThreadPool(threads)) {
+            var futures = new java.util.ArrayList<Future<?>>();
+            for (int i = 0; i < threads; i++) {
+                futures.add(pool.submit(() -> {
+                    barrier.await();
+                    reservationService.release(orderRef);
+                    return null;
+                }));
+            }
+            for (Future<?> f : futures) {
+                f.get();
+            }
+        }
+
+        assertThat(stockOf("IPHONE-15")).isEqualTo(before);
+    }
+
+    @Test
     void insufficientStockReturns409() throws Exception {
         mockMvc.perform(post("/api/v1/reservations")
                         .contentType(MediaType.APPLICATION_JSON)

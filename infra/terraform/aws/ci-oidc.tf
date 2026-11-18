@@ -19,6 +19,10 @@ resource "aws_iam_role" "github_actions" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          # NOTE (Walk 58): `main` does not exist in this repo (master is canonical) — this pin is
+          # part of the same publish-on-main decision as the workflow's if-gates and the Kyverno
+          # keyless subject (STATE §4 / Walk 50). Flipping publishing on means changing all THREE
+          # together, or CI assumes-role will fail with sub-mismatch even after the gates flip.
           "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:ref:refs/heads/main"
         }
       }
@@ -26,7 +30,7 @@ resource "aws_iam_role" "github_actions" {
   })
 }
 
-# push images to the three ECR repositories, nothing else
+# push images to the four ECR repositories (one per service), nothing else
 resource "aws_iam_role_policy" "github_actions_ecr" {
   name = "ecr-push"
   role = aws_iam_role.github_actions.id

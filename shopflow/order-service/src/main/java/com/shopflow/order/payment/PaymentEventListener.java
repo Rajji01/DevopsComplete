@@ -13,6 +13,14 @@ import com.shopflow.order.order.OrderService;
  * Closes the saga: PaymentCaptured -> PAID, PaymentFailed -> release stock + CANCELLED.
  * No central orchestrator knows the whole flow; each service reacts to the previous step's event
  * (choreography). The trade-off: the flow is harder to see in one place, which is what tracing is for.
+ *
+ * Honest exception to the "no DB transaction across a remote call" rule (Walk 77): this
+ * {@code @Transactional} DOES span the inventory release inside onPaymentFailed/onPaymentRefunded
+ * (worst case ~7s with retries). Chosen deliberately: the dedupe row and the state change must
+ * commit together or redeliveries double-apply, and the single listener thread (default
+ * concurrency 1) bounds the cost to ONE pinned connection during an inventory outage — unlike the
+ * HTTP path, where N concurrent requests would pin N. When release ultimately fails, the rollback
+ * re-delivers, then DLTs (KafkaMessageDeadLettered), and the order surfaces via OrdersStuckConfirmed.
  */
 @Component
 public class PaymentEventListener {

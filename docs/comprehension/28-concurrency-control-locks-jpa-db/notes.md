@@ -78,7 +78,7 @@ Jab millions ek hi row pe aate hain → **lost update** rokna hai. Teen families
 ```
 
 ## GOTCHAS (jo interview pakadta)
-- **Lock + remote call = outage.** `FOR UPDATE` ya txn ko network call ke around mat pakdo → connection/lock held 1-2s → pool starve → D16/topic-26 outage. (Topic 04 rule.)
+- **Lock + remote call = outage.** `FOR UPDATE` ya txn ko network call ke around mat pakdo → connection/lock held 1-2s → pool starve → D17/topic-26 outage. (Topic 04 rule.)
 - **Optimistic under high contention = retry storm.** Hot SKU pe `@Version` mat lagao.
 - **Pessimistic long hold = convoy/deadlock.** Critical section chhota rakho; 2 rows → consistent order.
 - **`@Modifying` + stale persistence context:** `clearAutomatically=true/flushAutomatically=true` zaroori (warna entity cache purana) — ShopFlow stock query mein hai.
@@ -100,7 +100,7 @@ Jab millions ek hi row pe aate hain → **lost update** rokna hai. Teen families
 3. READ COMMITTED pe naive stock oversell kaise? → *T1,T2 dono 3 padhte, dono 2 likhte; read+write alag statement.*
 4. 10k-row report pe `FOR UPDATE` kyun galat? → *sab lock → checkout block; MVCC snapshot use karo.*
 5. `transfer` 2 rows ka naya खतरा? → *deadlock (A→B vs B→A); fix lock-order ya detect+retry.*
-6. Cancel pe `FOR UPDATE` hold karke payment call — kya tootega? → *connection/lock 1-2s held → pool starve → D16 outage (data sahi, resource galat).*
+6. Cancel pe `FOR UPDATE` hold karke payment call — kya tootega? → *connection/lock 1-2s held → pool starve → D17 outage (data sahi, resource galat).*
 
 ## INTERVIEW LINE (ek saans)
 > *"Lost update ke teen ilaj, mere project mein teeno: stock pe **no-lock atomic conditional UPDATE** (hot SKU, µs lock, rows-affected signal), order-state pe **optimistic `@Version`** (Hibernate `WHERE version=?`, loser 409, low contention), relay pe **pessimistic `FOR UPDATE SKIP LOCKED`** (`@Lock(PESSIMISTIC_WRITE)`+timeout `-2`, multi-pod job-claim). Tool contention se chunta — rare→optimistic warna retry-storm, hot-row-short→pessimistic warna convoy, single-column→atomic. DB level pe isolation default READ COMMITTED (do-statement RMW mein lost-update, isliye stock ek atomic statement), write-skew→SERIALIZABLE SSI retry, bada read→MVCC snapshot not FOR UPDATE. Aur lock kabhi remote call ke around nahi — warna pool-starvation outage."*

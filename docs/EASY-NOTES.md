@@ -84,6 +84,25 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 
 ---
 
+### 2a. "Idempotent" ke do tier: replay vs race (Walk 55)
+
+**Problem:** `release()` pe comment tha "idempotent hai, double call safe hai" — aur sequentially sach bhi tha (status guard: RELEASED mila to no-op). Par **do concurrent releases** (2 reconciler pods, ya cancel vs reconciler) dono ne RESERVED **padha**, dono ne stock increment kiya → stock do baar wapas = phantom stock → aage asli oversell.
+
+**Kyu hota hai:** read-then-write guard sirf **replay** (baad mein dobara call) rokta hai. **Race** (ek hi waqt do calls) mein dono reads commit se pehle ho jaate hain — dono ko purana committed state dikhta hai. Bina `@Version` ke dono writes chupchap last-writer-wins.
+
+```
+  REPLAY-idempotent (kaafi: read guard)        RACE-idempotent (chahiye: atomic guard)
+  T1: read RESERVED → release → commit         T1: UPDATE ... WHERE status='RESERVED'  → 1 row ✓
+  T2 (baad mein): read RELEASED → no-op ✓      T2: UPDATE ... WHERE status='RESERVED'  → 0 rows → skip ✓
+                                                (row lock serialise karta hai; WHERE dobara check hota hai)
+```
+
+**Fix (ShopFlow):** `ReservationRepository.transition(orderRef, RESERVED, RELEASED)` — conditional UPDATE (wahi pattern jo `decrementStock` oversell ke liye use karta hai). Sirf jisko `1` mila wahi `incrementStock` karta hai. Test: `concurrentReleasesRestoreStockOnlyOnce` (CyclicBarrier).
+
+**Ek line mein:** *Jahan bhi likha ho "X idempotent hai", poochho: overlap mein bhi? Guard agar read hai, to jawab nahi hai — transition ko hi atomic banao.*
+
+---
+
 ### 3. Status codes jo ek hi matlab rakhte hain
 
 **Problem:** Inventory 409 deta tha do cases mein: "stock nahi hai" aur "concurrent duplicate request". Order-service har 409 ko "stock nahi" samajhta tha → order REJECTED, jabki stock reserve ho chuka tha. Customer ko "out of stock" dikha, stock atka raha.
@@ -108,7 +127,7 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 
 **Kaise (steps, isi order mein):**
 1. **Timeout** lagao (connect 1s, read 2s). Ab worst case 3s mein fail hoga, thread free.
-2. **Retry** sirf *transient* errors pe (timeout, 503), **kabhi** 404/409 jaise business errors pe nahi. Exponential backoff (200ms, 400ms, 800ms) taaki down service pe hamla na ho. Max 3 attempts.
+2. **Retry** sirf *transient* errors pe (timeout, 503), **kabhi** 404/409 jaise business errors pe nahi. Max 3 attempts = 2 retries, exponential backoff (200ms, 400ms) **+ jitter ±50%** (`enable-randomized-wait`) taaki bahut saare pods ek saath lockstep mein retry na karein (thundering herd). Down service ko saans milti hai.
 3. **Circuit breaker**: pichhli 10 calls mein 50% fail → "open" ho jaata hai → 10s tak call hi nahi karta, turant fail (fast fail). Phir "half-open": 2 test calls, pass hui to "closed".
 4. Caller ko saaf jawab do: 503 + order `FAILED` + orderId, taaki baad mein reconcile ho sake.
 5. **Readiness probe mein downstream mat daalo** (section 7), warna healthy pods bhi traffic se hat jayenge.
@@ -213,13 +232,38 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 2. Consumer: `processed_event` table mein eventId check karo. Hai → skip, counter badhao. Nahi → kaam karo + eventId insert karo, **ek transaction mein**.
 3. Offset commit listener ke **baad** (`enable-auto-commit: false`); crash pe redelivery, redelivery pe skip.
 4. **Error handler**: fail hua to backoff ke saath retry (0.5s, 1s, 2s... max 10s), phir message **DLT** (`orders.events.DLT`) pe bhejo aur aage badho.
-5. DLT pe alert/ticket; bug fix karke replay karo.
+5. DLT pe alert/ticket (`KafkaMessageDeadLettered`: har dead-lettering `kafka.dead.lettered` counter badhata hai → ticket, Walk 40); bug fix karke replay karo — consumers idempotent hain to replay safe hai.
 
 **ShopFlow mein:** `notification-service` (`OrderEventListener`, `KafkaErrorConfig`), tests `processesEachEventExactlyOnce...`, `poisonPillGoesToDeadLetterTopic...`, Labs 18–19.
 
 **System kaise behtar hua:** Duplicate delivery harmless; ek bad message baaki sabko nahi rokta.
 
 **Ek line mein:** *eventId yaad rakho (same transaction mein), bad message ko DLT pe bhejo.*
+
+---
+
+### 9a. `repo.save()` ka chhupa hua SELECT (assigned @Id + Persistable)
+
+**Problem:** `processed_event` aur `payment` rows ka `@Id` hum khud dete hain (Kafka ka `eventId`, ek UUID — DB-generated nahi). Har message pe `repo.save(new ...)` call hota hai, aur har call se pehle DB pe ek **bekaar SELECT** ja raha tha. Matlab consumer ki transaction ke andar, saga ke hot path pe, 1 ki jagah 2 DB round-trip.
+
+**Kyu:** Spring Data ka `save()` do raaste leta hai — `isNew()` **true** ho to `persist()` (pura INSERT, 1 query), **false** ho to `merge()` (pehle `SELECT ... WHERE id=?` ye dekhne ko row hai ya nahi, phir INSERT/UPDATE = 2 query). Default `isNew()`: koi `@Version` nahi + `@Id` **non-null** → "ye purana hoga" → `merge()`. Humne id khud set kar di, to wo kabhi null nahi — Spring ko lagta hai row pehle se hai, aur wo wasteful SELECT maar deta hai. Jabki hume *pata* hai row nayi hai.
+
+**Kaise (fix):** entity ko `Persistable<UUID>` banao aur saaf bata do ye insert-only hai —
+```java
+class Payment implements Persistable<UUID> {
+    public UUID getId()    { return eventId; }
+    public boolean isNew() { return true; }   // ye table sirf INSERT hoti hai
+}
+```
+Ab `isNew()==true` → `persist()` → sidha INSERT, SELECT gaya.
+
+**Safe kyu (interview ka jaal — "`return true` to jhooth hai, update todega"):** nahi — ye rows kabhi `save()` se update nahi hoti. `Payment` ka refund `markRefunded()` se hota hai jo loaded entity ko mutate karta hai, Hibernate dirty-check se flush karta hai — `save()` call hi nahi. Idempotency guard **primary key** hai (duplicate `eventId` INSERT pe fail → "already processed"), merge ke SELECT pe kabhi depend nahi tha. Agar kal update-via-save path aaya, to `isNew` ko `createdAt == null` jaisa banana padega.
+
+**ShopFlow mein:** `OutboxEvent` (Walk 21), dono `ProcessedEvent` + `Payment` (Walk 38). Generated-id entities (`Product`/`Reservation`/`Order`, `@GeneratedValue IDENTITY`) ko zaroorat nahi — unka id pre-insert null hota hai, default `isNew()` apne-aap sahi; `Order` pe `@Version` hai aur wo sach-much UPDATE hoti, to uska `merge()` sahi hai.
+
+**System kaise behtar hua:** har consumed event / payment pe ek DB round-trip kam — hot path halka.
+
+**Ek line mein:** *assigned `@Id` + no `@Version` = Spring Data naye row ko purana samajh ke merge+SELECT karta hai; insert-only table pe `Persistable isNew()==true` se wo plain INSERT ban jaata hai.* Diagram: [`VISUAL-FLOWS.md` #14](VISUAL-FLOWS.md#14-save-persist-merge).
 
 ---
 
@@ -236,6 +280,7 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 4. order-service `payments.events` sunta hai: Captured → `PAID`; Failed → **compensation**: inventory release (idempotent) + `CANCELLED` + `OrderCancelled` event.
 5. notification-service har step pe customer ko batata hai.
 6. Har consumer idempotent (eventId), har producer outbox. Isliye koi service ghante bhar down rahe to bhi kuch gum nahi hota, sirf late hota hai (consumer lag alert).
+7. **Late event ≠ duplicate (Walk 43):** customer ne CONFIRMED order cancel kiya jab charge in-flight tha (lag = minutes ki window) → `PaymentCaptured` CANCELLED order pe aata hai. Pehle ye chupchaap drop hota (paisa gaya!); ab compensation: order `REFUND_PENDING` → wahi refund saga paisa wapas karta hai. **Choreography ka rule: har "ye state ho hi nahi sakti" ek state HAI.**
 
 **Kab kya choose karo:** Customer wait kar raha hai aur jawab chahiye → orchestration (ya sync call). Background flow, multiple reactions, services loosely coupled chahiye → choreography. Choreography ka cost: flow ek jagah dikhta nahi; isliye tracing zaroori hai.
 
@@ -252,6 +297,34 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 - **Replication factor 3, `min.insync.replicas=2`, `acks=all`**: ek broker mare to data safe, write tabhi confirm jab 2 copies ho.
 - **Consumer lag** = produce hua minus consume hua. Badh raha hai = consumer slow/down → `KafkaConsumerLagHigh` alert.
 - **Schema change**: consumer `@JsonIgnoreProperties(ignoreUnknown = true)` → producer field add kar sakta hai bina consumer tode. Field hatana/rename = breaking → Schema Registry (roadmap).
+
+### 10b. Transaction ke andar remote paisa: do orderings, dono haarte hain (Walk 71)
+
+**Problem:** payment-service `gateway.charge()` + payment row + outbox event — sab "ek transaction" mein. Par gateway call DB transaction mein JOIN nahi kar sakta. To do hi orderings hain:
+- **Charge pehle, commit baad** (humara): crash beech mein → row nahi bana → redelivery → **dobara charge**.
+- **Commit pehle, charge baad**: crash beech mein → row CAPTURED dikhata hai, **paisa gaya hi nahi** — worse, kyunki ye jhooth hai.
+
+**Asli fix wire ke us paar hai:** processor-side **idempotency key** (Stripe `Idempotency-Key`, Razorpay `receipt`) = humara `orderRef`. Dobara charge aaye to processor bolta hai "ye to ho chuka" aur paisa ek hi baar move hota hai. Isliye ye **interface ka CONTRACT** hai (PaymentGateway javadoc), implementation detail nahi — real adapter likhne wala wahi padhega.
+
+**Ek line mein:** *Remote call + local transaction kabhi atomic nahi honge; at-least-once chuno aur dusri taraf dedupe karao — key tumhara aggregate id hai.*
+
+### 10a. Retention ≠ "data gaya": replayable window (Walk 59)
+
+**Problem:** Dedupe table (`processed_event`) 7 din baad rows delete karta tha — "topic retention bhi 7d hai, purana record aa hi nahi sakta". Galat, do wajah se:
+
+1. Kafka **segment** delete karta hai, record nahi — aur segment tabhi jab uska **sabse naya** record retention paar kare. Quiet partition pe segment khula rehta hai → record ~**retention + segment-roll** (7d+7d = 14d) tak zinda.
+2. Consumers `auto-offset-reset: earliest` pe hain — matlab group reset/expire pe topic **replay hota hai, by design**.
+
+```
+record age:   0 ──────── 7d ──────────── 14d
+topic:        [ zinda    | shayad zinda (open segment) | gaya ]
+dedupe (old): [ yaad hai | BHUL GAYA ✗                 |      ]  ← replay tail = duplicate emails
+dedupe (new): [ yaad hai | yaad hai ✓                  | gaya ]  (14d)
+```
+
+**Fix (ShopFlow):** `processed-events.retention` 7d → **14d** dono services mein (rows ~40 bytes — margin free hai). `outbox.cleanup` 7d hi hai — wo dedupe nahi, debugging history hai.
+
+**Ek line mein:** *Retention = Kafka ko delete karne ki permission, guarantee nahi; idempotency store ko replayable window (retention + roll) se lamba jeena chahiye.*
 
 ---
 
@@ -400,6 +473,8 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 
 ## Part 5: Platform (Kubernetes, CI/CD, AWS)
 
+**Ek definition rule (Walk 74):** "error rate" jaise number ki definition **recording rule mein ek baar** likho; alert = `recorded_rule > threshold`. Jo alert apna ratio inline banata hai wo drift karega — humara HighErrorRate actuator-exclusion bhool ke probe/scrape traffic se denominator fula raha tha (low-traffic service pe page LATE). Audit mechanical hai: koi bhi alert jo recorded rule use kar sakta tha par nahi karta = doosri definition, disagree hone ka intezaar.
+
 ### 13b. Architecture rules as tests (ArchUnit)
 
 **Problem:** Team ne decide kiya "controller kabhi repository use nahi karega". 6 mahine, 5 naye developers, 1 deadline. Ab 3 controllers seedha DB query kar rahe hain, aur koi review mein pakad nahi paya.
@@ -449,6 +524,8 @@ Agar tumhare paas observability nahi hai, to loop ka pehla step hi nahi hai. Isl
 **Ek line mein:** *Sab band, sirf zaroori khula, DNS yaad rakho.*
 
 ---
+
+**Chhupi bootstrap dependency (Walk 73):** auth mechanisms data-plane se pehle kuch aur dial karte hain — IRSA/MSK-IAM ko **STS (443)**, JWT validation ko **JWKS (443)**, OAuth ko token endpoint. Egress list banate waqt poochho: "is mechanism ka BOOTSTRAP kya dial karta hai?" — prod mein payment/notification ke paas 443 tha hi nahi, to Kafka SASL shuru hone se pehle hi credentials fail; order-service sirf isliye bacha ki JWKS ke liye 443 already khula tha (kisi aur ka broad rule tumhara missing rule chhupa sakta hai).
 
 ### 16. CI/CD + GitOps: commit se prod tak
 
@@ -562,6 +639,16 @@ Har dependency ke liye poochho: **slow ho to? down ho to? galat jawab de to?**
 
 ### Step 6: Self-walk regularly
 - Mahine mein ek baar `SELF-WALK.md` wala checklist chalao. Code padho jaise reviewer. Jo mile, fix ya likho.
+
+### Step 7: Ek fact ki N copies gino (census rule — Walks 48/50/58/67)
+
+**Problem:** Humne "publish `main` branch pe hota hai" wala fact dhoondha — **chhe copies, paanch systems** mein: GitHub workflow ke 8 `if:`, Kyverno keyless `subject`, AWS OIDC trust ka `sub` (Terraform), Argo CD Application ka `targetRevision`, Jenkinsfile ke 2 `when { branch }`. Aur `main` exist hi nahi karta. Har copy **alag tarah** fail hoti: skipped job, rejected pod, STS AccessDenied, "revision not found", skipped stage — N−1 flip karo to Nth jagah pe sabse confusing error milta.
+
+**Rule:** Jaise hi kisi constant ki **doosri** copy mile (branch name, port, retention, pool size, metric name) — ruk ke **census** lo: `grep -rn "<literal>"` poore repo + IaC + CI pe. Har copy ya to ek source se derive karo (var, configmap, `"+"` jaise idioms), ya decision-doc mein poori list likho taaki flip ek checklist ho, archaeology nahi.
+
+**ShopFlow mein:** STATE §4 ka publishing decision ab chhao copies list karta hai; connection-budget formula (Walk 65) teen files mein same likha gaya; Keycloak `webOrigins: ["+"]` redirectUris se derive hota hai (Walk 66).
+
+**Ek line mein:** *Doosri copy dikhe to poora grep karo — har baad mein mili copy ek aur outage-shaped surprise hai.*
 
 > Tip: Interview mein "how would you improve this system?" ka jawab yahi 6 steps hain, kisi bhi system ke liye. Pehle measure, phir bottleneck, phir failure modes, phir test+alert+runbook, phir load test, phir repeat.
 
@@ -741,3 +828,4 @@ ShopFlow: `k8s/base` = RollingUpdate (default), `k8s/rollouts` = Argo Rollouts c
 | `:latest` prod mein ghus gaya | sirf review | Kyverno/Gatekeeper admission policy |
 | Backup hai par restore kabhi nahi kiya | RPO/RTO socha nahi | CronJob/PITR + restore runbook + practice |
 | CI late bolta hai YAML galat hai | shift-left nahi | pre-commit + lint job |
+| Gate flip kiya, phir bhi pipeline tuta (alag error) | ek fact ki N copies (branch/port/retention) | census rule: doosri copy pe poora grep, list decision-doc mein (Step 7) |

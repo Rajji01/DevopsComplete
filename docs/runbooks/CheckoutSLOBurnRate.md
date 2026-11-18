@@ -1,9 +1,10 @@
-# CheckoutSLOBurnRateFast / Slow (page)
+# CheckoutSLOBurnRateFast / Slow (page) / Ticket
 
 **SLO:** 99.5% of `POST /api/v1/orders` succeed (no 5xx) within 1 s, over 30 days. Budget: 0.5% bad requests ≈ **3.6 hours** of total failure per month.
 
 **Fast (1h window, burn 14.4×):** at this rate the whole month's budget is gone in ~2 days. Treat like an outage.
 **Slow (6h window, burn 6×):** ~5 days to exhaustion. Fix today, not necessarily tonight.
+**Ticket (3d window, burn 1×):** a *chronic* drain — the error ratio is steadily above the 0.5% budget but below the 3% the Slow page needs, so neither page ever fires while the budget bleeds out. Not urgent, but do not ignore: at a sustained 1× burn the 30-day budget exhausts on schedule. Find the low-grade cause (a flaky dependency, one slow endpoint variant, a partial outage affecting a few % of traffic) during working hours before it becomes a page.
 
 ## 1. Error budget or latency?
 Grafana → *Checkout SLI error ratio vs budget* panel; then:

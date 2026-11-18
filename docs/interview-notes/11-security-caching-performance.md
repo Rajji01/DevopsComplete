@@ -65,7 +65,7 @@ OIDC = OAuth2 + identity: adds the **`id_token`** (who the user is) and `/userin
 
 | | Keycloak (compose / minikube) | Amazon Cognito (prod, `cognito.tf`) |
 |---|---|---|
-| Issuer | `http://localhost:8180/realms/shopflow` (compose), `http://keycloak.shopflow.local/realms/shopflow` (K8s `KC_HOSTNAME`) | `https://cognito-idp.ap-south-1.amazonaws.com/<pool-id>` |
+| Issuer | `http://localhost:8180/realms/shopflow` (compose), `http://keycloak:8180/realms/shopflow` (K8s — in-cluster `KC_HOSTNAME`, Walk 80) | `https://cognito-idp.ap-south-1.amazonaws.com/<pool-id>` |
 | Roles claim | `realm_access.roles: ["customer"]` | `cognito:groups: ["customer"]` (groups `customer`, `support` created in Terraform) |
 | Client | public `shopflow-web`, redirect `http://localhost:*`, standard flow + direct grant | user pool client `shopflow-web` (resource `aws_cognito_user_pool_client.web`), `generate_secret = false`, `allowed_oauth_flows = ["code"]`, SRP + refresh |
 | Config | realm JSON imported at start (`--import-realm`), mounted from a ConfigMap (`keycloak-realm`, `configMapGenerator`) | managed |
@@ -73,7 +73,7 @@ OIDC = OAuth2 + identity: adds the **`id_token`** (who the user is) and `/userin
 
 Same image, different `JWT_ISSUER_URI` — that is the whole point of `JwtRolesConverter` supporting both claim layouts.
 
-Compose gotcha worth telling: tokens carry `iss = http://localhost:8180/...` because the browser/curl talks to Keycloak via `localhost`; order-service runs in a container where `localhost` is itself. The compose file sets `KC_HOSTNAME: http://localhost:8180` and gives order-service `extra_hosts: ["localhost:host-gateway"]` so the container's `localhost` resolves to the Docker host and the JWKS fetch at the issuer URL works. In K8s both sides use the same hostname (`keycloak.shopflow.local`), so no trick is needed.
+Compose gotcha worth telling: tokens carry `iss = http://localhost:8180/...` because the browser/curl talks to Keycloak via `localhost`; order-service runs in a container where `localhost` is itself. The compose file sets `KC_HOSTNAME: http://localhost:8180` and gives order-service `extra_hosts: ["localhost:host-gateway"]` so the container's `localhost` resolves to the Docker host and the JWKS fetch at the issuer URL works. In K8s the same trick exists in a different shape (Walk 80): `KC_HOSTNAME` is pinned to the **in-cluster** URL (`http://keycloak:8180`), so every token's `iss` is a name the order-service pod can resolve — the browser may reach Keycloak via the ingress host (`keycloak.shopflow.local`, laptop `/etc/hosts`), but the browser never validates `iss`; only the resource server does, and it fetches JWKS from the pinned in-cluster issuer. (The earlier config pinned `iss` to the ingress host, which only the laptop could resolve — pods 401'd on the first authenticated call.)
 
 ### Hands-on: get a token and watch the resource server work (compose)
 
@@ -293,7 +293,7 @@ The serializer pitfall, and how ShopFlow handles it (a classic "works with `simp
 2. **Key design**: default key = all method parameters; use `key = "#sku"` explicitly. Keys must be stable and bounded (SKU, not a whole request object). Prefix per service (`inventory:`) to share one Redis.
 3. **Null / exceptions**: `null` results are cached by default (`unless = "#result == null"` to avoid); exceptions are **not** cached — `ProductNotFoundException` → 404 is not cached, so a missing SKU hits the DB every time (negative caching would need a sentinel).
 4. **Serialization** (Redis): JDK serialization is brittle across versions and needs `Serializable`; prefer JSON (`GenericJackson2JsonRedisSerializer`, as `CacheConfig` does) or Protobuf.
-5. **Conditional**: `condition = "#quantity > 0"`, `sync = true` to coalesce concurrent misses for the same key in one JVM (stampede protection).
+5. **Conditional**: `condition = "#quantity > 0"`, `sync = true` to coalesce concurrent misses for the same key in one JVM (stampede protection) — ShopFlow uses it on `ProductController.get` (Walk 54).
 6. **Transactions**: `@CacheEvict` runs when the method returns — *before* the surrounding `@Transactional` commits (`reserve` is annotated with both). A concurrent reader can re-populate the cache with the **old** value between evict and commit. Mitigation: make the cache manager transaction-aware (`RedisCacheManager.builder(...).transactionAware()` / `TransactionAwareCacheManagerProxy`, which defers evictions to after commit), or evict in an `@TransactionalEventListener(phase = AFTER_COMMIT)`. ShopFlow's TTL (60s) bounds the damage.
 7. **`type: simple` across pods**: each pod has its own map → a reserve on pod A does not evict pod B's copy. That is why compose/K8s set `CACHE_TYPE=redis` (shared).
 8. **Error handling**: the default `CacheErrorHandler` propagates Redis exceptions into your business method. Override `CachingConfigurer.errorHandler()` (ShopFlow: `LoggingCacheErrorHandler`) or write a custom handler that also bumps a metric; never let a cache outage fail a read path.
@@ -647,7 +647,7 @@ Nothing visible except latency and log noise: `CacheConfig` implements `CachingC
 ## F. Scenarios
 
 **S1. After deploying to minikube every `POST /orders` returns 401, but curl with a Keycloak token worked in compose.**
-`iss` mismatch: compose tokens say `http://localhost:8180/realms/shopflow`, K8s expects `http://keycloak.shopflow.local/realms/shopflow` (`shopflow-endpoints` ConfigMap) — get the token from the K8s Keycloak, not the compose one. Other causes: JWKS unreachable (order-service egress NetworkPolicy must allow keycloak:8180 — it does; `KC_HOSTNAME` wrong), clock skew > 60s (`exp`), token expired (900s), or `JWT_ISSUER_URI` env not wired. Debug: decode the token at jwt.io (never paste prod tokens), compare `iss`, check order-service logs for `JwtValidationException`.
+`iss` mismatch: compose tokens say `http://localhost:8180/realms/shopflow`, K8s expects `http://keycloak:8180/realms/shopflow` (`shopflow-endpoints` ConfigMap) — get the token from the K8s Keycloak, not the compose one. Other causes: JWKS unreachable (order-service egress NetworkPolicy must allow keycloak:8180 — it does; `KC_HOSTNAME` wrong), clock skew > 60s (`exp`), token expired (900s), or `JWT_ISSUER_URI` env not wired. Debug: decode the token at jwt.io (never paste prod tokens), compare `iss`, check order-service logs for `JwtValidationException`.
 
 **S2. Security review: "support staff can cancel orders".**
 Check the rule order: `GET /api/v1/orders/**` → `customer|support` comes **before** `/api/v1/orders/**` → `customer`; `DELETE` is not GET, so it falls to the second rule and `support` gets 403 (tested). If someone reordered the matchers so the broad rule came first, both roles would pass — matcher order matters; keep the test.

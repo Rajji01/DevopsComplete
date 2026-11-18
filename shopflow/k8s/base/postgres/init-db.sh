@@ -11,4 +11,6 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" <<-EOSQL
     CREATE DATABASE notifications OWNER notifications;
     CREATE USER payments WITH PASSWORD '${PAYMENTS_DB_PASSWORD}';
     CREATE DATABASE payments OWNER payments;
+    CREATE USER ledger WITH PASSWORD '${LEDGER_DB_PASSWORD}';
+    CREATE DATABASE ledger OWNER ledger;
 EOSQL

@@ -30,9 +30,6 @@ spring:
       resourceserver:
         jwt:
           issuer-uri: ${JWT_ISSUER_URI:http://localhost:8180/realms/shopflow}
-
-jwt:
-  audience: ${JWT_AUDIENCE:}   # Keycloak client id / Cognito app client id; empty = not checked
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/orders}
     username: ${DB_USERNAME:orders}
@@ -46,6 +43,9 @@ jwt:
   mvc:
     problemdetails:
       enabled: true
+
+jwt:
+  audience: ${JWT_AUDIENCE:}   # Keycloak client id / Cognito app client id; empty = not checked
 
 inventory:
   base-url: ${INVENTORY_URL:http://localhost:8082}
@@ -80,6 +80,8 @@ resilience4j:
         wait-duration: 200ms
         enable-exponential-backoff: true
         exponential-backoff-multiplier: 2
+        enable-randomized-wait: true    # jitter: de-sync retry waves across pods (thundering herd)
+        randomized-wait-factor: 0.5     # each backoff ±50%: 200ms→[100,300], 400ms→[200,600]
         retry-exceptions:         # only transient technical errors are retried
           - org.springframework.web.client.ResourceAccessException
           - org.springframework.web.client.HttpServerErrorException

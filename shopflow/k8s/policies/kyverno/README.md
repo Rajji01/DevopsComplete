@@ -11,7 +11,12 @@ through. Two engines, same idea:
 | Test offline | `kyverno apply policy.yaml --resource manifests.yaml` | `gator test` |
 | Learning curve | low | medium (Rego) |
 
-Both folders implement "no `:latest` tag". Only Kyverno implements the full set:
+Both folders implement "no `:latest` tag" — but they are **not** scoped identically, and only one is exercised (Walk 95):
+
+- **Scope differs.** Kyverno's `disallow-latest-tag` matches `Pod` in **every** namespace; the Gatekeeper constraint matches `Pod` only in `namespaces: ["shopflow"]`. So a `:latest` pod in another namespace is blocked by Kyverno and allowed by Gatekeeper. The Rego logic itself matches (init + ephemeral containers covered, same as Kyverno since Walk 16).
+- **Only Kyverno is tested.** CI runs `kyverno apply` against the prod overlay and a bad pod; it does **not** run `gator test`, so the Gatekeeper template/constraint are reference material (kubeconform skips their CRD-backed kinds). Treat Gatekeeper here as "the same rule expressed in Rego for comparison", not a second enforced control. Run `gator test` locally to actually exercise it.
+
+Only Kyverno implements the full set:
 
 | Policy | Why |
 |---|---|

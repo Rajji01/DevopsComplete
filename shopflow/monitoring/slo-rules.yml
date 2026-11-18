@@ -33,3 +33,19 @@ groups:
         annotations:
           summary: "checkout is burning the monthly error budget 6x too fast (6h window)"
           runbook: docs/runbooks/CheckoutSLOBurnRate.md
+
+      # Slowest tier: 1x burn over 3d -> ticket (not a page). Catches a CHRONIC drain — an error ratio
+      # steadily over the 0.5% budget but under the 3% the 6h page needs — which would otherwise exhaust
+      # the 30-day budget invisibly. Short window 6h (3d/12) makes it clear quickly once fixed.
+      - alert: CheckoutSLOBurnRateTicket
+        expr: |
+          sli:checkout_error_ratio:rate3d > (1 * 0.005)
+          and
+          sli:checkout_error_ratio:rate6h > (1 * 0.005)
+        for: 1h
+        labels:
+          severity: ticket
+          slo: checkout-availability
+        annotations:
+          summary: "checkout is chronically over its error budget (1x burn, 3d window) — investigate before it exhausts"
+          runbook: docs/runbooks/CheckoutSLOBurnRate.md

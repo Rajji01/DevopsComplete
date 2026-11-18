@@ -13,5 +13,5 @@ is the advanced approach for the same two services, kept side by side so both ca
 | Needs | nothing | Argo Rollouts controller, Prometheus, a traffic router for exact weights (ALB/NGINX/Istio); without one, weight ≈ pod ratio | Argo Rollouts controller |
 
 Install: `kubectl create ns argo-rollouts && kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml`
-Apply: `kubectl apply -k k8s/rollouts` (replaces the two Deployments in the namespace; Services/HPA/PDB are reused).
+Apply: `kubectl apply -k k8s/rollouts` (the Rollouts take over the two services via `workloadRef`; Services/PDB are reused). The **HPAs are retargeted, not reused** (Walk 109): `hpa.yaml` here updates each service's HPA to `scaleTargetRef` the **Rollout**, because once the Rollout owns the pods it scales the referenced Deployment to 0 — an HPA still pointing at the Deployment would autoscale an empty workload while the real serving pods never scale.
 Watch: `kubectl argo rollouts get rollout order-service -n shopflow --watch`, promote: `kubectl argo rollouts promote inventory-service -n shopflow`.

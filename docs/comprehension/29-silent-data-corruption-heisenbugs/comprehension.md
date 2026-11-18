@@ -1,7 +1,7 @@
 # 29 · Silent wrong-updates & prod Heisenbugs (JPA / index / lock) — comprehension
 
 > Companion notes: [`notes.md`](notes.md). Grounded in what ShopFlow does **right** (so the trap is the "if you didn't"): `@Enumerated(EnumType.STRING)` on every enum, `Order` `@Version`, Flyway indexes (`idx_orders_customer_created`, `idx_orders_status_updated`, `idx_outbox_pending`), `OrderService.saveWithEvent` (TransactionTemplate to dodge self-invocation). Bugs marked **[TRAP]** are the "what if it were wrong" — reasoned, not in the repo.
-> **Theme:** ye wo bugs hain jahan **koi exception nahi aata** — data chup-chaap galat, ya prod mein dekh ke bhi samajh na aaye. Pairs: [28 concurrency](../28-concurrency-control-locks-jpa-db/), [D18](../../debugging/D18-stale-read-your-writes.md), [D19](../../debugging/D19-index-cliff-seq-scan.md).
+> **Theme:** ye wo bugs hain jahan **koi exception nahi aata** — data chup-chaap galat, ya prod mein dekh ke bhi samajh na aaye. Pairs: [28 concurrency](../28-concurrency-control-locks-jpa-db/), [D19](../../debugging/D19-stale-read-your-writes.md), [D20](../../debugging/D20-index-cliff-seq-scan.md).
 
 ---
 

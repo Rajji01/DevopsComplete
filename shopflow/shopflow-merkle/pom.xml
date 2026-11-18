@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.shopflow</groupId>
+        <artifactId>shopflow-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>shopflow-merkle</artifactId>
+    <name>shopflow-merkle</name>
+    <description>Merkle (hash) tree: tamper-evident root hash, O(log n) inclusion proofs, and top-down diff
+        to find the one leaf that changed (anti-entropy). SHA-256, pure Java, fully unit-tested.</description>
+
+    <!-- Pure Java (java.security.MessageDigest); test deps inherited from the parent. -->
+</project>

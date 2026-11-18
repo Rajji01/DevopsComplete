@@ -233,6 +233,36 @@ class OrderServiceApplicationTests {
     }
 
     @Test
+    void concurrentRequestsWithTheSameIdempotencyKeyCreateOnlyOneOrder() throws Exception {
+        // Both requests pass the findByIdempotencyKey pre-check before either commits (a double
+        // click); the unique index makes one save lose. Walk 45: the loser must return the winner's
+        // order (like inventory's reservation race), never a 409/500 and never a second order.
+        stubReserve(201);
+        var barrier = new java.util.concurrent.CyclicBarrier(2);
+        var bodies = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+        Runnable attempt = () -> {
+            try {
+                barrier.await();
+                bodies.add(mockMvc.perform(createOrder("PS5-SLIM", 1).header("Idempotency-Key", "race-key-1"))
+                        .andReturn().getResponse().getContentAsString());
+            } catch (Exception e) {
+                bodies.add("ERROR " + e);
+            }
+        };
+        Thread t1 = new Thread(attempt);
+        Thread t2 = new Thread(attempt);
+        t1.start();
+        t2.start();
+        t1.join(10_000);
+        t2.join(10_000);
+
+        assertThat(bodies).hasSize(2).noneMatch(b -> b.startsWith("ERROR"));
+        var ids = bodies.stream().map(b -> JsonPath.<Integer>read(b, "$.id")).distinct().toList();
+        assertThat(ids).as("both callers must see the SAME order").hasSize(1);
+        inventory.verify(1, postRequestedFor(urlEqualTo("/api/v1/reservations")));
+    }
+
+    @Test
     void cancelReleasesReservedStock() throws Exception {
         stubReserve(201);
         inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*")).willReturn(aResponse().withStatus(204)));
@@ -341,6 +371,50 @@ class OrderServiceApplicationTests {
                 .andExpect(jsonPath("$.status").value("CANCELLED"));
     }
 
+    @Test
+    void reconcilerSurvivesAnOrderSettledConcurrently() throws Exception {
+        // Walk 53: every pod runs the reconciler on the same stale rows, and the customer can cancel
+        // at the same moment. The race loser's OptimisticLockingFailureException must be a skip
+        // (someone settled it = success), not an escape that aborts the batch and the gauge update.
+        stubReserve(500);
+        String body = mockMvc.perform(createOrder("PIXEL-9", 1)).andExpect(status().isServiceUnavailable())
+                .andReturn().getResponse().getContentAsString();
+        Number orderId = JsonPath.read(body, "$.orderId");
+        circuitBreakerRegistry.circuitBreaker("inventory").reset();
+
+        // first release call (the reconciler's) is slow; the next (the customer's cancel) is instant,
+        // so the cancel commits first and the reconciler's save loses the @Version race
+        inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*"))
+                .inScenario("concurrent-settle").whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willReturn(aResponse().withStatus(204).withFixedDelay(400))
+                .willSetStateTo("fast"));
+        inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*"))
+                .inScenario("concurrent-settle").whenScenarioStateIs("fast")
+                .willReturn(aResponse().withStatus(204)));
+
+        var reconcileResult = new java.util.concurrent.CompletableFuture<Integer>();
+        Thread reconciler = new Thread(() -> {
+            try {
+                reconcileResult.complete(orderService.reconcileFailedOrders(Duration.ZERO));
+            } catch (Exception e) {
+                reconcileResult.completeExceptionally(e);
+            }
+        });
+        reconciler.start();
+        Thread.sleep(100); // let the reconciler reach the slow release first
+        int cancelStatus = mockMvc.perform(MockMvcRequestBuilders.delete("/api/v1/orders/" + orderId).with(customer()))
+                .andReturn().getResponse().getStatus();
+        reconciler.join(10_000);
+
+        // whichever side lost the race, the reconciler must have completed normally...
+        assertThat(reconcileResult).succeedsWithin(Duration.ofSeconds(1));
+        // ...the customer saw a definitive answer (200 settled-by-me, or 409 someone-else-won)...
+        assertThat(cancelStatus).isIn(200, 409);
+        // ...and the order is settled exactly once
+        mockMvc.perform(get("/api/v1/orders/" + orderId).with(customer()))
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
+    }
+
     @Autowired
     private org.springframework.kafka.core.KafkaTemplate<String, String> kafkaTemplate;
 
@@ -405,6 +479,33 @@ class OrderServiceApplicationTests {
         await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
                 mockMvc.perform(get("/api/v1/orders/" + id).with(customer())).andExpect(jsonPath("$.status").value("REFUNDED")));
         inventory.verify(deleteRequestedFor(urlEqualTo("/api/v1/reservations/" + orderRef)));
+    }
+
+    @Test
+    void lateCaptureAfterCancelTriggersARefundInsteadOfLosingTheMoney() throws Exception {
+        // Cancel/charge race (Walk 43): the customer cancels the CONFIRMED order while payment-service
+        // is still processing OrderConfirmed (consumer lag makes that window minutes). The capture then
+        // lands for a CANCELLED order — before the fix this was silently dropped and the money was gone.
+        stubReserve(201);
+        inventory.stubFor(delete(urlPathMatching("/api/v1/reservations/.*")).willReturn(aResponse().withStatus(204)));
+        String body = mockMvc.perform(createOrder("PIXEL-9", 1)).andReturn().getResponse().getContentAsString();
+        Number id = JsonPath.read(body, "$.id");
+        String orderRef = JsonPath.read(body, "$.orderRef");
+
+        mockMvc.perform(MockMvcRequestBuilders.delete("/api/v1/orders/" + id).with(customer()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"));
+
+        // the in-flight capture lands anyway: the money must come back -> REFUND_PENDING (refund saga)
+        kafkaTemplate.send("payments.events", orderRef, paymentEvent("PaymentCaptured", orderRef, null));
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                mockMvc.perform(get("/api/v1/orders/" + id).with(customer()))
+                        .andExpect(jsonPath("$.status").value("REFUND_PENDING")));
+
+        // payment-service refunds -> the cancelled order ends REFUNDED (money back, stock already released)
+        kafkaTemplate.send("payments.events", orderRef, paymentEvent("PaymentRefunded", orderRef, null));
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                mockMvc.perform(get("/api/v1/orders/" + id).with(customer())).andExpect(jsonPath("$.status").value("REFUNDED")));
     }
 
     @Test

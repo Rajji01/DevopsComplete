@@ -622,7 +622,943 @@ Walk 34–35 lesson: after one number drifts (the DB pool), **sweep the same cla
 ### Honest status (Walks 22–35)
 - Docs/review only; **not executed** (no Docker/JDK; GUIDED-STUDY). All claims re-verified against source; DB-pool number consistent (5/pod); numbers/citations/HLD audited clean; links clean. In-sync with `origin/master` (pushed).
 
-## Walk 36: audit the newest fast-built docs + make them discoverable (Nov 4, 2026)
+## Walk 36: the refund-failure metric nobody could see (Nov 8, 2026)
+
+Scope: close a gap Walk 20 left. Walk 20 added a `payments.refund.failed` counter when the processor declines a refund, but **no alert, no runbook** — the repo's own rule (STATE §5: a new failure signal gets an alert + unit test + runbook) wasn't met, and the Grafana dashboard doesn't plot it either. So a declined refund was recorded but invisible until `OrdersStuckConfirmed` fired ~15 min later for a different reason.
+
+First, the self-walk also **verified the Grafana dashboard** (`shopflow-red.json`): all 14 panel expressions map to metrics/recording rules that actually exist (`service:*` RED rules, `sli:checkout_error_ratio:*`, `orders_total`/`payments_total`, `outbox_unpublished`, `kafka_consumer_fetch_manager_records_lag_max`, `resilience4j_circuitbreaker_not_permitted_calls_total`, `hikaricp_connections_*`, `orders_stuck_confirmed`). No broken panels.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `payments_refund_failed_total` had no alert/runbook | A declined refund means a customer is owed money and the order is stuck in `REFUND_PENDING`; relying on the slower `OrdersStuckConfirmed` backstop buries a known, actionable failure | Added a **`PaymentRefundFailed`** alert (`increase(payments_refund_failed_total[15m]) > 0`, severity ticket — money is safe with us, not a 3 AM page, but must not be ignored), two promtool unit tests (ticks up → fires; flat → silent), and a runbook (how to see which orders, why the decline, how to resolve without ever faking REFUNDED). Distinct from `OrdersStuckConfirmed`: faster and names the cause (decline, not lag) |
+
+Walk 36 lesson: **a metric without an alert is a number nobody reads.** Walk 20 did the hard correctness part (stop faking the refund) but left the signal mute; completing the loop is alert + runbook + test, exactly the rule the repo already states. (Verified in CI — no Docker/JDK locally this session.)
+
+## Walk 38: three more entities doing a wasted SELECT before every INSERT (Nov 8, 2026)
+
+Scope: finish the deferred Walk-21 follow-up (STATE §4). Walk 21 made `OutboxEvent implements Persistable<UUID>` so its assigned-UUID `save()` stops doing `merge()`+SELECT. Three other entities share the exact same shape — an **assigned** `@Id` (not generated), **insert-only** lifecycle — and were still paying the merge tax.
+
+The mechanism (clear as whiskey): Spring Data's `SimpleJpaRepository.save()` calls `em.persist()` only when the entity "is new", else `em.merge()`. With no `@Version` and an **assigned** id, its default `isNew()` sees a non-null id and says "not new" → `merge()`, which issues a **SELECT** to check if the row exists before the INSERT. For a row we *know* is brand new (we just minted the UUID), that SELECT is pure waste — and worse, it's one extra round-trip inside the consumer's transaction, on the hot path of every Kafka message.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `order-service` `ProcessedEvent`, `notification-service` `ProcessedEvent`, `payment-service` `Payment` — all assigned-UUID, insert-only — did `merge()`+SELECT on `save()` | Every consumed event does a `processed_event` insert for idempotency bookkeeping; `Payment` is inserted once per `OrderConfirmed`. That's a needless SELECT per message, in-transaction, on the saga hot path | `implements Persistable<UUID>` + `getId()` returning the id field + `isNew(){return true;}` → `persist()`, a plain INSERT. Verified each is insert-only: both `ProcessedEvent`s are only ever `new`+`save()`; `Payment`'s refund mutates the loaded entity via dirty-checking (`markRefunded`), never `save()`, so forcing `isNew=true` can't corrupt an update path |
+
+Why `isNew(){return true;}` is safe here and not a hack: these rows are **never updated through `save()`**. The idempotency guard is the primary key itself — a duplicate `eventId` fails the INSERT (caught and treated as "already processed"), which is the behaviour we want; it was never relying on merge's SELECT. If any of these ever gained an update-via-save path, `isNew` would have to become `createdAt == null`-style; a comment on each class says so.
+
+**Closure (swept all 7 entities):** of the repo's JPA entities, the four with an assigned id are now all `Persistable` — `OutboxEvent` (Walk 21) + these three (Walk 38). The other three — `Product`, `Reservation`, `Order` — use `@GeneratedValue(IDENTITY)`, so the default `isNew()` already works (id is null pre-insert → persist, non-null post-insert → merge on a real update); `Order` additionally carries `@Version` and is a genuinely-updated aggregate, so its `merge()` is correct and must stay. Nothing left in this class.
+
+Walk 38 lesson: **an assigned `@Id` silently turns every `save()` into a read-then-write.** When a table is insert-only, `Persistable` with `isNew()==true` is the honest declaration of intent and drops a round-trip from the hot path. The tell is "assigned id + no `@Version` + we never call `save()` on a loaded instance." (Verified in CI — no Docker/JDK locally this session; existing idempotency/outbox tests cover correctness.)
+
+## Walk 39: retry without jitter is a thundering herd waiting to happen (Nov 8, 2026)
+
+Scope: the resilience config review. `InventoryClient.reserve/release` is wrapped `Retry(CircuitBreaker(call))`, and the config is otherwise excellent — retry is a **whitelist** (`ResourceAccessException` + `HttpServerErrorException` only, so a 409/404 business "no" is never retried), and the breaker **ignores** `InventoryRejectedException` (out-of-stock doesn't trip the circuit). Verified correct, no change there. But one gap, which the interview notes had themselves flagged as a TODO: **exponential backoff with no jitter.**
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `resilience4j.retry.instances.inventory` had `enable-exponential-backoff` (200ms→400ms) but **no randomization** | When inventory-service blips, *every* in-flight order across *every* order-service pod fails at ~the same instant, then all retry at 200ms, then all at 400ms — synchronized waves that hammer a recovering service exactly when it's weakest (a self-inflicted thundering herd). The breaker helps, but jitter is the cheaper first line | Added `enable-randomized-wait: true` + `randomized-wait-factor: 0.5` → resilience4j builds `IntervalFunction.ofExponentialRandomBackoff`, so each wait is ±50% (200ms→[100,300], 400ms→[200,600]). Pods de-synchronize; load spreads instead of spiking |
+
+Why it's safe with the tests: `application-test.yml` only overrides `wait-duration` (→10ms) and inherits the rest, so the test instance now also randomizes — but every retry/breaker test asserts on **call counts** (`inventory.verify(3, …)`, `verify(1, …)`) and breaker **state**, never on timing. Jitter changes *when* a retry fires, not *how many*; attempt count is still `max-attempts: 3`. The base config already combined `wait-duration` + exponential (CI green), so adding randomized just selects the combined interval function — no startup conflict (the resilience4j issue #2378 conflict is specific to inheriting `wait-duration` from a shared `default` config, which we don't use).
+
+Walk 39 lesson: **exponential backoff spaces out *one* client's retries; jitter spaces out *all* clients' retries.** Without randomization, horizontal scale turns a downstream blip into a synchronized retry storm. It's a one-line config change and the single most common real-world retry mistake interviewers probe for. (Verified in CI — no Docker/JDK locally this session; order-service retry/breaker tests load the context and assert call counts, unaffected by timing.)
+
+## Walk 40: the dead-letter topic nobody was watching (Nov 8, 2026)
+
+Scope: Kafka error-handling review. All three consumers have the same `KafkaErrorConfig` (retry with exponential backoff 500ms×2 capped at ~10s, then `DeadLetterPublishingRecoverer` → `.DLT`) — verified consistent and correct. But Walk 36's question again: **who finds out?** A grep across `alert-rules.yml`, the recording rules, the Grafana dashboard and the runbooks found **zero mention of the DLTs**, and there is no broker-side exporter. EASY-NOTES even says "DLT pe alert/ticket" — the docs promised an alert that did not exist.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| A record moved to `orders.events.DLT` / `payments.events.DLT` produced **no signal anywhere** | Dead-lettering un-blocks the partition, but the event's side effect didn't happen — an email never sent, a payment outcome never applied. Nothing consumes the DLTs, so the event is **silently lost** until a human notices the missing side effect (possibly days later) | 1) each `KafkaErrorConfig` now wraps the recoverer: `deadLetter.accept(record, ex); counter.increment();` → `kafka.dead.lettered` (incremented only **after** the DLT publish succeeded; a failed publish throws → record retried, not counted). 2) `KafkaMessageDeadLettered` alert (`sum by (application) (increase(kafka_dead_lettered_total[15m])) > 0`, ticket, labelled by service). 3) promtool tests 9 (ticks → fires with the right label) + 9b (flat → silent). 4) runbook `KafkaMessageDeadLettered.md` (inspect DLT headers, cause table, idempotent replay) + README row. 5) poison-pill test now also asserts the counter ticks |
+
+Design note: the counter is incremented *after* `accept()` so the metric means "safely parked on the DLT", not "we tried". Alert is a **ticket**, not a page — the pipeline is healthy, but every DLT record is owed a replay. Replay is safe because every consumer is idempotent (`processed_event` / PK dedupe — Walks 38's entities are exactly this bookkeeping).
+
+Walk 40 lesson: **a dead-letter topic without an alert is a graveyard, not a parking lot.** The DLT pattern only "handles" failure if something routes a human to it; otherwise it converts a loud failure (blocked partition) into a silent one (lost event). Same lesson as Walk 36, one level up the stack — and the docs claiming "DLT pe alert" before one existed is exactly the doc-vs-reality drift STATE §2 exists to catch. (Verified in CI — promtool + the extended poison-pill test.)
+
+## Walk 41: the failure signals get a dashboard panel (Nov 8, 2026)
+
+Scope: close the gap Walk 36 itself recorded — "the Grafana dashboard doesn't plot it either." `payments_refund_failed_total` (Walk 36) and now `kafka_dead_lettered_total` (Walk 40) had alerts + runbooks but no place on `shopflow-red.json`, so during an incident you could *get* the ticket but not *see* the signal next to the RED metrics you're already staring at.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The two "money/data at risk" counters were alert-only, invisible on the dashboard | During triage you correlate: did the refund decline coincide with the breaker opening? with consumer lag? A signal that lives only in Alertmanager can't be correlated visually | New stat panel 12 ("Failure signals (15m): refunds declined / dead-lettered") next to the stuck-orders stat: `sum(increase(payments_refund_failed_total[15m]))` + `sum(increase(kafka_dead_lettered_total[15m]))`, green at 0, red at ≥1 — same threshold style as panel 11. JSON validated (12 panels) |
+
+Walk 41 lesson: **an alert tells you *that* something broke; the dashboard is where you see *what else* broke with it.** Every alerted signal deserves a spot next to the metrics you correlate it against — otherwise the on-call pivots between tools during the worst five minutes.
+
+## Walk 42: the price list that invented prices (Nov 8, 2026)
+
+Scope: payment-service charge/refund paths, fresh eyes. The Walk-20 refund logic and the eventId-PK idempotency are solid (re-verified). Two silent-wrongness problems found, both in what the code does when its assumptions break.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `PriceList.priceOf` had `getOrDefault(sku, 999.00)`: an unknown sku was **silently charged ₹999** | Inventory's product catalog (Flyway seed) and payment's `PriceList` are two hand-maintained lists. Add a product to inventory, forget `PriceList` → every order for it charges a **made-up price** — the customer pays the wrong amount and nothing anywhere flags it. (Walk 28 had even caught a drill draft wrongly claiming this throws an NPE — it never failed, which is exactly the problem) | `priceOf` returns `Optional`; on empty the charge is **declined** (`no price for sku <X>`) through the normal failure path: FAILED payment row (idempotent via eventId PK), `PaymentFailed` event → order-service releases stock + CANCELLED, `payments_total{status="FAILED"}` feeds the existing `PaymentFailureRateHigh` alert, runbook row added. New test `unknownSkuIsDeclinedNotChargedAMadeUpPrice` in the shared-context test class |
+| `refund()`'s no-op paths were **silent**: no payment row at all, or a non-CAPTURED payment → `Optional.filter().ifPresent()` quietly did nothing | An `OrderRefundPending` with no payment row is an upstream data problem; the order then sits in REFUND_PENDING until `OrdersStuckConfirmed` fires — and the operator finds **zero log lines** explaining why no refund ever happened | Rewrote the chain as guard clauses: missing row → `log.warn` ("needs a human"), non-CAPTURED → `log.info` with the actual status (REFUNDED = normal duplicate; FAILED = upstream state-machine violation). Behaviour unchanged, triage no longer blind |
+
+Walk 42 lesson: **never invent an amount of money, and never no-op in silence.** A fallback price turns a config gap into a wrong charge; an unlogged early-return turns a data bug into a mystery. Fail loudly through the paths that already exist (decline → cancel → release; warn → runbook). (Verified in CI — new test + existing 50+ suite.)
+
+## Walk 43: the cancel/charge race that ate the customer's money (Nov 8, 2026)
+
+Scope: `OrderService` saga handlers, fresh eyes. Found the best bug of this block — a **choreography race with real money on the line**.
+
+The race: an order is CONFIRMED and `OrderConfirmed` is on the topic. payment-service will charge it *whenever it gets there* — with consumer lag or a pod restart that's minutes, not milliseconds. In that window the customer cancels: `cancel()` sees CONFIRMED (cancellable — no money moved *yet*), releases the stock, saves CANCELLED. Then the capture lands: `onPaymentCaptured` was `filter(Order::isConfirmed)` → CANCELLED fails the filter → **silent no-op**. payment-service ignores `OrderCancelled` (not its event). Net: **money captured, order CANCELLED, no refund ever triggered, nothing logged.** The payment row sits CAPTURED forever; the customer's card was charged for an order the UI shows as cancelled.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `PaymentCaptured` arriving for a CANCELLED order was silently dropped | The only orders that can hit this are exactly the cancel/charge race victims (FAILED/PENDING orders never emit `OrderConfirmed`; payment-failure cancellations have no capture coming) — so every occurrence is a customer owed money | `onPaymentCaptured` now branches: CONFIRMED → PAID (as before); **CANCELLED → `requestRefund()` + `saveWithEvent`** — the order re-enters the normal refund saga (`OrderRefundPending` event → payment-service finds the CAPTURED payment → refunds → `PaymentRefunded` → REFUNDED). Stock was already released by `cancel()`; the release in `onPaymentRefunded` is idempotent, so the replay is harmless. Counter `orders.cancel.charge.race` + warn log. New test `lateCaptureAfterCancelTriggersARefundInsteadOfLosingTheMoney` drives cancel-then-capture end to end to REFUNDED |
+
+Design note: the compensation **reuses the existing machinery** — no new states, no new events, no payment-service change. CANCELLED → REFUND_PENDING is semantically honest ("money must come back"), and every downstream handler was already status-guarded, so the re-entry is safe. The alternative (payment-service tracking `OrderCancelled` to skip the charge) trades one race for a harder ordering problem; charging then compensating is the saga answer.
+
+Walk 43 lesson: **in choreography, every "it can't be in that state" IS a state — at-least-once delivery plus user actions means any event can meet any status.** A status filter that silently drops an event with money attached is a bug; the question to ask of every handler is "what does this do when the event arrives *late*?"
+
+## Walk 44: the CI that failed because one byte went missing (Nov 8, 2026)
+
+Scope: Walk 42's `CI` run failed — in **kubeconform**, a job Walk 42 didn't touch. The log: `tar: Error is not recoverable`. Root cause: every tool install in both workflows and the Jenkinsfile was `curl -sSL <url> | tar xz` — no `-f` (an HTTP error page pipes straight into tar), no `--retry`, and a retry can't help mid-pipe anyway because tar has already consumed the truncated stream.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| 6 `curl -sSL … \| tar xz` tool downloads (ci.yml ×1, shopflow.yml ×4, Jenkinsfile ×2 commands) | One flaky byte from GitHub releases fails the whole validate job — a red build with zero relation to the commit, which trains people to ignore red builds | Download to a file with `curl -fsSL --retry 3 --retry-delay 5 -o <file>`, then `tar xzf` the complete file. `-f` fails on HTTP errors (instead of extracting an error page), `--retry` restarts the download cleanly into the file, and tar only ever sees a finished archive |
+
+Walk 44 lesson: **`curl | tar` couples two failure domains — transfer and extraction — so neither can recover.** Download-then-extract is the same line count and survives the blip. And: a CI failure on files you didn't touch is still your bug to chase — this one was a landmine for every future commit.
+
+**Addendum (same day, two humbling follow-ups):** (1) the fix itself failed `yamllint` — the new one-line curls were >160 chars (the repo's line-length limit); broken with `\` continuations. Run the same linter CI runs before pushing, even for a "trivial" workflow edit. (2) The very same run flaked **3 of 4** image jobs at `anchore/sbom-action` with `failed to install syft` — the action's own tool download has no retry, i.e. the exact failure class this walk was fixing, one layer up. Replaced the action with a pinned direct download (`syft v1.57.0`, `curl --retry` + `tar xzf`, `actions/upload-artifact` keeps the same artifact name). Confirmation of the diagnosis: kubeconform (Walk 42's run) and syft flaked in the same hour — a GitHub-releases bad hour takes out every unretried download in CI at once. Meanwhile the **Unit + integration tests job passed** on that run, so Walks 42/43's money fixes were verified even while the lint/SBOM steps flailed.
+
+## Walk 45: the idempotency race the pre-check can't win (Nov 8, 2026)
+
+Scope: `placeOrder`'s Idempotency-Key path. The sequential case is covered (pre-check `findByIdempotencyKey` → replay, test `idempotencyKeyPreventsDuplicateOrders`). But two **concurrent** requests with the same key — a double click, both landing before either commits — both pass the pre-check, both `save()`, and the unique index on `idempotency_key` fails one of them. That `DataIntegrityViolationException` fell through to the global handler as a **409** — while inventory-service's reservation race (same shape, same repo) already does the right thing: the loser returns the **winner's** result.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| Same-key concurrent POST: loser got a 409 error instead of the winner's order | The whole point of an Idempotency-Key is that the client can fire-and-retry blindly; a 409 on a race makes the client handle an error for doing exactly what the key promises to make safe. And the repo was *inconsistent with itself* — inventory already catches the race and returns the winner (201) | `placeOrder` catches `DataIntegrityViolationException`: re-fetch by key → found + owned → return the winner as a replay (200, counter `orders.idempotency.race`); found but another customer's → `IdempotencyKeyConflictException` (the real 409); not found → rethrow (a different constraint, don't swallow). Invariant test `concurrentRequestsWithTheSameIdempotencyKeyCreateOnlyOneOrder`: two threads on a barrier, same key — both must get the **same order id**, no errors, exactly one reservation call |
+
+Note the layering: the **pre-check is an optimization, the constraint is the guarantee, the catch is the recovery** — all three are needed. (The race loser can see the winner's order still `PENDING` if it's mid-flight; that's the same contract as polling `GET /orders/{id}`.)
+
+Walk 45 lesson: **a read-then-write uniqueness check is always a race; the DB constraint is the real guard, so code must expect the constraint to fire and recover, not 500/409.** When one service in the repo already solves a shape correctly (reservation race), every other instance of that shape should match it — self-inconsistency is where reviewers (and interviewers) dig.
+
+## Walk 47: the load test that would fail itself for working correctly (Nov 8, 2026)
+
+Scope: `loadtest/flash-sale.js`, the one file this block hadn't reviewed. Its threshold comment says "5xx are failures; 409/429 are not" — but k6's `http_req_failed` counts **every 4xx** as a failure unless you override the expected statuses, and no `setResponseCallback` existed anywhere in the script.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `http_req_failed: ['rate<0.01']` with k6's default failure definition | The flash sale **by design** produces 409s (297 of 300 buyers must lose — stock is 3) wait, no: losers get 201+REJECTED via the API's design; but the rate limiter (50/s/pod) throttling the 300-VU burst produces **429s**, and those are k6-"failed" by default. The run would breach its own 1% threshold *because the rate limiter worked* — a gate that fails on correct behaviour trains people to delete the gate | `http.setResponseCallback(http.expectedStatuses({min:200,max:399}, 409, 429))` — now "failed" means what the comment always claimed: 5xx and transport errors. (409 included for safety: the API returns conflict for double-cancel etc.) |
+
+Honest verification note: no Docker locally and CI only *compiles* the k6 script, so this is verified by k6's documented semantics + the compile job; the first real `k6 run` will confirm. The bug class is the same as Walk 36/40 — **a claim in a comment that the code never implemented** — just in the test layer this time.
+
+Walk 47 lesson: **k6's `http_req_failed` is opinionated: 4xx = failure unless you say otherwise.** Any API that deliberately returns 409/429 under load needs `expectedStatuses`, or the load test fails precisely when the system behaves. Comments that describe intended behaviour are claims to verify, not documentation to trust.
+
+## Walk 48: the deploy that checked out a branch that doesn't exist (Nov 8, 2026)
+
+Scope: `infra/ansible/` (the one-VM compose deploy), the last unreviewed corner. First task: `ansible.builtin.git` with `repo_version: main`. But `git ls-remote --heads origin` shows the repository has **only `master`** — `main` has never existed. So `make ansible-deploy` dies at its very first task, on every host, always.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `group_vars/shopflow.yml` pinned `repo_version: main` for a repo whose only branch is `master` | The whole playbook is unrunnable — and `make validate`'s `ansible-playbook --syntax-check` can never catch it, because a wrong *value* is syntactically perfect. A "validated" deploy that has never actually been run end-to-end | `repo_version: master` with a comment. (The GitHub workflow's main-only gating on push/sign/deploy is a *different, documented* thing — those steps are deliberately never reached; the Ansible path was just wrong) |
+
+The rest of the role reviewed clean: template→systemd unit→started, readiness poll (`uri` + `retries: 30/delay: 10` — module failure retries under `until`), handler restarts on checkout/unit change.
+
+Walk 48 lesson: **syntax checks validate shape, never truth.** A branch name, a metric name (Walk 36's story), a URL — all look identical to the linter whether right or wrong. Anything that names an external thing needs one real execution, or at least a check against the real system (`git ls-remote` here), before "validated" means anything.
+
+## Walk 49: the helm edit that rebuilt four images (Nov 8, 2026)
+
+Scope: the Dockerfiles + build context. Both Dockerfiles reviewed clean (multi-stage, BuildKit `.m2` cache mount, layered jar extraction, fixed non-root UID 10001, `MaxRAMPercentage=75` + `ExitOnOutOfMemoryError`; the distroless variant keeps parity and documents its preStop trade-off honestly). The find was next to them:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `shopflow/.dockerignore` excluded k8s/, monitoring/, *.md — but **not `helm/` and `loadtest/`** | The CI build uses `cache-from/cache-to: type=gha`, and stage 1 is `COPY . .` — so the cache key includes the whole build context. An edit to a helm values file or the k6 script (never inputs to the image) invalidated the COPY layer and re-ran `mvn package` for **all four services** on the next CI run | Added `helm/` and `loadtest/` to `.dockerignore`. (Deliberately did NOT add `.trivyignore`/`.hadolint.yaml` — they live at the repo root, outside the `shopflow/` build context; dead ignore entries are their own kind of doc-rot) |
+
+Walk 49 lesson: **with `COPY . .` + a remote layer cache, your `.dockerignore` IS your cache key.** Everything in the context that isn't an input to the image is a false rebuild trigger. The checklist: for each top-level path in the context, ask "does the image change if this changes?" — if no, ignore it.
+
+## Walk 50: the supply chain that supplies nothing (Nov 8, 2026)
+
+Scope: follow Walk 48's thread ("names an external thing → check the real system"). The cosign/Kyverno supply-chain loop reads beautifully: CI signs images keyless with the workflow's OIDC identity, and the cluster policy `verify-image-signature` rejects pods whose image isn't signed by exactly `…/shopflow.yml@refs/heads/main`. One problem, verified with `git ls-remote`: **`main` does not exist.**
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| GHCR login/push, cosign install/sign, the ECR steps and the prod-overlay pin job are ALL `refs/heads/main`-gated (8 `if:`s), and the repo's only branch is `master` | The publish/sign half of the pipeline has **never run**: no `ghcr.io/rajji01/shopflow-*` image exists, nothing was ever signed, the prod overlay points at images that were never produced, and applying the Kyverno policy today would reject every pod. Meanwhile STATE §3 said "signing/SBOM on `main`" — implying it happens — and even mis-filed SBOM, which actually runs on every build | **Docs now tell the truth** (this is the deliverable): STATE §3 row rewritten (SBOM = every build; publish/sign/pin = gated on a branch that doesn't exist), STATE §4 open item with the actual decision for Abhishek — (a) gate on `master` and start really publishing (public GHCR + signing + flip the Kyverno keyless `subject` to `@refs/heads/master`), or (b) keep publishing off and call the prod overlay design-only. Policy file carries the same NOTE. **Not changed:** the gate itself — turning on public image publishing is an outward-facing decision, not a self-walk's |
+
+Walk 50 lesson: **a security control that has never fired is indistinguishable from a broken one — and docs that describe the design instead of the state are how that hides.** Walk 48 found one dead branch reference; following the same thread found that the whole publish/sign/verify chain hangs off it. "Does this identity exist? has this ever actually run once?" belongs in every supply-chain review.
+
+## Walk 51: the canary gate that graded the whole class (Nov 8, 2026)
+
+Scope: Argo Rollouts `AnalysisTemplate` — the Walk-48/50 thread again ("names an external thing: verify against the real system"), this time the label semantics. The gate's query filtered `rollouts_pod_template_hash!=""`, with a comment claiming "only looks at canary pods".
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `rollouts-pod-template-hash` is the label Rollouts puts on **every** pod it manages — the STABLE ReplicaSet's pods carry it too (it's how Rollouts selects both RSes, like `pod-template-hash` on Deployments). `!=""` therefore matched stable+canary together | The gate measured the **blended** error ratio. At `setWeight: 10`, a canary serving **15% errors** moves the blend to only ~1.5% — under the 2% threshold — and the broken canary gets promoted step by step. The gate is weakest exactly when it matters most (small canary weight) | The template now takes a `canary-hash` arg and filters `rollouts_pod_template_hash="{{args.canary-hash}}"`; both Rollouts pass it via `valueFrom: podTemplateHashValue: Latest` (canary RS in the canary strategy; the GREEN/preview RS in blue-green's `prePromotionAnalysis` — same "newest pods" semantics). Honest dependency noted in the template: the cluster's Prometheus must labelmap pod labels for `rollouts_pod_template_hash` to exist on app metrics at all (the repo's compose Prometheus uses static targets; the k8s scrape config is the lab cluster's) |
+
+Walk 51 lesson: **a canary gate must divide by the canary's own traffic, not the service's.** Any blended ratio dilutes the signal by the canary's weight — the smaller (safer) your first step, the blinder the gate. And the recurring theme of this whole block: the comment said "canary only"; the label semantics said otherwise — claims about external systems (labels, branches, metrics, statuses) are verified, not trusted. (CI validates both manifests against the Rollouts CRD schemas; a live-cluster run is the labs' part.)
+
+## Walk 52: the Slack message with a literal "\n" in it (Nov 8, 2026)
+
+Scope: `alertmanager.yml`. Routing verified correct (page → PagerDuty + #shopflow-incidents via `continue: true`; ticket → #shopflow-alerts at 24h repeat; both severities in use are routed; ServiceDown and fast-burn inhibits sane). Two small real defects in the receivers:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `slack-incidents`' `text` was **single-quoted** YAML containing `\n` | Single-quoted YAML keeps `\n` as two literal characters, so the page-channel message rendered `…summary\nRunbook: …` on one line with a visible `\n` — cosmetic, but it's the message someone reads at 3 AM | Double-quoted the string (YAML double quotes interpret `\n` as a real newline); verified by parsing the YAML and checking `chr(10)` is in the loaded value |
+| The ticket channel (`slack-alerts`) got **no runbook link at all** | Every ticket alert we've added (PaymentRefundFailed, KafkaMessageDeadLettered…) exists *because* a human must follow a runbook — and the ticket notification didn't carry it | Same summary+runbook template as the incidents channel |
+
+Walk 52 lesson: **YAML quoting is semantics, not style — `'\n'` and `"\n"` are different strings.** And an alert's notification must carry the runbook link in *every* channel it lands in; the ticket queue is exactly where the runbook gets followed.
+
+**Addendum (Walk 51's own yamllint own-goal, caught by CI):** the new canary-hash label filter pushed the two PromQL lines to 179/164 chars > the repo's 160 limit — the *same* mistake as Walk 44's addendum, proving that lesson wasn't yet a habit. Fixed by breaking the selector across lines (PromQL is whitespace-insensitive inside `{}`), and `yamllint` is now installed locally so every YAML edit gets linted *before* the push (local CRLF `new-lines` noise excluded — git autocrlf artifact; CI checkouts are LF). Everything else on that run was green: tests, k6 compile, all 4 images + SBOM.
+
+## Walk 53: the reconciler that treated "someone beat me to it" as an error (Nov 8, 2026)
+
+Scope: `OrderReconciler` under the deployment's real shape — HPA `minReplicas: 2` means **every pod** runs `reconcileFailedOrders` every 60s over the **same** stale rows (`findTop100…` has no `FOR UPDATE SKIP LOCKED`, unlike the outbox). And the customer can cancel the same order at the same moment. So the `@Version` race on the cancel+save isn't hypothetical — it's the steady state.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The reconcile loop caught only `RestClientException`/`CallNotPermittedException`; a race loser's `OptimisticLockingFailureException` **escaped** | "Another pod/customer already settled this order" is a **success**, but it produced an ERROR stacktrace, aborted the **rest of the batch** for that tick, and skipped that tick's `stuckConfirmed` gauge update — the number `OrdersStuckConfirmed` alerts on. A normal race degraded both settlement throughput and the alert signal | 1) The loop catches `OptimisticLockingFailureException` → `log.info` + continue (the double inventory release was already idempotent). 2) `OrderReconciler.run()` wraps reconcile in `try/finally` so the gauge refreshes even when a pass fails. 3) Race test `reconcilerSurvivesAnOrderSettledConcurrently`: a WireMock scenario makes the reconciler's release slow and the customer's cancel fast, so the reconciler loses the `@Version` race deterministically — asserts the reconciler completes normally, the customer gets a definitive 200/409, and the order is settled exactly once |
+
+Design note: the heavier alternatives — ShedLock/leader election, or `SKIP LOCKED` on the query — buy less here than they cost: the work is idempotent and `@Version` already guarantees exactly-once settlement; the only real defect was treating the expected race as an exception. (Same lesson as Walk 43, one layer down: **every "can't happen" concurrent outcome is a state your code must have a normal path for.**)
+
+Walk 53 lesson: **catch clauses encode your concurrency model.** The loop knew inventory could be down but not that a sibling pod exists — yet the deployment guarantees one. Read every `catch` list against the real topology: N replicas, retries, and users acting mid-flight.
+
+## Walk 54: the stampede fix the notes taught and the code skipped (Nov 8, 2026)
+
+Scope: the cache-aside path. `interview-notes/11` teaches `sync = true` twice — "coalesce concurrent misses… stampede protection" and in the thundering-herd fix list — but the project's only `@Cacheable` (`ProductController.get`) didn't use it. The repo's recurring bug-pattern, fourth appearance: a claim the code never implemented.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `@Cacheable(cacheNames="products", key="#sku")` without `sync` | The products cache has a **60s TTL** (the Walk-46-verified safety net) — so a hot product's key expires every minute **by design**. During a flash sale that means: every minute, all concurrent readers of that sku miss together and hit Postgres at once. The browse load (k6: 200 req/s) funnels into a 1-minute-period DB spike train | `sync = true`: concurrent misses for the same key coalesce into one DB load per JVM (others wait for the loaded value); cross-pod it's still at most one query per pod per expiry — spike train becomes a trickle. Constraints checked: `sync` allows a single cache name (we have one) and no `unless` (we have none). Note synced into interview-notes/11 |
+
+Walk 54 lesson: **a TTL safety net turns every hot key into a scheduled stampede unless misses coalesce.** `sync = true` is one word; the checklist is TTL × hotness × concurrency. And when your own notes teach a fix, grep your own code for it — teaching it and shipping it are different claims.
+
+## Walk 55: "release is idempotent" — but only if nobody else is releasing (Nov 8, 2026)
+
+Scope: inventory-service's reservation path, read against the same topology lens as Walk 53. Order-service leans on "release is idempotent" in at least four places (cancel, onPaymentFailed, onPaymentRefunded, the reconciler — Walk 43's comment even says "the double release is safe"). Checked whether that's true **concurrently**: `Reservation` has **no `@Version`**, and `release()` guarded the stock increment with a plain read.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `release()` = `findByOrderRef` → filter `RESERVED` → in-memory `r.release()` + `incrementStock(+qty)`. Two concurrent releases (reconciler on two pods — HPA `minReplicas: 2` runs it on the same stale rows every 60s — or a customer cancel racing the reconciler, i.e. exactly Walk 53's scenario) **both** read the committed `RESERVED` row, both pass the filter, both increment | Without `@Version` the two status writes just last-writer-win — no exception, nothing in the logs — and the stock comes back **twice**. Phantom stock: the oversell guard (`decrementStock`'s conditional UPDATE) faithfully protects a number that is now wrong, so the service happily sells units that don't exist. Walk 53 explicitly relied on "the double release was already idempotent" — true sequentially, false concurrently | The status flip is now the guard, using the repo's own oversell pattern one entity over: `ReservationRepository.transition(orderRef, RESERVED, RELEASED)` — a conditional `UPDATE … WHERE status = :from` whose row lock serialises the racers, so exactly one caller gets `1` back and only that caller runs `incrementStock`. The loser logs "released concurrently, skipping". The entity's in-memory `release()` mutator is deleted (with a NOTE why), so the trap can't be reintroduced. Test `concurrentReleasesRestoreStockOnlyOnce`: CyclicBarrier, two threads release the same order — before the fix stock came back `before + 3` |
+
+Design note: `@Version` on `Reservation` was the alternative — but it needs a schema change, turns the loser into an `OptimisticLockingFailureException` → HTTP 500 that order-service would misread as "inventory down" (breaking the reconciler's batch, Walk 53 all over again at the other end of the wire), and still needs a catch to mean "fine, skip". The conditional UPDATE needs none of that and matches `decrementStock`, which this same service already trusts for the much scarier oversell race.
+
+Walk 55 lesson: **"idempotent" has two tiers — replay-idempotent (same call again later) and race-idempotent (same call at the same time) — and a status-guarded read-then-write only buys the first.** Every place a comment says "X is idempotent so the double call is safe", ask: safe when the two calls *overlap*? If the guard is a read, it isn't.
+
+## Walk 56: the auth layer, verified clean (Nov 8, 2026)
+
+Scope: the whole order-service security stack, adversarially — `SecurityConfig`, `JwtDecoderConfig`, `JwtRolesConverter` — plus every external name it depends on (pattern #2: verify against the real system).
+
+Checked, with the result:
+
+- **Matchers**: `/actuator/**` permitAll is backed by a tight exposure list — all four services expose only `health,info,prometheus` (no env/heapdump/beans to leak). Swagger permitAll → springdoc 2.8.17 really is on the classpath. `GET` orders = customer|support, writes = customer, `anyRequest().denyAll()` — deny-by-default holds.
+- **Role names vs the real IdPs**: `hasRole("customer"/"support")` matches `shopflow-realm.json` realm roles (`customer`, `support`) AND `cognito.tf`'s `aws_cognito_user_group.roles` keys exactly. No case drift, no "customers".
+- **Decoder**: lazy `SupplierJwtDecoder` (pod starts with IdP down), default validators (sig/JWKS/exp/iss) + audience pinned via `aud`/`azp`/`client_id` when `JWT_AUDIENCE` set — `AudienceValidatorTest` covers it; empty-audience dev mode is documented in the yml.
+- **Known gap is documented, not hidden**: inventory/notification/payment have no app-level auth by design (NetworkPolicy zero-trust; interview-notes/01 lists client-credentials/mTLS as the next step). That stays a documented decision, not a finding.
+
+Nothing to change. **Verified clean.**
+
+Walk 56 lesson: an auth review is mostly name-matching across systems — matcher paths vs exposed endpoints, `hasRole` strings vs the IdP's actual role/group names, audience value vs what the IdP really puts in `aud`/`azp`/`client_id`. Every one of those pairs is a place where two files can silently disagree; here all of them agreed.
+
+## Walk 57: the schema only H2 ever validated (Nov 8, 2026)
+
+Scope: Flyway migrations vs the entities, adversarially. The migrations themselves audit clean — every query's index exists (`idx_orders_status_updated` for the reconciler, `idx_orders_customer_created` for the list, unique keys for every `findBy...`), the outbox index matches the relay's "oldest unpublished first", and V3 even documents expand-contract. But chasing one type detail exposed a verification hole bigger than any single column:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| All entities store time as `Instant`; all migrations declare plain `timestamp`; every service runs `ddl-auto: validate`. Hibernate 6 maps `Instant` to `TIMESTAMP_UTC` (= `timestamptz` on Postgres) by default — a [known](https://lists.jboss.org/archives/list/hibernate-issues@lists.jboss.org/thread/Y7MGNXH3HT6D3ROFQFUJJ3PRPCVSND6B) [source](https://lists.jboss.org/archives/list/hibernate-issues@lists.jboss.org/2023/1/?page=68) of startup-time validation failures. Our 51 tests all validate against **H2** — the engine production doesn't use. **No Postgres has ever validated this schema** anywhere in CI; compose/k8s runs are exactly where `validate` would explode, at startup | If Postgres rejects what H2 forgave, every service fails to boot in compose and k8s — the worst kind of bug: invisible to all 51 green tests, fatal on the first real deploy | New CI job `postgres-smoke` (shopflow.yml): a real `postgres:16-alpine` service container, one database per service, and a `PostgresSchemaValidationTest` per service (`@ActiveProfiles("pg")`, gated by `PG_SMOKE=true` so it is skipped locally and in the H2 test job) that boots the **full Spring context** — Flyway migrates real Postgres, Hibernate validates against it. Kafka absent is fine: listener containers retry in the background and don't block startup. Verdict (does Postgres accept `Instant` vs `timestamp`?) comes from the job's first run — recorded in the addendum below |
+
+Walk 57 lesson: **"the tests are green" only certifies the engines the tests run on.** Every H2-for-speed test suite has a set of claims it structurally cannot check — type strictness, locking semantics, SQL dialect edges — and `ddl-auto: validate`'s whole job happens at startup against the real engine. A one-test smoke job against the production database engine is cheap; discovering the mismatch during a deploy is not.
+
+## Walk 58: the third place that says "main" (Nov 8, 2026)
+
+Scope: Terraform — IRSA least-privilege (`irsa.tf`) and the CI OIDC role (`ci-oidc.tf`), the last unreviewed corner of `infra/`.
+
+What held up under the adversarial pass (worth saying, because each is a classic failure elsewhere): the kafka-clients policy grants exactly produce/consume/auto-create on `orders.events*`/`payments.events*` (the `*` suffix covers the `.DLT` topics; the Walk-19 DeleteTopic trap stayed fixed), its topic/group ARNs build from the same `var.name` the MSK `cluster_name` uses, so they cannot drift apart; inventory-service is correctly absent (it has no Kafka); the ExternalSecret's `shopflow/prod/db` key and its four `property:` names match `rds.tf`'s secret name and JSON keys exactly; the ESO role reads only that one secret ARN; ECR is per-repo scoped with only `GetAuthorizationToken` on `*` (it supports no resource scoping).
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `ci-oidc.tf`'s trust policy pins `sub` to `repo:...:ref:refs/heads/main` — the branch Walk 50 proved doesn't exist. That makes **three** independent places gating publishing on `main`: the workflow `if:`s, the Kyverno keyless `subject`, and now the AWS role trust | The decision in STATE §4 said "flip the gates and the Kyverno subject" — anyone doing exactly that would still watch CI's `Assume AWS role` step die with an opaque `Not authorized to perform sts:AssumeRoleWithWebIdentity` (sub mismatch), because the third copy of the branch name lives in Terraform, not the repo's YAML | NOTE in `ci-oidc.tf` + STATE §4 updated: the publishing decision now lists all three gates that must flip together. Also fixed the policy comment lying about "three ECR repositories" (there are four — one per service) |
+
+Walk 58 lesson: **a "gate" that exists in N systems is N copies of the same constant, and they only LOOK like one switch.** When a branch/identity/name change is on the table, grep every repo *and* the IaC for the literal — the copy you miss fails at the farthest point from where you flipped, with the least helpful error.
+
+## Walk 59: dedupe memory shorter than Kafka's actual memory (Nov 8, 2026)
+
+Scope: notification-service's listener + the `processed_event` cleanup jobs — specifically the comment's claim: *"keep as long as the topic's retention (7d): a redelivery older than that cannot happen anymore."* Verified against how Kafka actually deletes data, and it's false twice over.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| Both `ProcessedEventCleanup`s (notification-service, order-service) deleted dedupe rows after **7d** — exactly equal to MSK's `log.retention.hours=168`. But (1) retention deletes a **segment** only when its *newest* record is past retention, so on a quiet partition a record survives up to retention + segment-roll (`log.roll.hours` default is another 168h ≈ 7d) — the oldest *replayable* record is ~14 days old, not 7; (2) both consumers run `auto-offset-reset: earliest` — chosen precisely so a reset/expired group **replays the topic** | On any replay (group reset for reprocessing, offsets expired after an outage, a new environment pointed at the same cluster), the tail of the replay — events 7–14 days old — has **no dedupe rows left**: notification-service re-sends customer emails, order-service re-processes `PaymentCaptured`/`PaymentRefunded` with only the status guards as the last line. Zero safety margin, by exact arithmetic coincidence of two unrelated 7s | `processed-events.retention` default **7d → 14d** in both services (= the real replayable window; rows are ~40 bytes, the margin is free), and the false comments rewritten in both repositories + cleanups to state the actual rule. interview-notes/01+10 synced. The `outbox.cleanup.retention: 7d` is untouched on purpose — published outbox rows are producer-side debugging history, not a dedupe guarantee |
+
+Walk 59 lesson: **"retention = 7d" is when Kafka is *allowed* to delete, not when data is gone — the replayable window is retention + segment roll, and your idempotency store must outlive THAT.** Two independent defaults that happen to be equal is not a margin, it's a coincidence waiting for a replay. (And the recurring pattern again: a comment making a claim about an external system — "cannot happen anymore" — that the external system's semantics don't back.)
+
+## Walk 60: teach-back — Walks 55 & 59 as notes + diagrams (Nov 8, 2026)
+
+Docs-only walk (the ritual's other half): the two new concepts earned their EASY-NOTES + VISUAL-FLOWS places.
+
+- **EASY-NOTES §2a** — "Idempotent ke do tier: replay vs race": read-guard sirf replay rokta hai; race mein atomic conditional UPDATE chahiye. Side-by-side timeline, `transition()` fix, test ka naam.
+- **EASY-NOTES §10a** — "Retention ≠ data gaya": replayable window = retention + segment-roll; ASCII timeline dikhata hai 7d dedupe ka "BHUL GAYA" gap aur 14d fix.
+- **VISUAL-FLOWS #17** — double-release race ke do mermaid sequence diagrams: bug wala interleaving (phantom stock +6) vs fix wala (row lock + WHERE re-check → 0 rows → skip), with the @Version-vs-conditional-UPDATE design note.
+
+No code changed.
+
+## Walk 61: the resilience stack, verified clean (Nov 8, 2026)
+
+Scope: `InventoryClient` + the whole `resilience4j:` block, adversarially, against the known trap list:
+
+- **Aspect order**: the comment claims `Retry(CircuitBreaker(call))` — matches resilience4j-spring-boot3's real default order (Retry outermost), so the breaker records every attempt's true outcome and an open breaker is NOT retried (`CallNotPermittedException` isn't in the retry whitelist — a whitelist means everything else fails fast). ✓
+- **Retry whitelist** (`ResourceAccessException`, `HttpServerErrorException`): transient-only; business 409/404 become `InventoryRejectedException` before the retry aspect sees them, and the CB `ignore-exceptions` the same type. Lost-response retry is safe because reserve is idempotent by orderRef (and since Walk 55, release is even race-idempotent). ✓
+- **Budget math**: worst case ≈ 3 × 2s reads + jittered backoffs ≈ 7s inside `placeOrder` — bounded, and the breaker (window 10, min 5, 50%) opens after ~2 outage-hit user calls because each call records 3 attempt-failures. Deliberate fast-open, documented in notes. ✓
+- **Compose startup ordering**: services `depends_on` postgres/kafka with `condition: service_healthy` + own healthchecks + `restart: unless-stopped`. ✓
+
+Nothing to change. **Verified clean** — Walks 39/42/47 already closed this area's real gaps; today's pass confirms no regression and no next-layer trap.
+
+Walk 61 lesson: a resilience review is four questions — what wraps what, what exactly gets retried, what does the breaker count vs ignore, and what's the worst-case latency budget. If all four have deliberate answers in config + comments that match the library's real semantics, the stack is done; don't invent a fifth knob to turn.
+
+## Walk 62: every dashboard query, name-checked (Nov 8, 2026)
+
+Scope: `shopflow-red.json` — all 16 panel expressions extracted and verified against what actually exists (pattern #2's favourite hiding place: a dashboard quietly graphing a metric nobody emits).
+
+Verified: the 5 `service:`/`sli:` recording-rule names all exist in `recording-rules.yml`; `orders_total`/`payments_total`/`payments_refund_failed_total`/`kafka_dead_lettered_total`/`orders_stuck_confirmed`/`outbox_unpublished` all match their Micrometer registrations (dot→underscore + `_total` for counters); `kafka_consumer_fetch_manager_records_lag_max`, `resilience4j_circuitbreaker_not_permitted_calls_total` and the two Hikari gauges are standard binder names. **No orphan queries, no change.**
+
+Walk 62 lesson: a dashboard is a pile of claims about metric names, and nothing validates it — promtool checks rules, kubeconform checks manifests, but a Grafana JSON panel pointing at a typo'd metric renders a perfectly healthy empty graph. Extract-and-grep is the whole audit, and it's five minutes.
+
+**Walk 57 addendum — the verdict (run on `dbfc4f4`):** the `postgres-smoke` job is GREEN, non-vacuously: the logs show `Tests run: 1, Failures: 0` per service with profile `pg`, each context taking 6–10s to start (real Flyway migrations + `ddl-auto: validate` against Postgres 16). So the researched hazard (Hibernate 6 `Instant` → `TIMESTAMP_UTC` vs our plain `timestamp` columns) does **not** bite this Hibernate 6.6 / Boot 3.5 combination — the hypothesis is dead, and that's fine: the walk's deliverable was never the bug, it was the missing verification. "The schema works on the engine production uses" is now a CI-checked fact on every push instead of an assumption, and any future type drift (a new `timestamptz` column, a UUID/text mismatch, a seed that only H2 accepts) fails in CI instead of at deploy. Honest failures of a hypothesis get recorded too — that's what keeps the rest of this file trustworthy.
+
+## Walk 63: Order entity + controller edges, verified clean (Nov 8, 2026)
+
+Scope: `Order.java` (state machine) + `OrderController` — hunting the edges Walks 43/45/53 didn't already close.
+
+- **Transitions**: entity setters are deliberately dumb; every caller in `OrderService` is status-guarded and `@Version` catches concurrent writers (the Walk 53/55 lesson applied where it was already right). `isCancellable()` = CONFIRMED|FAILED only — PENDING (in flight) and terminal states refuse, PAID detours to the refund saga.
+- **Oversized `Idempotency-Key`** (the Walk 45 catch's blind spot I went hunting for): a >100-char key would hit the `varchar(100)` column as `DataIntegrityViolationException`, where the race-recovery would find no winner and rethrow → 500 for a client mistake. But the chain holds: `@Size(max = 100)` on the `@RequestHeader` + Spring 6.1+ native method validation → `HandlerMethodValidationException` → the advice's 400 with field messages. The DB never sees the long key.
+- **Pagination**: `size ≤ 100`, sort `createdAt desc` rides `idx_orders_customer_created`. Replay semantics: 201+Location on create, 200 on idempotent replay — correct REST shape.
+
+Nothing to change. **Verified clean.**
+
+Walk 63 lesson: when a recovery path exists (the Walk-45 constraint catch), ask what ELSE can throw the same exception type — here the length overflow — and check each alternate cause has its own guard upstream. An exception type is a bucket, not a cause.
+
+## Walk 64: `make lint` wasn't what CI runs (Nov 8, 2026)
+
+Scope: CLAUDE.md §4's promise — "verify karo: jo CI chalata hai wahi (`make lint/validate/test`)" — diffed target by target against the two workflows. The promise had drifted in four places:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `hadolint` ran without `-c .hadolint.yaml`; `gitleaks` without `-c .gitleaks.toml` | The configs exist precisely to carry triaged ignores/allowlists — locally you'd get false failures CI doesn't have (or, worse, learn to ignore `make lint` failing) | Both now pass the same configs CI uses |
+| `make validate`'s `kyverno apply` included `verify-image-signature.yaml` | That policy needs a registry + a real signature (which don't exist — Walk 50), so `make validate` **always failed locally** on a step CI deliberately excludes (`grep -v verify-image-signature`). A verification command that always fails is one nobody runs | Same exclusion as CI, with the reason as a comment |
+| `ansible-lint` ran in CI's lint job but nowhere in the Makefile | Local "lint green" ≠ CI lint green for any ansible edit | Added to `make lint` |
+| CI's new `postgres-smoke` (Walk 57) had no local equivalent | The one check that needs a real engine was CI-only even on machines that have Docker | New `make test-pg`: starts `postgres:16-alpine`, creates the four DBs, runs the `PG_SMOKE` tests, always stops the container, exits with the test status |
+
+Verification note, honestly: this machine has no Docker/ansible/hadolint, so the new recipes are verified **textually** against the exact CI commands+flags (and `make help`/syntax by inspection), not by running them — same standing as the rest of the local-tooling story in STATE §3.
+
+Walk 64 lesson: **a parity promise ("local runs what CI runs") is a contract with no enforcement — it only stays true if someone re-diffs it after every CI change.** Every Walk that touched the workflows (40, 44, 51, 57) owed this file a visit; the debt collected today. The tell was the kyverno step: a local command that *cannot* succeed means nobody has run the target since it broke.
+
+## Walk 65: the connection math three files told three ways (Nov 8, 2026)
+
+Scope: `k8s/base` — the four service manifests diffed against each other (normalized names/ports), then the one claim they all make — the DB connection budget — chased across every file that states it.
+
+The manifests themselves audit clean and tightly parallel: HPA owns replicas (no `spec.replicas`), `maxUnavailable: 0`, startup/liveness/readiness split correctly (readiness = own DB only), preStop sleep + 45s grace, non-root + read-only rootfs + dropped caps + seccomp, topology spread, `automountServiceAccountToken: false`. The only drift between the four deployments is the intended env.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| Three copies of the connection arithmetic, all stale, each differently: deployments said "10 pods (HPA max) × 5 = 100 total" (base HPA max is **6**, and there are **4** services), `postgres/statefulset.yaml` said "2 services × 10 pods" (it's 4 × 6), `rds.tf` said "2 services × 10 × 5 = 100 plus notification-service" (prod is 4 × 10 × 5 = **200**) | The real numbers happen to still fit — base 120 < 200 (in-cluster PG), prod 200 < 300 (RDS parameter group) — but anyone *re-deriving* capacity from these comments (e.g. before raising an HPA max or shrinking RDS) would start from numbers that were never true together. Connection exhaustion is exactly the failure where readiness (`db` check) flaps every pod at once | All three now state the same worst-case formula with both environments' numbers; rds.tf's note also names the transient consumers (Flyway, reconcilers, `superuser_reserved_connections`) that eat into headroom |
+
+Walk 65 lesson: **numbers quoted in comments are the most-copied, least-verified claims in a repo — and the same budget stated in N files is the same constant copied N times** (Walk 58's lesson, arithmetic edition). State the formula, not just the result, and re-run it whenever any factor (service count, HPA max, pool size) changes.
+
+## Walk 66: CORS + the realm's wildcard origin (Nov 8, 2026)
+
+Scope: the browser-facing auth edges nobody had walked — both CORS configs and the Keycloak realm export.
+
+Clean parts: both `CorsConfig`s default to `http://localhost:*` origin patterns only, no `allowCredentials` (Bearer tokens, not cookies), overridable via `APP_CORS_ALLOWED_ORIGIN_PATTERNS`, and their "DEV ONLY" claims match reality (prod fronts services with an ALB and Cognito). Realm: `accessTokenLifespan` 900s, and `directAccessGrantsEnabled: true` is exactly what the docs claim it is (local-testing convenience).
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The `shopflow-web` client had `"webOrigins": ["*"]` while its `redirectUris` were already scoped to `http://localhost:*` | The wildcard tells Keycloak to answer CORS for its token/userinfo endpoints from **any** origin — broader than the client's own redirect scope, and a copy-paste seed: dev realm exports have a way of becoming prod realm imports. Keycloak has a dedicated idiom for "same as my redirect URIs": `"+"` | `webOrigins: ["+"]` — origins now derive from the redirect URIs, so tightening one tightens both. Same file serves compose and k8s (one source, no second copy to drift) |
+
+Walk 66 lesson: `*` in any security-adjacent list is a claim that "anyone" is the right audience — almost always it's a stand-in for "whatever my redirect URIs say", and Keycloak literally spells that `+`. Grep your realm exports for `"*"` before they graduate from dev.
+
+## Walk 67: the complete census of "main" (Nov 8, 2026)
+
+Scope: `argocd/` — the one deploy surface no walk had opened — plus, on finding the problem there, finally doing what Walk 58's lesson prescribed: grep the *whole* repo and IaC for the branch literal instead of finding one copy per walk.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `application-prod.yaml` has `targetRevision: main` — and the Jenkinsfile gates its `Push images` and `Pin prod overlay` stages on `when { branch 'main' }`. With Walks 50/58 that makes the publish-on-main decision live in **six copies across five systems**: GitHub workflow (8 ifs), Kyverno keyless subject, AWS OIDC trust `sub`, Argo CD Application, Jenkins ×2 | The Argo CD copy is the sharpest: `kubectl apply` this Application today and it errors `revision main not found` — the *prod GitOps entry point* points at a void. And each copy fails differently (skipped job, rejected pod, STS AccessDenied, sync error, skipped stage), so flipping N−1 of them still leaves a broken pipeline with a misleading error at the Nth | NOTE on the Application + the Jenkinsfile stage; **STATE §4 now carries the complete census** so decision (a) is a checklist, not an archaeology project. Gates themselves unchanged — same outward-facing-decision stance as Walks 50/58 |
+
+Argo CD manifests otherwise reviewed clean: dev app is manual-sync on HEAD (inspect-then-apply), prod has prune+selfHeal+ServerSideApply, retry backoff, the HPA `ignoreDifferences` on `/spec/replicas` matching the no-`spec.replicas` deployment choice, and the finalizer documented.
+
+Walk 67 lesson: when you find the second copy of a constant, stop and take the census — the cost of the full grep is minutes, and every copy found later costs a walk (this one took three: 50, 58, 67). "How many systems know this fact?" belongs in the first copy's review.
+
+## Walk 68: the chart that would let you fight your own autoscaler (Nov 8, 2026)
+
+Scope: `helm/shopflow-service` templates + `ingress.yaml` — the Helm half of the deploy story, walked against the Kustomize base it mirrors.
+
+Clean parts: the template is a faithful parameterisation of the base (same probes trio, preStop, non-root + read-only rootfs + dropped caps, topology spread, `automountServiceAccountToken: false`, maxUnavailable 0); values default `replicas: null` with the same "HPA owns the count" comment as the base; ingress exposes only `/api/v1/orders` and `/api/v1/products` (reservations API stays cluster-internal, matching the NetworkPolicy story), keycloak host is dev-only and the prod overlay removes it.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The chart rendered `replicas:` whenever a user set it — even with `hpa.enabled: true` (the default). The base's own comment explains the failure: a fixed `replicas` resets the count on every `helm upgrade` and fights the autoscaler. The guard was only a comment in values.yaml — nothing enforced it | This is the classic Helm footgun shape: a convention documented next to a default, silently violated by one values override. HPA scales to 6, the next deploy slams it back to 2, repeat — a sawtooth that looks like a capacity mystery | `{{ fail }}` when both `replicas` and `hpa.enabled` are set: the chart now refuses to render the contradiction, with the reason in the error message. CI's `helm lint` + `template \| kubeconform` verify the happy paths still render |
+
+Walk 68 lesson: **in a chart, a convention that lives only in a values comment is not a guard — `fail` is how a chart states its invariants.** Anywhere two values can contradict each other (fixed count vs autoscaler, both TLS modes, replicas vs PDB minAvailable), the template should refuse, not pick silently.
+
+## Walk 69: teach-back — the census rule (Nov 8, 2026)
+
+Docs-only walk: the repo's most-repeated finding class (Walks 48/50/58/65/66/67 — a constant copied across systems, each copy failing differently) graduated into method:
+
+- **EASY-NOTES Part 6, Step 7** — "Ek fact ki N copies gino": the six-copies-of-`main` story as a worked example, the grep-on-second-copy rule, and the two acceptable end-states (derive from one source, or a complete list in the decision doc).
+- **Quick map** row: "gate flip kiya, phir bhi pipeline tuta (alag error)" → census rule.
+
+No code changed.
+
+## Walk 70: four alerts nobody ever tested (Nov 8, 2026)
+
+Scope: `alert-rules.yml`, full semantic pass — every expr read against the metrics it names (ServiceDown's `job="shopflow"` matches `prometheus.yml`'s one `job_name` ✓; every metric name verified in Walk 62) and against the test file that is supposed to pin it.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| Of the 10 alerts, four had **no promtool test at all**: `HighP99Latency`, `ServiceDown`, `KafkaConsumerLagHigh`, `PaymentFailureRateHigh` — including two pages | Walk 36's own lesson ("an alert that was never tested is a hope, not an alert") had been applied only to alerts added *since*; the founding four were grandfathered in untested. `HighP99Latency` is exactly the kind that fails silently: one histogram_quantile subtlety (e.g. all mass in `+Inf` returns the highest finite bucket bound — `> 1` would then never fire with 1.0 as the top bucket) and the ticket never comes | 8 new test cases (now 17): p99 fires at ~2.5s / stays silent when fast / **stays silent when only `/actuator` is slow** (the `uri!~` filter now has a test earning its keep), ServiceDown pages with the right instance label, lag tickets at 2000 and not at 500, payment-failure pages at 60% and not at 10% (declined cards are normal) |
+
+Walk 70 lesson: **coverage debt hides at the founding — rules written before the "every alert gets a test" norm existed never got back-filled, and nothing flags them.** The audit is one grep: every `alert:` name must appear in the test file at least twice (a firing case and a silence case). The silence cases are half the value: they pin what must NOT wake a human.
+
+## Walk 71: the double-money windows and the contract that never mentioned them (Nov 9, 2026)
+
+Scope: `OrderConfirmedListener` end-to-end — the money path — against the Walk 53/55 concurrency lens plus the "crash between two effects" lens.
+
+The DB side is tight: charge dedupes by eventId PK (a racing loser hits the PK, rolls back, retries into the exists-check), refund is state-guarded by CAPTURED and every no-op branch logs *why* (Walk 42). But two windows move money **outside** the transaction's protection:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| (1) Crash between `gateway.charge()` and the commit: the row never lands, redelivery re-runs `charge()`. (2) A rebalance can deliver the same event to two consumers: both pass `existsById`, both call the gateway; the DB converges (PK) but the processor saw **two charges**. Same shape for `refund()`. Nothing anywhere said what makes this safe — `PaymentGateway`'s javadoc was one line about swapping implementations | The thing that makes at-least-once + remote money movement safe is **processor-side idempotency keyed on orderRef** (Stripe `Idempotency-Key`, Razorpay `receipt`) — and the person who writes the real adapter learns the requirements from the interface contract. A silent contract here means the first real integration double-charges under exactly the failures Kafka guarantees will happen | The contract now states it: orderRef IS the idempotency key, the adapter MUST send it, with both failure windows named — and why the ordering is deliberate (commit-first-charge-after is worse: a crash then fakes a CAPTURED row for money never moved). Listener javadoc carries the honest caveat. No behavior change: the fake gateway is test-only, and a claim-first "fix" in the listener would trade double-charge for charge-lost |
+
+Walk 71 lesson: **a transaction boundary that contains a remote call has exactly two orderings, and both lose — the only real fix lives on the other side of the wire (idempotency keys), which makes it a CONTRACT requirement, not an implementation detail.** Interfaces that hide a money-safety requirement in the implementor's imagination are how "we retried and charged him twice" post-mortems start.
+
+## Walk 72: Walk 59's blast radius in the notes (Nov 9, 2026)
+
+Docs-only sweep: grepped every doc that mentions `processed_event`/dedupe for leftover "7d" claims after Walk 59's 14d change. Four stale spots — including interview-notes/12 still answering a hard interview question with the exact sentence Walk 59 disproved ("once Kafka retention has passed, nothing older can be redelivered"), and interview-notes/03 claiming 7d was "longer than the topic retention" when it was precisely equal. All four now state 14d + the replayable-window reasoning; the outbox-cleanup 7d mentions stay (deliberate, debugging history) but 10-kafka's "the DB copy is there for as long as Kafka can redeliver" was softened — by Walk 59's own math that claim was 7 days short too.
+
+Walk 72 lesson: a fix's blast radius includes every place the OLD reasoning was taught. STATE's rule covers files that disagree with STATE; the subtler rot is notes that agree with each other and with last month's code. The grep after a semantics-changing walk is part of the walk.
+
+## Walk 73: the prod overlay's two dead-on-arrival details (Nov 9, 2026)
+
+Scope: `k8s/overlays/prod/kustomization.yaml`, semantic read (it had only ever been schema-validated). The structure holds up — managed-service deletes are complete (workload + Service + the NetworkPolicies that referenced them), `$(RDS_ENDPOINT)` is inserted at `env/0` so the `$(VAR)` expansion in DB_URL resolves (k8s expands only previously-defined vars), positional `env/1` patches match the base's env order, and `?sslmode=require` is on every RDS URL. Two things did not hold up:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **No `JWT_AUDIENCE` anywhere in prod.** The validator treats empty as "don't check" (dev convenience), and D09/interview-notes claim prod pins the audience — pattern #1, a documented posture the config never implemented | In the one environment with a real IdP, any token from the same Cognito pool — minted for a different app client — would pass; the confused-deputy defense existed only in code paths never configured on | `jwt-audience` literal in the endpoints ConfigMap (placeholder in the established `REPLACE-` style, sourced from `terraform output cognito_web_client_id`) + `JWT_AUDIENCE` env on order-service |
+| **payment- and notification-service had zero 443 egress** — base allows only postgres/kafka/otlp, prod patches added only 5432/9092/9098. But MSK IAM auth gets its credentials via IRSA's **STS web-identity exchange over HTTPS** before it can even say hello to a broker | On a CNI that enforces NetworkPolicy, both Kafka services are dead on arrival in prod: credential fetch blocked → SASL auth never starts → consumers never join. order-service survived **by accident** — its 0.0.0.0/0:443 rule was written for Cognito JWKS and incidentally covers STS | 443 egress for both, with the reason in the comment (tighter future option: an STS VPC interface endpoint + VPC-CIDR rule). Verified by kubeconform + kyverno in CI; a live-cluster run remains the labs' part, stated honestly |
+
+Walk 73 lesson: **an egress allowlist encodes your mental model of who the pod talks to — and auth layers add invisible dependencies (STS, JWKS, token endpoints) that aren't in the app's own config.** When a pod gains a new auth mechanism, ask what the *bootstrap* of that mechanism dials, not just the data plane. And "the other service works" may mean its rule list is right — or that someone else's broad rule is hiding your missing one.
+
+## Walk 74: two alerts with private copies of the official definition (Nov 9, 2026)
+
+Scope: `recording-rules.yml` + `slo-rules.yml` semantic read. The SLI family is sound (valid = 2xx|5xx, bad = 5xx + slow-2xx, 4xx/429 out of both — Walk 14's definition, consistently restated across the 30m/1h/6h windows; the longer windows must inline it because PromQL can't re-window a recorded ratio). But the header's promise — "every alert uses the same definition of error rate" — was false for the two founding alerts:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `HighErrorRate` computed its own ratio **without** the `uri!~"/actuator.*"` exclusion that the recorded `service:http_error_ratio:rate5m` (and every dashboard panel) applies; `HighP99Latency` likewise inlined a private copy of the recorded p99 | Actuator scrapes (Prometheus, every 15s) + kubelet probes (liveness/readiness, every 5–10s) are a *constant* stream of fast 2xx. On a low-traffic service they dominate the denominator, so "5% of requests failing" silently meant "well over 5% of *business* requests failing" — the page fires late exactly where traffic is thin. And two definitions of one number is the dashboard-vs-alert drift machine | Both alerts now consume the recorded rules. promtool evaluates recording rules inside unit tests, so Walk 70's new cases (incl. the actuator-exclusion case) and the original HighErrorRate pair verify the switch — same thresholds, same labels, one definition |
+
+Walk 74 lesson: **recording rules exist precisely so "error rate" is defined once — an alert that re-derives the number inline will drift from it** (here: the exclusion list). The audit is mechanical: any alert expr that could be `recorded_rule > threshold` but isn't, is a second definition waiting to disagree.
+
+## Walk 75: the ArchUnit guardrails, verified clean (Nov 9, 2026)
+
+Scope: `ArchitectureTest` — the 7 build-failing rules — read adversarially for false confidence.
+
+- The scope claim is honest everywhere it's made: rules analyze `com.shopflow.order` only, and the notes say "in order-service" rather than implying repo-wide enforcement. (inventory's `ProductController` uses its repository directly — a deliberate thin-read-layer choice that would fail rule 1 if the rules were blindly copied over; extending them is a conscious decision, not a TODO.)
+- The DTO rule works at the right granularity: `OrderResponse` is a nested record — a separate class in bytecode — so the `@RestController` class itself stays clear of `@Entity` dependencies while the mapper lives beside it.
+- `DoNotIncludeTests` keeps test fixtures from polluting the analysis; the three GeneralCodingRules (no field injection, no System.out, no JUL) hold across main code.
+
+Nothing to change. **Verified clean.**
+
+Walk 75 lesson: architecture tests are claims with a scope — the honest form is "these N rules hold in THIS module", and the audit is checking that the prose never quietly widens the scope the test actually enforces.
+
+## Walk 76: teach-back — Walks 71/73/74 as notes (Nov 9, 2026)
+
+Docs-only: EASY-NOTES §10b ("transaction ke andar remote paisa: do orderings, dono haarte hain" — the idempotency-key contract), a bootstrap-dependency note in Part 5 (STS/JWKS dial before the data plane; egress lists must cover the bootstrap), and the one-definition rule in §13 (alert = `recorded_rule > threshold`, never a private inline copy). No code changed.
+
+## Walk 77: the listener that breaks the house rule — and why that's right (Nov 9, 2026)
+
+Scope: `PaymentEventListener` — the saga's closing consumer — against the repo's own doctrine from `OrderService`: *"deliberately NOT one big @Transactional: holding a DB transaction open while waiting on a remote call exhausts the pool."*
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The listener's `@Transactional` spans `inventoryClient.release()` (with Walk-61's retry budget, ~7s worst case) inside `onPaymentFailed`/`onPaymentRefunded` — exactly what the doctrine forbids, with no comment acknowledging it | Unexplained doctrine violations rot two ways: someone "fixes" it (dropping the tx reopens the dedupe race — processed-row and state change MUST commit together or redeliveries double-apply), or someone copies it into the HTTP path where N concurrent requests would pin N connections. The listener case is actually sound: default concurrency 1 bounds it to ONE pinned connection (20% of prod's pool-5) during an inventory outage, and the failure path is designed (rollback → retries → DLT alert → OrdersStuckConfirmed surfaces the order) | Javadoc now states the exception, the reasoning, the bound, and the failure path — the Walk-71 treatment: a deliberate trade-off is only safe once it's written where the next reader will look. Dedupe shape verified consistent with notification-service (effect before processed-row, at-least-once), unknown event types are logged AND marked processed (no poison loop) |
+
+Walk 77 lesson: **a rule's exceptions need the same documentation rigor as the rule — "why this violation is safe HERE" (the bound) and "what makes it unsafe elsewhere" (the multiplier).** An undocumented exception is indistinguishable from a bug, and both possible "fixes" by a well-meaning reader make it worse.
+
+## Walk 78: the entry point's small lies (Nov 9, 2026)
+
+Docs-only: `INDEX.md` — the file every session reads first — audited against the repo it maps. Three drifts: VISUAL-FLOWS counted "13 flows" (it has 17), the tree omitted the root `labs/` directory entirely (the interactive console + Postman collection the docs elsewhere advertise), and the runbooks line undersold what's there. All fixed. Everything else checked out: every file the table names exists, the reading chain's files exist, the per-file "ye mat likho" boundaries match how the docs are actually used.
+
+Walk 78 lesson: the entry-point doc is the one place drift is cheapest to fix and costliest to leave — a wrong count teaches a reader to distrust the whole map. Re-walk it whenever a counted thing (flows, labs, rules) grows.
+
+## Walk 79: the 30-second snapshot was 20 days old (Nov 9, 2026)
+
+Docs-only: `SUMMARY.md` — the "context reset ke baad yahi padho" page — was dated 2026-10-20 and still listed the Walk-20-resolved `RefundFailed` path as pending, while missing the two decisions STATE §4 actually waits on (publishing gates, dependabot PRs). Status block now carries today's truth: 78 walks, 51 tests + postgres-smoke, 17 alert test cases, publish/sign off with the six-gate census pointer. The irony is noted: a snapshot whose whole job is freshness had no mechanism reminding anyone to refresh it — it now rides the same rule as STATE ("counted things changed → re-walk the entry docs", Walk 78).
+
+## Walk 80: the issuer only the laptop could resolve (Nov 9, 2026)
+
+Scope: the base infra pods nobody had walked — kafka (headless service for `kafka-0.kafka` quorum ✓, single-node RF=1s consistent and documented), redis (allkeys-lru, cache-loss-is-cheap Deployment ✓), postgres — and keycloak, where the find was:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `KC_HOSTNAME: http://keycloak.shopflow.local` pinned every token's `iss` to the **ingress** hostname — which exists only in the laptop's `/etc/hosts`. order-service's `JWT_ISSUER_URI` matched the string, but the pod can't resolve it: cluster DNS has `keycloak.shopflow.svc`, not `.local` ingress names. interview-notes/11 even claimed "in K8s both sides use the same hostname, so no trick is needed" — the compose file NEEDED a trick (`extra_hosts: localhost:host-gateway`) and got one; k8s needed one and didn't | Every pod boots healthy (SupplierJwtDecoder is lazy; readiness checks only the DB) and then **every authenticated request 401s** on the first JWKS fetch — the exact D09 drill shape, shipped as config. Hidden from all 51 tests (they mint local JWTs) and from kubeconform (valid YAML, wrong world) | `KC_HOSTNAME` pinned to the **in-cluster** URL (`http://keycloak:8180`) and the ConfigMap issuer matched: `iss` no longer depends on which host the browser used, and it names something pods CAN resolve. The browser never validates `iss` — it only needs the token endpoint to answer, and `KC_HOSTNAME_STRICT=false` keeps the ingress path working. Notes/11 now explains the real mechanism instead of denying the need for one |
+
+Walk 80 lesson: **an issuer URL is two promises in one string — "this is who signed it" (a comparison) and "fetch my keys here" (a network call) — and they're validated from different network vantage points.** Any time one URL must serve both the browser's world and the cluster's world, pin it to the vantage point that actually dials it, and check the other side merely tolerates it.
+
+## Walk 81: Walk 80's census (Nov 9, 2026)
+
+Docs-only, by the Step-7 rule: grepped `keycloak.shopflow.local` repo-wide after Walk 80's issuer change. Three stale copies in interview-notes (05's ConfigMap quote, 11's issuer table and its 401-debug answer) now state the in-cluster issuer; the ingress host rule and the `/etc/hosts` line stay — those are the browser's path and still correct. The census habit paid for itself within one walk of teaching it.
+
+## Walk 82: the copied contracts, verified in lockstep (Nov 9, 2026)
+
+Scope: the event records that exist as per-service copies (the repo's stated alternative to a Schema Registry): producer `OrderEvent` vs notification's and payment's copies, producer `PaymentEvent` vs order-service's copy.
+
+Field-for-field identical (names, types, order), the one deliberate divergence is sound — the producer types `status` as the `OrderStatus` enum while consumers take `String` (serialises identically, and a new status value can't break a consumer's deserialisation) — and all three consumer copies carry `@JsonIgnoreProperties(ignoreUnknown = true)`, so the producer can add fields freely. **Verified clean.** (The structural risk stays what STATE §4 says it is: nothing but this walk's grep enforces the lockstep — that's the Schema Registry item's whole case.)
+
+Walk 82 lesson: copied contracts are a census (Step 7) that recurs on every producer change — if you choose copies over a registry, the diff of the copies IS your compatibility check, so actually run it.
+
+## Walk 83: the check that called a dead server "no error" (Nov 9, 2026)
+
+Scope: `loadtest/flash-sale.js` end-to-end (Walk 47 had only fixed the expectedStatuses callback).
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `check(res, { 'no server error': r.status < 500 })` — in k6 a network-level failure (connection refused, timeout before response) is **status 0**, and 0 < 500 | The one check named "no server error" would pass while the server was literally unreachable. The `http_req_failed` threshold still catches it (status 0 isn't an expected status), so the run fails — but with the check lying GREEN next to a red threshold, pointing the reader away from the cause | `r.status >= 200 && r.status < 500` |
+| Two implicit assumptions undocumented: `orders_confirmed==3` needs a FRESH seeded stack (a re-run finds 0 units and fails "correctly" but confusingly), and `handleSummary` silently **replaces** k6's default end-of-run report | Both are the "works once, confuses the second person" class | Header note for the fresh-stack requirement; comment stating the summary replacement is a deliberate trade-off (thresholds still gate the exit code) |
+
+Walk 83 lesson: in k6, status 0 exists and every `< N` comparison must decide what it means; and a load test's hidden fixture assumptions (seed state) belong in its header, because the second run is always by someone else.
+
+## Walk 84: alert → runbook → README, all twelve accounted for (Nov 9, 2026)
+
+Docs-only audit of CLAUDE.md's rule #2 ("new alert → runbook + test + README row, teeno"): all 12 alert names cross-checked against `docs/runbooks/` files and the README table. Complete — every alert has its runbook and row; the two burn-rate alerts share `CheckoutSLOBurnRate.md` deliberately (same symptom, different window) and both annotations point there; the three non-alert runbooks (restore, rollback, post-mortem template) are the documented extras. With Walk 70's tests, the triad now genuinely holds: **12 alerts × (runbook + README row + firing-and-silence tests).** Verified clean.
+
+## Walk 85: the last unwalked classes, verified clean (Nov 9, 2026)
+
+Scope: the three remaining never-walked classes — `Caller`, payment's `JpaConfig`, inventory's `CacheConfig`.
+
+- **Caller**: `name` = JWT `sub` (set explicitly by `JwtRolesConverter`), `mayAccess` = support-or-owner. The interesting cross-check: support can *read* anything but **cannot cancel** — not because Caller says so, but because the `DELETE` matcher requires `customer`. Two layers, consistent with the realm's "support: read-only" description.
+- **JpaConfig**: `@EntityScan`/`@EnableJpaRepositories` spanning the shared outbox module, kept off the application class so `@WebMvcTest` slices stay light — deliberate and explained.
+- **CacheConfig**: JSON values (the serialization trap Walk-era fix, pinned by `CacheSerializationTest`), and `LoggingCacheErrorHandler` = fail-open. One interaction worth verifying after Walk 54: **`sync=true` with Redis down** — Spring's `AbstractCacheInvoker.doGet(cache, key, loader)` catches the provider error via `handleCacheGetError` and invokes the loader directly, so the fail-open promise survives the sync path. It does.
+
+Nothing to change. **Verified clean** — and with this, every main-source class in the four services + shared module has been walked at least once.
+
+Walk 85 lesson: when two features are added at different times (fail-open error handler; `sync=true` years-of-walks later), their INTERACTION is a new, unreviewed surface — "both verified separately" is not "verified together".
+
+## Walk 86: teach product — drill D16, phantom stock (Nov 9, 2026)
+
+Docs-only: Walk 55's bug rebuilt as a symptom-first debugging drill (`docs/debugging/D16-phantom-stock.md` + README row): no alert, a weekly reconciliation finds stock higher than the warehouse, and the solver must (1) find the two-transaction interleaving a green sequential test can't see, (2) name the replay-vs-race distinction, (3) defend the conditional-UPDATE fix against @Version and FOR UPDATE *in this codebase's terms*, (4) write the barrier test, (5) design the drift detector that would have caught it in one tick. The walkthrough carries the full answers.
+
+## Walk 87: the block's vocabulary, filed (Nov 9, 2026)
+
+Docs-only: five terms this block coined or sharpened — replay- vs race-idempotent, phantom stock, replayable window, the census rule, bootstrap dependency — added to GLOSSARY with one-line Hinglish definitions and walk pointers, so the Ctrl+F path finds them.
+
+**CI pin:** `edf5fd8` GREEN (CI + shopflow) — the cumulative run verifying every code change of Walks 73–83: prod-overlay JWT_AUDIENCE + STS egress (kubeconform/kyverno), the recorded-definition alert switch against all 17 promtool cases, the in-cluster issuer pin, and the k6 fixes (`k6 inspect`).
+
+## Walk 88: the aws profile, walked end to end (Nov 9, 2026)
+
+Scope: the MSK IAM chain, link by link — the exact shape of Walk 73's STS finding, one layer up: does every service that gets `SPRING_PROFILES_ACTIVE=aws` actually have the profile file AND the jar?
+
+Verified across all three Kafka services (order, notification, payment): `application-aws.yml` exists and is byte-identical (SASL_SSL + AWS_MSK_IAM + login module + callback handler), `aws-msk-iam-auth` is a runtime-scope dependency in each pom (one version, from the parent property), the prod overlay sets the profile on exactly those three, every one reads `KAFKA_BOOTSTRAP_SERVERS` from the ConfigMap whose prod value is the `:9098` IAM listener, and (since Walk 73) all three have the STS 443 egress the credential fetch needs. inventory-service correctly has none of it. One stale line found: interview-notes/10 claimed the profile file lives "in order- and notification-service" — payment's copy predates the claim's correction. Fixed. **Otherwise verified clean.**
+
+Walk 88 lesson: a profile-activated feature is a chain with four links — the env var, the profile file, the classpath dependency, and the network path — and each lives in a different file owned by a different mental model. Walk the chain per service; "the other services have it" is exactly how the fourth copy gets skipped.
+
+## Walk 89: SKIP LOCKED dedupes pods — it does not order them (Nov 9, 2026)
+
+Scope: `OutboxRelay` + `OutboxRepository`, re-walked with the lenses the earlier sweep didn't have (Walk 53's topology lens, Walk 55's race tiers).
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| The relay's "stop at the first failure, keep ordering" comment — and two notes claiming the relay "preserves order" — are true **per pod** only. With HPA min-2, two relays run concurrently *by design* (SKIP LOCKED exists for exactly that), and during a backlog drain adjacent rows of the SAME order land in different pods' pages: pod B can publish the order's LATER event while pod A still holds the earlier one — inverted arrival on the very partition whose key (`orderRef`) exists to guarantee order | Per-aggregate ordering is the outbox design's headline promise. The known inversions are absorbed — consumers are status-guarded state machines, and the nastiest case (OrderCancelled/OrderConfirmed inverted → charge lands on a cancelled order) is precisely the Walk-43 compensation path (auto-refund); a lost-refund shape surfaces via OrdersStuckConfirmed. But "absorbed by three other mechanisms" is a fact to document, not to discover during an incident | Honest comments in relay + repository (what SKIP LOCKED gives and what it doesn't, what absorbs the inversions), overclaim fixed in interview-notes/12, and a STATE §4 item with the two real options if strict per-order delivery is ever required (single-writer via leader election, or hash-partitioned claims `mod(hashtext(aggregate_id), pods)`). No behavior change: both remedies cost ops complexity the current absorbers make unnecessary |
+
+Walk 89 lesson: **"ordered" is a per-WHAT question — per pod, per partition, per aggregate are three different guarantees, and a mechanism that gives one often silently costs another** (SKIP LOCKED buys multi-pod dedupe by giving up cross-pod order). Re-walk old "verified clean" files whenever a new lens enters the toolkit; clean-under-old-lenses is a timestamp, not a property.
+
+## Walk 90: the cache that would die silently on day one in prod (Nov 9, 2026)
+
+Scope: the never-walked Terraform files — `vpc.tf` (subnet math non-overlapping, NAT per AZ, ELB discovery tags ✓), `eks.tf` (IRSA, addons incl. metrics-server for the HPAs ✓ — note: `karpenter.sh/discovery` tags are prep for a Karpenter that isn't installed anywhere; harmless but a named-thing-that-doesn't-exist), `dns.tf` (cleanly optional behind `hosted_zone_id`), `elasticache.tf` — where the chain broke:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `aws_elasticache_replication_group` sets `transit_encryption_enabled = true` — but inventory-service's Redis client had **no TLS config at all** (`spring.data.redis.host/port` only). A plaintext Lettuce handshake against a TLS-only endpoint fails on every operation | The brutal part is WHO hides it: our own fail-open `LoggingCacheErrorHandler` (a correct design!) turns every failure into a logged miss — so prod ships with a **permanently dead cache that looks green**: readiness is db-only, `REDIS_HEALTH` defaults false, no alert watches cache hit-rate. Every product read goes to Postgres; the flash-sale stampede the cache (and Walk 54's `sync=true`) exists to absorb lands straight on the DB | `spring.data.redis.ssl.enabled: ${REDIS_SSL:false}` (compose/in-cluster redis stay plaintext) + `REDIS_SSL: "true"` in the prod overlay's inventory patch, both with the why. Detection gap noted here honestly: a cache hit-ratio gauge/alert is the structural fix for "fail-open hides misconfig" and goes on the roadmap with the drift detector from D16 |
+
+Walk 90 lesson: **fail-open designs convert hard failures into silent degradation — which means every fail-open path NEEDS a metric watching the thing it fails open around.** And encryption flags are a two-ended contract (Walk 80's issuer lesson, TLS edition): the side that enables TLS and the side that speaks it live in different repos' files, so grep both ends whenever either changes.
+
+## Walk 91: a watchdog for the fail-open cache (Nov 9, 2026)
+
+Walk 90's lesson, implemented the same day — "every fail-open path needs a metric watching the thing it fails open around":
+
+| Piece | What |
+|---|---|
+| Metric | `spring.cache.redis.enable-statistics: true` → `cache_gets_total{cache="products", result="hit"\|"miss"}` (Boot's Redis cache binder; the `simple` dev cache emits nothing, which is fine — the failure mode being watched is prod's) |
+| Alert | `ProductCacheSilentlyDead` (ticket): hits == 0 **while** total gets > 0.1/s, for 15m — the outcome signal that catches ANY silent-death cause (wrong host, missing TLS, auth, policy) without knowing which. The traffic guard keeps no-traffic/no-data silent |
+| Tests | #14 (steady misses, zero hits → fires) + #14b (healthy mix → silent) — 19 promtool cases now |
+| Runbook | `ProductCacheSilentlyDead.md`: logs → connectivity/TLS (`REDIS_SSL`, Walk 90) → config → blast radius; and why it's a ticket, not a page (fail-open means users are fine until the next spike) |
+
+CLAUDE.md's trio (alert + test + runbook + README row) shipped together.
+
+Walk 91 lesson: watch **outcomes, not causes** — one hit-rate alert covers every way the cache can silently die, including the ways nobody has imagined yet. Cause-shaped alerts (one per misconfig) are whack-a-mole; outcome-shaped alerts are the net under the whole act.
+
+## Walk 92: the backup nobody would miss until the restore (Nov 9, 2026)
+
+Scope: `postgres/backup-cronjob.yaml` re-walked with Walk 91's outcome-watchdog lens. The job itself is genuinely well-built — `set -euo pipefail`, dump-to-`.part`-then-rename (a truncated dump can never masquerade as a good backup), retention delete only after success, `concurrencyPolicy: Forbid`, deadline, non-root. The gap was around it:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| Nothing watches whether the backup actually HAPPENS. `failedJobsHistoryLimit: 3` keeps evidence for a human who never looks; a suspended CronJob, a schedule typo, a full 2Gi PVC or a rotated password all fail (or skip) silently, forever | Backups are the textbook silent-failure: the first person to notice a year of missed backups is the person doing the restore. RPO is a promise about the WORST day, kept or broken on all the ordinary days nobody checked | `PostgresBackupMissed` (ticket): `time() - kube_cronjob_status_last_successful_time > 26h` — **freshness, not failure-count**, so "failed" and "never ran" are the same alert. Promtool tests #15/#15b (21 cases now), runbook (triage order: suspended → history → PVC/secret/deadline/policy; manual `create job --from=cronjob` verify; restore-drill reminder), README row. Honest dependency stated in the rule: metric needs kube-state-metrics — the lab cluster's part, same class as Walk 51's labelmap note |
+
+Walk 92 lesson: **a scheduled job's success history answers "did it work when it ran" — freshness answers "is it running at all", and only freshness survives the failure modes where the job never starts.** Alert on `last_successful_time`, not on failure counts.
+
+## Walk 93: the exporters that were on but walled off (Nov 9, 2026)
+
+Scope: `msk.tf`, re-walked with Walk 90's two-ended-contract lens. The cluster config is sound (RF 3 / minISR 2 / auto-create off, IAM-only auth, TLS in transit + at rest, broker logs to CloudWatch). The gap mirrors Walk 90 exactly:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `open_monitoring.prometheus` enables the JMX exporter (:11001) and node exporter (:11002) "scraped by the in-cluster Prometheus" — but the MSK security group's only ingress was 9092–9098 (the Kafka listeners). Ports 11001/11002 were **enabled on the broker and blocked at the SG** | Same shape as Walk 90's Redis TLS: a feature switched on at one end, its port closed at the other, and a comment ("scraped by Prometheus") asserting a path the security group silently denies. Broker dashboards/alerts would be permanently empty with no error — just no data | Second ingress rule for 11001–11002 from the cluster SG only, with the why. Same `security_groups = local.cluster_sg_ids` scoping as the Kafka rule — brokers stay unreachable from anywhere but the nodes |
+
+Walk 93 lesson: `open_monitoring` / "enable exporter" flags turn the metric *source* on; the *path* to it is a separate firewall/SG/NetworkPolicy decision in another resource. Every "enabled_in_broker = true" (or its Redis/RDS equivalent) owes a port-reachability check at the other end.
+
+## Walk 94: the fix was right, the test couldn't see it fire (Nov 10, 2026)
+
+Scope: a RED CI — Walk 92's push (`58baa41`) failed the `shopflow` validate job on `promtool test rules`. Not a flaky infra download (those were Walks 44/48); a real test defect I shipped in Walk 91.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `ProductCacheSilentlyDead` carried `for: 15m`, and its promtool test evaluated at `eval_time: 16m` expecting the alert to fire — but got `[]`. `rate(...[15m])` needs ≥2 points before it returns anything, so the alert condition can only start being true at minute ~2; from there to minute 16 is 14 minutes of pending time, **less than the 15m `for`** — so at eval time the alert was still PENDING, correctly un-fired. The alert logic was fine; the `for` was both too long and untested-against | A green local reason ("the expr is obviously right") shipped a red CI, because I didn't run promtool before pushing (no Docker this session) and the 16m window hid a 15m `for`. The 15m `for` on top of a 15m rate window was also just slow — double-counting the smoothing | `for: 15m → 5m` (the `[15m]` rate window already supplies the sustained-behaviour smoothing; 5m only guards a single-eval blip), with a comment explaining both the semantics and the test trap. Now fires by minute ~7, well inside the 16m test. Walk 92's PostgresBackupMissed tests had passed — only this one was red |
+
+Walk 94 lesson: **`for:` and a `rate([window])` both impose latency, and they stack** — a `for` as long as the rate window roughly doubles detection time for no extra signal. And the honest one: I pushed a monitoring change I couldn't run locally and trusted the expression's obviousness; the test existed precisely to catch what obviousness misses, and it did — the process worked, my pre-push check didn't. Where promtool can't run locally, the alert-under-test deserves extra scrutiny of `for` vs the test's eval window.
+
+## Walk 95: "same rule, two engines" — same logic, different scope and status (Nov 10, 2026)
+
+Scope: STATE §2's claim that Kyverno and Gatekeeper enforce "the same rule". The Rego and the YAML genuinely match on logic — both reject `:latest` and untagged images across containers/initContainers/ephemeralContainers (Walk 16's init-container coverage is present in both). But "the same rule" hid two differences:
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **Scope:** Kyverno's `disallow-latest-tag` matches `Pod` cluster-wide; the Gatekeeper constraint matches `Pod` only in `namespaces: ["shopflow"]`. A `:latest` pod in another namespace is blocked by one, allowed by the other | "The same rule" implies interchangeable enforcement; they aren't. For a learning repo comparing engines, the *difference* is the lesson — but only if it's stated, not papered over | README now states the scope difference explicitly |
+| **Status:** CI runs `kyverno apply` (enforced + tested); it never runs `gator test`, and kubeconform skips Gatekeeper's CRD-backed kinds — so the Gatekeeper policy is unexecuted reference material (Walk 50's "never fired" risk, in miniature) | Presenting both as live controls overstates the admission posture; the honest version is "one enforced+tested, one for Rego comparison" | README + STATE §2 now label Kyverno as enforced/CI-tested and Gatekeeper as reference/shopflow-scoped |
+
+Walk 95 lesson: **"the same rule in two tools" is three claims — same logic, same scope, same enforcement status — and the marketing-friendly phrasing collapses them.** When comparing two implementations of one policy, verify all three, and say which one actually runs.
+
+## Walk 96: fintech/payments add-on — the double-entry ledger skeleton (Nov 10, 2026)
+
+A new direction, not a correction: Abhishek is targeting Fintech / Payments / High-Transaction roles and wants ShopFlow to *also* defend his OSTTRA post-trade experience — explicitly **additive** ("goal change nahi, add-ons; baaki tech stack hataana mat"). So nothing was removed; the e-commerce stack stands, and a payments lens + one new service go on top.
+
+**Two deliverables, skeleton-first:**
+1. `docs/fintech/README.md` — the tracker mapping the whole payments roadmap to ShopFlow: each item marked ✅ already-here / 🟡 partial / 🆕 new, each with a one-line OSTTRA defense sentence (pattern + where-used + what-breaks-without-it), plus a 0–5 build order. This surfaced how much ShopFlow *already* is a payments system: idempotency (Walk 45), outbox+inbox, choreography saga + compensation (Walk 43), optimistic locking, DLT, reconciler — all genuinely present. The real gaps: a double-entry ledger, reconciliation, explicit auth/capture/settle states, money-as-minor-units.
+2. `ledger-service` (new Maven module, skeleton) — the highest-value gap. The double-entry invariant (`DoubleEntry.validate`: debits == credits, single currency, ≥2 legs), `Money` as minor-units (no float — the classic payments filter), immutable append-only `Posting`, `JournalEntry` with an idempotency-key unique constraint, and `JournalEntryStatus` as the trade-lifecycle state machine (INITIATED→AUTHORIZED→CAPTURED→SETTLED→RECONCILED, +FAILED/REVERSED, illegal transitions rejected). Persistence, REST and the saga consumer are honest `UnsupportedOperationException` + `TODO(increment N)` stubs — the invariant and state machine are real and unit-tested (14 tests), the plumbing is next.
+
+Scope discipline: the module is wired into the reactor (so CI's `test` job compiles + tests it) but deliberately NOT added to the CI image matrix, k8s, helm or monitoring yet — that is increment 5. So this is CI-safe (green) while being a genuine skeleton, not a stub nobody builds.
+
+Walk 96 lesson: when a project needs to speak to a new domain, don't rebuild — **re-map first (what already fits the new frame), then add only the true gap.** Most of ShopFlow was already a payments system in e-commerce clothing; the ledger is the one missing organ, and a skeleton with a real, tested invariant core beats a fully-wired service with hand-waved correctness.
+
+## Walk 97: ledger increment 1a — persistence that can't half-post (Nov 10, 2026)
+
+First real implementation on the Walk-96 skeleton (verified green on `7d756ce` first — no building on an unverified base). Increment 1a = persistence, deliberately before REST.
+
+- `LedgerService.record()` now writes the `JournalEntry` + every `Posting` in **one `@Transactional`**, so the ledger is never left unbalanced mid-write; `DoubleEntry.validate` runs first, so a bad request never reaches the DB at all.
+- **Idempotency** by the unique `idempotency_key`: a replayed source event returns the existing entry and posts nothing more — with the order-service Walk-45 recovery (catch the unique-constraint loss of a concurrent double-post, re-fetch the winner), because the pre-check is an optimization and the constraint is the guarantee.
+- **Chart of accounts is controlled** (`AccountService`): a posting to an unknown account code is rejected (`AccountNotFoundException`), not silently auto-created — a typo can't conjure an account that quietly absorbs money. Account create is itself idempotent (same race recovery).
+- **Balance is derived** (`balanceOf` = signed sum of an account's postings), never a stored column — the property reconciliation will rely on, kept visible rather than cached.
+- 5 persistence tests (`@SpringBootTest` + H2, `@Transactional` rollback for isolation): balanced entry persists + balances derived, idempotent replay posts once, unbalanced rejected, unknown account rejected, wrong-currency account rejected.
+
+Still skeleton-honest elsewhere: outbound `LedgerEntryRecorded` event + the inbound saga consumer are increment 2; REST is 1b. Nothing in the existing stack touched.
+
+Walk 97 lesson: for a ledger, the two invariants that must hold at the *persistence* boundary — "never half-post" (one transaction) and "post once" (unique key + race recovery) — come before any API. Build the thing that can't corrupt money first; the HTTP shape on top is the easy part.
+
+## Walk 98: ledger increment 1b — the HTTP surface (Nov 10, 2026)
+
+On the green 1a base (`a3c6228` test job confirmed), the REST layer:
+
+- `POST /api/v1/accounts` (create, idempotent), `POST /api/v1/journal-entries` (record — idempotent, safe to retry: same key returns the same entry, never double-posts), `GET /api/v1/accounts/{code}/balance` (derived), `GET /api/v1/journal-entries?reference=` (audit/recon view).
+- The request speaks account codes + minor-unit amounts + direction; the controller maps each line to a `PostingLine(code, direction, Money.of(amountMinor, currency))` — the API's shape is the ledger's boundary, entities stay internal (DTO records, never exposing `@Entity`, the same discipline ArchUnit enforces in order-service).
+- `LedgerExceptionHandler` (RFC-7807, mirroring inventory's): a well-formed-but-unpostable request — unbalanced, or referencing an unknown account — is **422** (the server understood it and the business rule said no), a malformed one (blank currency, empty lines, bad types) is **400** via bean validation. The 400-vs-422 split is a small interview tell: "unbalanced isn't a bad request, it's an unprocessable one."
+- 5 MockMvc tests through the full stack: balanced post → derived balances read back, replay posts once, unbalanced → 422, unknown account → 422, malformed → 400. Unique account codes per test keep balances isolated without a test transaction.
+
+Increment 1 (a+b) done: a ledger you can create accounts in, post balanced entries to idempotently, and read derived balances from — with the invariants (never half-post, post once, controlled accounts, derived balance) all enforced and tested. Increment 2 = wire it to the saga (payment events → double-entry) via an inbound consumer + outbound outbox event.
+
+Walk 98 lesson: the 400/422 boundary is exactly the validate-first design made visible — bean validation (shape) is 400 and runs before the handler; the domain invariant (balance) is 422 and runs inside the service. Two layers, two status classes, and the code path already separates them.
+
+## Walk 99: my own idempotency recovery was broken by @Transactional (Nov 10, 2026)
+
+Self-walk on the code I'd just written (Walks 96–98). A senior reviewer's first target is new code that "looks obviously right" — and the ledger's idempotency recovery was exactly that trap.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| Both `LedgerService.record()` and `AccountService.create()` were `@Transactional` **and** caught `DataIntegrityViolationException` internally to recover from a concurrent same-key insert (return the winner). That recovery cannot work: when the unique-key violation fires, Spring marks the method's transaction **rollback-only**; the catch re-fetches and returns the winner, but the method's commit then throws `UnexpectedRollbackException` past the `return` — so the losing caller gets an exception, not the winner's entry | This is the headline payments feature (retry-safe posting) silently broken under the one condition it exists for — concurrency. All my sequential tests passed because none of them raced; "replay returns the same entry" (sequential) and "concurrent double-post recovers" (parallel) are different claims, and I'd only tested the first. It's the exact trap `OrderService.placeOrder` was structured to avoid (non-`@Transactional` method, atomic write via `TransactionTemplate`, catch outside) — and I didn't replicate that structure | `record()` is no longer `@Transactional`: the entry+postings write moves into `transactionTemplate.execute(...)` (one atomic tx, still "never half-post"), and the `DataIntegrityViolationException` catch sits **outside** it, so the re-fetch runs in a fresh transaction that sees the committed winner. `create()` drops `@Transactional` the same way (each repo call its own tx). New `LedgerConcurrencyTest` (CyclicBarrier, 8 threads, same key, NOT `@Transactional`) proves it: exactly one entry, every thread gets the winner, money moved once — it would have thrown `UnexpectedRollbackException` on the old code |
+
+Walk 99 lesson: **a `@Transactional` method cannot catch and recover from its own constraint violation** — the violation poisons the transaction, so the "recovery" dies at commit. Recovery from a unique-key race must live outside the failed transaction (non-transactional method + `TransactionTemplate`/separate bean for the atomic part). And the deeper one: I reviewed everyone else's concurrency for 98 walks and then shipped the same class of bug in my own fresh code — new code gets the adversarial walk too, especially the parts that "obviously" mirror a working pattern but don't.
+
+## Walk 100: `spring.datasource` was nested under `jwt:` — order-service could not start against any real DB (Nov 11, 2026)
+
+Context: ran the full `docker compose` stack end-to-end for the first time (a teaching session — trace one order from `POST` to Kafka). order-service crash-looped with `Failed to configure a DataSource: 'url' attribute is not specified` / `Failed to determine a suitable driver class`, even though `DB_URL` was correctly set in the container env.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| In `order-service/src/main/resources/application.yml`, the `datasource`, `jpa` and `mvc` keys were indented under the top-level `jwt:` block (2 spaces) instead of under `spring:`. So the real property was `jwt.datasource.url` and `spring.datasource.url` was empty → Spring Boot could not build a HikariDataSource. `git log` on the file confirms it: the original commit (`c851d87`) had them correctly under `spring:`; a later edit that added the `jwt:` and `spring.security.oauth2` blocks pushed `datasource/jpa/mvc` under `jwt:`. | This is not a local-only glitch — the packaged app uses `application.yml` with the default profile in **every** environment, so order-service would fail to get a datasource in k8s/prod exactly as it did locally. It was invisible because the **entire test suite overrides the datasource** via `application-test.yml` (H2) and `@DataJpaTest`/`@SpringBootTest` slices, so "all tests green" never exercised the real config path. Textbook *green that is red*: the one config the app actually ships with was the one nothing ran. | Move `datasource`, `jpa`, `mvc` back under `spring:` (same indent level as `spring.security`); leave `jwt:` with just `audience`. Verified live: after the fix, order-service reaches `health/readiness = UP`, places an order, and the full saga (CONFIRMED → payment CAPTURED → PAID) runs end-to-end. |
+
+Walk 100 lesson: **a 100% green test suite tells you nothing about config the tests override.** Datasource, security issuer, connection pools — tests routinely swap these for H2/mocks, so YAML structure bugs in them sail through CI untouched. The only thing that exercises the shipped `application.yml` is actually starting the packaged app with production-shaped env — which, before today, had never been done for this stack. A "does the jar boot with prod profile + real env?" smoke check (even one container start in CI) would have caught it on day one.
+
+## Walk 101: the local stack had never actually been run — three environment bugs blocked a fresh checkout (Nov 11, 2026)
+
+Same first-ever end-to-end run surfaced three more real bugs. None are caught by `make test`/CI because they live in the compose/runtime layer the test suite never touches. Grouped because they share one root: *the `docker compose` stack was authored but never booted on a clean machine.*
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `k8s/base/postgres/init-db.sh` had **CRLF** line endings. Mounted into `postgres:16-alpine` and run by the entrypoint, the shebang became `#!/bin/sh\r` → kernel error `/bin/sh^M: bad interpreter: No such file or directory`, postgres init failed (exit 126), and every service's DB dependency failed to start. | A Windows checkout (autocrlf) makes this bite anyone — the whole stack is dead at the database. Nothing in CI runs this script against a container, so it was never exercised. | Convert to LF, and add a repo-root `.gitattributes` pinning `*.sh eol=lf` (plus Dockerfile/yaml) so the recurrence is impossible on future checkouts. |
+| Keycloak realm users `alice`/`bob` had `email` but no `firstName`/`lastName`. Keycloak 26.3 (the pinned image) enables the declarative user profile with those as required, so login dynamically triggers the `VERIFY_PROFILE` required action — password grant fails with `invalid_grant: Account is not fully set up`. The missing action never appears on the stored user, which is what makes it baffling. | No one can authenticate → the API is unusable → the entire demo/stack is blocked at step one. The realm JSON was written for an older Keycloak's defaults and the image was later bumped to 26.3. | Add `firstName`/`lastName` to both users in `shopflow-realm.json`. |
+| order-service's JWT issuer was `http://localhost:8180/...`. Inside the container `localhost` is the container itself, so the JWKS fetch got `Connection refused`. The compose author's `extra_hosts: localhost:host-gateway` does **not** fix it — `/etc/hosts` already has `127.0.0.1 localhost` first, so `localhost` still resolves to the container. | JWT validation can never succeed → every authenticated request is 401 → the service is up but useless. | Point `KC_HOSTNAME` and `JWT_ISSUER_URI` at `http://host.docker.internal:8180` — one URL reachable from both the host (to get a token) and the container (to validate it), and the token's `iss` (set by `KC_HOSTNAME`) then matches what order-service expects. Verified: token issued, order placed, 201. |
+
+Also added (dev experience, not a bug): an **Adminer** service (`http://localhost:8888`) and a published `5432` port so the databases can be browsed from a UI / desktop client while learning.
+
+Walk 101 lesson: **"the tests pass" and "a human can run it" are different guarantees, and a learning/interview repo needs both.** Everything here lives in the gap CI structurally cannot see — container line endings, an IdP image's new defaults, container-vs-host network identity. The cheapest insurance is to actually boot the stack once on the target OS (and ideally in CI via a compose-up smoke job), because the first real `up` is where all of these surface at once.
+
+## Walk 102: adversarial sweep of the saga + ledger — a near-miss, then verified clean (Nov 11, 2026)
+
+Having just watched one order run CONFIRMED → payment FAILED → CANCELLED live, I went hunting for a real correctness bug in the compensation paths and the (newest) ledger code. Net result: **no bug** — but one near-miss worth recording, because the discipline is the point.
+
+**Near-miss (almost manufactured a finding):** `LedgerController.record()` returns `201 Created` on an idempotent *replay*, where the sibling `OrderController` returns `200` for a repeated `Idempotency-Key`. I started to "fix" this as an HTTP-contract inconsistency — until I read `LedgerApiTest`, which **deliberately asserts** `status().isCreated()` on the replay with the comment "idempotent: safe to retry". It is a tested design choice (201 = "the entry exists", defensible), not an accident. Overriding a deliberate, tested decision is manufacturing a finding, so I left it. *Verify the intent before calling something a bug — a sibling's different convention is not proof of a defect.*
+
+**Verified clean (each a claim I tried to break and couldn't):**
+- **`inventoryClient.release()` idempotency** — the saga calls it in five places (`cancel`, `onPaymentFailed`, `onPaymentRefunded`, `reconcile`) on the premise "release is a safe no-op if nothing was reserved". Confirmed end to end: inventory's `DELETE /reservations/{ref}` is `@ResponseStatus(NO_CONTENT)` and `ReservationService.release` is `findByOrderRef(...).filter(RESERVED).ifPresent(...)` — a missing or already-RELEASED reservation is a silent no-op, never a 404/throw. The client's lack of `onStatus` handling is therefore fine. The premise holds.
+- **Saga status guards** — `onPaymentCaptured/Failed/Refunded` are all `filter(status)`-guarded, so duplicate/late/out-of-order deliveries are no-ops; the cancel/charge race (Walk 43) is explicitly handled by routing a captured-but-cancelled order back into the refund saga.
+- **Money precision** — payment `amount` is `numeric(12,2)` and the entity declares `precision=12, scale=2` (match); amount is `price.multiply(quantity)` in `BigDecimal` (no float); ledger stores `amount_minor bigint check (>0)` with signed direction. No truncation surface.
+- **No sibling of the Walk 100 bug** — checked all five services' `application.yml`: only order-service had `datasource` mis-nested; the rest have it correctly under `spring:`.
+- **Walk 100 blast radius** — confirmed the k8s base and prod overlay inject `DB_URL` (not `SPRING_DATASOURCE_URL`), so the mis-nesting broke order-service in prod too, not only locally — the severity claim is real.
+
+Also self-caught in CI: the Walk 101 `KC_HOSTNAME` comment was 237 chars and failed the yamllint `line-length` (160) gate — the one job that went red. Split into two comment lines; every other job (tests, images, validate, terraform, schema-vs-postgres, k6) was green. *My own doc change gets the same gate as code.*
+
+Walk 102 lesson: **"verified clean" is a real outcome, and the way to earn it is to try to break each safety claim, not to admire it.** The temptation on a quiet sweep is to promote a style difference (201 vs 200) into a "bug" to have something to show; the honest move is to read the test that pins it and move on. The actual value produced was negative-space: five load-bearing assumptions now have a confirmation behind them instead of a comment.
+
+## Walk 103: infra-layer sweep — a CRLF scare chased to ground, then the prod overlay's brittle positional patches verified (Nov 11, 2026)
+
+CI first: confirmed the prior push (`970f505`) is green — both the `CI` and `shopflow` workflows `success`, closing the Walk 102 lint-fix thread. Then a fresh 30-min adversarial hunt, this time deliberately in the **infra layer** (k8s/Helm/compose/overlays) — the place CI only *syntactically* validates (kubeconform/yamllint check shape, not semantics), and exactly where Walks 100–101 had just drawn blood. Net result: **no new bug** — one real scare run down to clean, and the single most dangerous construct in the repo proven correct.
+
+**The scare (chased to ground, not manufactured):** a first-pass `grep -c $'\r'` over every `*.sh` reported **14 CR chars in `k8s/base/postgres/init-db.sh`** — the exact file whose CRLF shebang was the Walk 101 postgres-crash bug. If true, the fix had regressed and the file docker-compose **bind-mounts** would again carry `#!/bin/sh\r`. I did *not* trust the grep (it could cut both ways) and nailed it at the byte level: `git ls-files --eol` → `i/lf w/lf`, `od -c` on the first line → `# ! / b i n / s h \n` (no `\r`), and an authoritative `python … .count(b'\r')` → **0 CR, 14 LF**. The "14" was the grep matching line *count*, not carriage returns — a false positive. The fix is intact. *A scary signal is a reason to measure, not to act; the byte count is the truth, the tool's summary is not.*
+
+**Verified clean (each a claim I tried to break):**
+- **The prod overlay's positional env patches** — `k8s/overlays/prod/kustomization.yaml` rewrites each service's DB_URL with JSON6902 `op: replace path: …/env/1` and inserts RDS_ENDPOINT at `…/env/0`. Positional index patches are the most fragile thing in the repo: if any service's base `env` list didn't have DB_URL at index 1, the patch would silently corrupt the *wrong* variable and kustomize/kubeconform would still pass. Checked all four base deployments: every one is `env[0]=DB_POOL_SIZE, env[1]=DB_URL`, so the patch is correct everywhere. Also confirmed the ordering trick works: RDS_ENDPOINT is inserted at index 0 so it is defined *before* DB_URL's `$(RDS_ENDPOINT)` K8s dependent-var expansion — and the `replace env/1` is sequenced before the `add env/0` within each patch, so it lands on DB_URL while it is still at index 1. (Latent fragility worth a STATE §4 note: reorder a base env list and prod breaks silently — CI can't see it.)
+- **Walk 100 fix, end to end** — `order-service/application.yml` now has `datasource/jpa/mvc` under `spring:` and `spring.datasource.url: ${DB_URL:…}`; the base deployment and prod overlay both inject `DB_URL`. The shipped config and the manifests agree.
+- **Reservation concurrency (inventory)** — `reserve`/`release` idempotency holds: `decrementStock` and `transition` are conditional single-UPDATEs (`WHERE … AND status/quantity`), the row lock serialises concurrent releases so exactly one caller gets `1` back and only it increments stock — no phantom double-restock. The entity deliberately has no in-memory status flip and no `@Version`; the conditional UPDATE *is* the guard.
+- **Payment saga** — `charge` dedupes by eventId (Payment PK), `refund` by state (only a CAPTURED row refunds; REFUNDED/FAILED are no-ops). The load-bearing "orderRef is the gateway idempotency key" claim is honestly placed on the *real* adapter in the `PaymentGateway` contract; `FakePaymentGateway` is a documented stateless stand-in, so its lack of dedupe is not a defect.
+- **Network policies vs. reality** — egress is least-privilege and matches each pod's real callees (order→inventory/postgres/kafka/keycloak/otlp; payment/notification→postgres/kafka/otlp; inventory→postgres/redis/otlp). `postgres-backup-egress` allows only postgres:5432 — and the backup cronjob writes to a **PVC**, not offsite, so nothing is silently blocked. Kafka has no egress policy (only default DNS), but it is single-node (`replicas: 1`, no overlay scales it) so controller-quorum traffic is pod-loopback; a real gap only if Kafka is ever scaled in-cluster (it won't be — prod uses MSK).
+- **Dockerfile + probes** — multi-stage on `eclipse-temurin:21`, non-root `USER 10001`, `MaxRAMPercentage=75` + `ExitOnOutOfMemoryError`; all five services' readiness group is `readinessState,db` (not kafka) so a Kafka outage never pulls a pod from the LB.
+
+Walk 103 lesson: **the infra layer has its own "green that is red" — kustomize build and kubeconform pass on a patch that targets the wrong index or a selector that matches nothing.** The way to audit it is the same as code: pick the single most brittle construct (here, positional `env/N` patches) and prove the assumption it rests on, service by service. And the meta-lesson from the CRLF scare: when a cheap tool screams, drop to the byte level before you believe it — most of a senior's credibility is *not* crying wolf.
+
+> Walks **104–105** were build increments, not bug hunts: the ledger→saga **inbox** wiring and the **reconciliation** control (fintech increments 2–3). They are logged in [`fintech/README.md`](fintech/README.md) + [`fintech/02-inbox-and-reconciliation.md`](fintech/02-inbox-and-reconciliation.md), and Walk 106 below is the adversarial walk over exactly that fresh code.
+
+## Walk 106: adversarial walk over my own increment 2–3 code — two real self-invocation/ordering bugs (Nov 11, 2026)
+
+Walk 99's rule is that new code gets the adversarial walk *too*, especially the parts that mirror a working pattern. So I turned the senior-reviewer lens on the ledger saga + reconciliation code I'd just written and green-lit. Two real bugs, both in the class "an annotation/lifecycle looks right but doesn't fire where you think" — the same family as Walk 99.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| **`ReconciliationService.reconcile()` was `@Transactional(readOnly=true)`, but its only in-bean caller `scheduledReconcile()` invokes it as a plain `this.reconcile(...)` — a self-invocation that bypasses the Spring proxy.** So on the *scheduled* (production) path the transaction annotation did **nothing**; it only took effect when called directly, e.g. from the test — which is exactly what hid it (tests green, prod path silently un-transactional). The same proxy/self-invocation trap as Walk 99. | Low *impact* (the reads are committed-read, no write, no lazy loading, and every CASH posting's entry is committed in the same unit as the posting, so the two reads can't see a posting with a missing entry) — but the annotation asserted a guarantee the real path never got, and "it works in the test" was proving the wrong path. Left as-is, the next person adds a lazy association or a second write "under the same read-only tx" that isn't there. | Removed the annotation rather than trying to make it fire: the reads genuinely need no transaction, and wrapping the scheduled path *would* be wrong anyway — it would pin a DB connection across the (potentially remote) settlement-statement fetch. Documented why. Tests still pass because the test class is `@Transactional`, so the reads join the test's own tx. |
+| **Control accounts (CASH / SALES_REVENUE) were seeded by an `ApplicationRunner`, but the `@KafkaListener` that posts to them starts consuming earlier in the startup sequence.** `@KafkaListener` containers are `SmartLifecycle` beans started during context `finishRefresh()`; `ApplicationRunner` callbacks run *after* that, in `callRunners()`. So on a cold start the ledger consumer can pick up an `earliest`-offset `PaymentCaptured` and call `accounts.require("CASH")` **before** the runner created it → `AccountNotFoundException` → error-handler retry/backoff → a dead-letter if seeding loses the race. Invisible in tests (no real broker; the listener is never started — `auto-startup:false`). | A cold-start deploy replaying historical payment events could dead-letter the first ones for no real reason — a self-inflicted `KafkaMessageDeadLettered` page on a fresh ledger pod. Reference data that *must* exist before the first event does not belong in a post-refresh runner. | Seed the control accounts as **reference data in a Flyway migration** (`V2__control_accounts.sql`): migrations run during context initialization, before any `SmartLifecycle` listener consumes, so the accounts are guaranteed to exist first. Dropped the `ApplicationRunner`; `LedgerAccounts` is now just the code/currency constants. |
+
+Walk 106 lesson: **the parts of fresh code most likely to be wrong are the ones that "obviously" work because a test is green — and the test is green precisely because it exercises a different path than production.** A `@Transactional` self-invocation fires from a direct test call but not from the real scheduler; a `@KafkaListener` never starts in a broker-less test, so it never races the seeder it races in prod. Both bugs live in the gap between *how the test reaches the code* and *how production reaches it*. Reviewing my own code the day I wrote it caught both — the Walk 99 discipline (new code gets the walk too) is the whole point.
+
+## Walk 107: AWS Terraform security sweep — verified clean (Nov 11, 2026)
+
+`tflint` (the CI gate) checks HCL validity and provider rules, not whether the infra is actually secure — so I took the senior/security-reviewer lens to `infra/terraform/aws/` and tried to break each security claim. Each one held.
+
+**Verified clean (each a claim I tried to break):**
+- **No open data-store ingress** — RDS/MSK/ElastiCache security groups allow their port only from `local.cluster_sg_ids = [module.eks.node_security_group_id]` (EKS nodes), never `0.0.0.0/0`. The only `0.0.0.0/0` anywhere is **egress** (standard), not ingress.
+- **Encryption on everywhere** — RDS `storage_encrypted = true`; ElastiCache `at_rest_encryption_enabled` + `transit_encryption_enabled = true`; MSK `encryption_in_transit { client_broker = "TLS", in_cluster = true }`. The ElastiCache TLS flag specifically backs the prod k8s overlay's `REDIS_SSL=true` (Walk 90 cross-check: if transit encryption were off, the app's TLS handshake would fail into a silent dead cache — it is on, so the assertion holds).
+- **Data stores are private + not public** — RDS `publicly_accessible = false` on a dedicated `database_subnet_group`; MSK `client_subnets` and ElastiCache `subnet_ids` are `module.vpc.private_subnets`; VPC public subnets hold only ALBs + NAT. Nothing with data is reachable from the internet.
+- **IAM least-privilege** — the CI OIDC role's ECR policy grants `ecr:GetAuthorizationToken` on `Resource = "*"` (correct — it is an account-level action AWS cannot scope to a repo ARN) but every *mutating* action (`PutImage`, `UploadLayerPart`, …) is scoped to `[for r in aws_ecr_repository.service : r.arn]`. Not a `"*"`-on-everything policy.
+- **RDS safety rails** — `deletion_protection = var.environment == "prod"` and `skip_final_snapshot = var.environment != "prod"`, so prod cannot be deleted without a final snapshot; lower envs stay cheap.
+
+One re-confirmed (not new): `ci-oidc.tf`'s trust `sub = repo:…:ref:refs/heads/main` is one of the already-tracked **six copies of the main-branch gate** (STATE §4 publishing-disabled item) — the repo has no `main` branch, so CI OIDC has never assumed this role. Known, documented, not a Walk finding.
+
+Walk 107 lesson: **a linter that passes tells you the Terraform is *valid*, not that the infrastructure is *safe*.** The security review of IaC is its own pass — open ingress CIDRs, unencrypted or public data stores, and wildcard IAM are the real-money bugs, and none of them are things `tflint` fails on. Here the author had already closed all of them; "verified clean" on infra is as real an outcome as on code, and earned the same way — by trying to break each control, not admiring it.
+
+## Walk 108: the Helm prod path disabled JWT audience validation that Kustomize prod enforces (Nov 11, 2026)
+
+Two deploy systems describe the same services — Kustomize (base + prod overlay, the Argo CD path) and the Helm chart (`helm/shopflow-service` + per-service values). Any security hardening added to one and not the other is a silent drift, and drift between two IaC paths is exactly where a prod control quietly goes missing. So I diffed the security-relevant env between the two prod paths.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| order-service validates the JWT **audience** only when `JWT_AUDIENCE` is non-empty (`JwtDecoderConfig`: blank → issuer-only validation, deliberately, for dev). The **Kustomize prod overlay injects `JWT_AUDIENCE`** from the `shopflow-endpoints` ConfigMap with an explicit "prod must pin the audience" note (Walk 73). The **Helm chart sets it nowhere** — `grep -rn JWT_AUDIENCE helm/` is empty. So a prod deploy via Helm (`order-service.yaml` + `order-service-prod.yaml`) runs order-service with **audience checking OFF**. | A token minted for **any** client of the Cognito user pool — not just this API's client — would pass order-service's auth. That is the exact vulnerability Walk 73 closed, reopened on the Helm path because the fix only landed on the Kustomize path. The chart ships a real `*-prod.yaml`, so this is a supported prod path, not a hypothetical. | Add `JWT_AUDIENCE` (from `shopflow-endpoints/jwt-audience`) to `order-service-prod.yaml`. Subtlety that makes the drift easy to introduce: **Helm replaces list values across `-f` files, it does not merge them** — so the prod `env` had to repeat the four base entries (INVENTORY_URL/KAFKA/JWT_ISSUER_URI/OTLP) *plus* the new one, or it would have wiped them. (payment-service needs no audience — it has no JWT path — so only order-service drifted.) |
+
+Walk 108 lesson: **when two IaC systems describe the same system, every security control has to be checked in *both* — a fix applied to one is not applied to the system.** The Kustomize overlay was correct and well-commented; that is exactly what made the gap invisible, because a reviewer reads the good overlay and assumes the control exists. The only way to catch it is to diff the two paths for the specific control (here: `grep JWT_AUDIENCE` across both) rather than trust that a hardening "was done". And the Helm-specific trap underneath it — list values replace, they don't merge — is why the audience couldn't just be appended as a one-line delta.
+
+## Walk 109: the Argo Rollouts path left its two services' HPAs targeting a scaled-to-zero Deployment (Nov 11, 2026)
+
+Staying in progressive-delivery: `k8s/rollouts/` is a standalone kustomization (not wired into the prod overlay) that converts order-service (canary) and inventory-service (blue-green) to Argo `Rollout`s via `workloadRef`. The analysis template was already correct (the canary-hash filtering is the Walk 51 fix). The bug was one layer out — in how autoscaling survives the Deployment→Rollout switch.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| Both Rollouts use `workloadRef` to the base Deployment with `scaleDown: onsuccess`, so once the Rollout is healthy it **scales that Deployment to 0** and serves from its own ReplicaSets. But the base HPAs (`k8s/base/*/hpa.yaml`) point `scaleTargetRef` at the **Deployment**, and the rollouts README explicitly said "Services/**HPA**/PDB are reused" — i.e. keep the Deployment-targeting HPA. So after promotion the HPA autoscales a workload pinned at 0 replicas (no pods → no CPU metrics), while the real, Rollout-owned serving pods are **never autoscaled at all**. | Applying the documented `kubectl apply -k k8s/rollouts` leaves the canary/blue-green services with dead autoscaling — a load spike that should scale order-service from 2→6 does nothing, because the HPA is watching the empty Deployment, not the Rollout serving the traffic. Argo Rollouts exposes the `/scale` subresource specifically so the HPA can target the Rollout; pointing it at the Deployment is the documented migration foot-gun. | Ship `k8s/rollouts/hpa.yaml`: HPAs with the **same names** as the base ones but `scaleTargetRef` → `apiVersion: argoproj.io/v1alpha1, kind: Rollout`, so `kubectl apply -k k8s/rollouts` updates each HPA in place to follow the Rollout. Added to the kustomization; README corrected from "HPA reused" to "HPA retargeted". Only the two Rollout services need it; notification/payment stay Deployments with the base HPA. |
+
+Walk 109 lesson: **migrating a workload type (Deployment → Rollout) silently orphans everything that referenced the old type by kind** — HPAs, and anything else with a `scaleTargetRef`/`workloadRef`/owner selector. The Rollout and its AnalysisTemplate were textbook; the defect was in the *seam* between the new workload and the autoscaler that was "reused" across the migration. When a resource takes over another's role, audit every controller that was pointing at the old one — the reused HPA looked harmless precisely because nothing about it changed, which is the problem.
+
+## Walk 110: the `require-resources` Kyverno policy skipped initContainers that its two sibling policies cover (Nov 11, 2026)
+
+The CI comments made this one findable: the kyverno block explicitly cites "init-container coverage (Walk 16)" for `disallow-latest-tag` and "init-container securityContext coverage (Walk 17)" for `require-non-root` — two policies that were each deliberately extended to cover `initContainers`. So I checked whether the third resource-governance policy got the same treatment. It did not.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `require-resources` validates `spec.containers[].resources` (cpu+memory requests, memory limit) but has **no `initContainers` clause** — unlike `disallow-latest-tag` (Walk 16) and `require-non-root` (Walk 17), which were both extended to cover init containers. So a pod whose app containers are compliant but whose **initContainer has no requests/limits** passes the policy. | An unbounded initContainer schedules with no CPU/memory reservation and no memory cap — it can OOM the node or evade the scheduler's bin-packing, the exact failure the policy exists to prevent, just on the container type it forgot. No shopflow pod uses initContainers *today*, so it is a latent gap, not a live breach — but the policy is `Enforce` cluster-wide and is the only thing stopping an unbounded init container from ever landing. | Add a conditional-anchor `"=(initContainers)"` clause mirroring the `containers` one (and matching how the sibling policies did it). **Ephemeral containers deliberately excluded** — the Kubernetes API forbids setting `resources` on them, so requiring it would make every `kubectl debug` attach fail. Added a `bad-init-resources-pod` fixture (compliant app container, resource-less initContainer) and the matching `kyverno apply` assertion in CI, exactly as Walks 16/17 did. Verified safe: the conditional anchor skips the (init-container-free) prod overlay, so `/tmp/prod.yaml` still passes. |
+
+Walk 110 lesson: **a hardening applied to a *family* of policies has to be applied to every member, and "two of three got it" is the most dangerous state — because the two that did lull you into assuming the rule is enforced.** The tell wasn't in `require-resources` itself (it looked complete); it was in the *other* policies' comments announcing an init-container pass that this one never received. When you see "we covered edge case X here", the next move is to grep every sibling for X — the one that is missing it is the bug.
+
+## Walk 111: checkout SLI math + notification-service — verified clean (Nov 11, 2026)
+
+Turned the adversarial lens on the two things most likely to hide a quiet semantic bug that `promtool`/tests pass over: the multi-window burn-rate SLI (PromQL semantics, not syntax) and the notification consumer (at-least-once side effects). Tried to break each; both held.
+
+**Verified clean (each a claim I tried to break):**
+- **The "slow 2xx" term can't go negative** — `sli:checkout_bad` = `rate(5xx)` + (`rate(2xx count)` − `rate(2xx bucket le=1.0)`). The subtraction is non-negative because `http_server_requests_seconds_count` ≡ `..._bucket{le="+Inf"}` ≥ `..._bucket{le="1.0"}`, so the slow-request term is always ≥ 0 — no transient negative "bad" rate.
+- **The `le="1.0"` bucket is guaranteed to exist** — `application.yml` pins `distribution.slo.http.server.requests: 1s`, so the SLI's `le="1.0"` selector always matches (the exact fragility Walk 14 noted: a histogram-bucket retune could otherwise drop it and the SLI would silently read empty).
+- **Label-matching is moot in the subtraction** — both the count and the bucket terms are fully aggregated (`sum(rate(...))`) before subtracting, so it is scalar − scalar; per-series label alignment can't skew it.
+- **Budget denominator excludes the client's faults** — valid attempts are `status=~"[25].."` (2xx or 5xx); 4xx and 429 (our own rate-limiting) are in neither numerator nor denominator, so a flash-sale 429 burst neither breaches nor dilutes the SLO. Burn thresholds are `burn_rate × (1−SLO) = burn_rate × 0.005`, and both windows of each multi-window alert reference recorded series that actually exist.
+- **notification consumer ordering is the correct at-least-once choice** — `notify()` (the email side effect) runs *before* `processedEvents.save()`, so a crash between them re-delivers and re-emails (a harmless duplicate) rather than the reverse (saving dedupe state then losing the email — a silent missing notification). The `processed_event` dedupe + the Walk 59 14-day retention (covering retention + segment-roll replay) bound the duplicates.
+
+Walk 111 lesson: **the SLI is the one piece of monitoring whose bugs are invisible by construction — a wrong denominator or a dropped bucket doesn't error, it just reports a comfortable number.** The only way to trust it is to re-derive the arithmetic against what the app actually exports (does `le="1.0"` exist? is `count ≥ bucket`?) rather than read the PromQL and nod. Here the author had already closed the subtle ones (Walk 14's bucket pin, the 429 exclusion); earning "clean" meant reproducing each guarantee, not assuming it.
+
+## Walk 112: Gatekeeper vs Kyverno disallow-latest — verified clean (Nov 11, 2026)
+
+After Walks 108/110 (drift between two systems describing the same thing), the obvious next target was the OPA Gatekeeper policy set, which re-implements admission control alongside Kyverno. If one engine's `disallow-latest` covered init containers and the other didn't, that is the Walk-16 gap again. It didn't.
+
+**Verified clean:**
+- **Both engines cover all container types** — Kyverno's `disallow-latest-tag` uses conditional anchors on `=(initContainers)`/`=(ephemeralContainers)`; Gatekeeper's Rego unions `spec.containers`, `spec.initContainers`, `spec.ephemeralContainers` into one `all_containers` set and checks each. Neither can be slipped a `:latest` init container. The Gatekeeper rego even cites Walk 16 for the same reason.
+- **Scope is intentional, not a gap** — Gatekeeper implements only `disallow-latest` (as a deliberate "here is the same control in OPA/Rego" demonstration), not non-root/resources/signature; that is a documented single-policy comparison, not a missing-policy drift.
+- **The one shared limitation is theoretical and equal** — both treat "the image ref contains a `:`" as "has a tag", so an *untagged* image from a registry that includes a `:port` (e.g. `registry:5000/app`) would read as tagged in **both** engines. It is a known image-reference-parsing edge, identical on both sides (so not a drift), and shopflow uses port-less `ghcr.io` refs with CI-pinned SHA tags, so nothing in this repo hits it. Not manufactured into a "fix".
+
+Walk 112 lesson: **when you've found drift twice, the discipline is to keep checking the *next* parallel system — and to be just as willing to write "clean" when the two actually agree.** The value of the pass is the confirmation that the second admission engine enforces the same init-container rule the first does; promoting the shared `:port` parsing quirk into a bug would have been exactly the manufactured finding Walk 102 warned against — a theoretical edge, equal on both sides, that no manifest in the repo can reach.
+
+## Walk 113: the k6 flash-sale test whitelisted a 409 it can never see — masking a real anomaly (Nov 11, 2026)
+
+CI only runs `k6 inspect` on `loadtest/flash-sale.js` (parses `options`, sends no traffic), so any *semantic* bug in the thresholds is invisible to CI forever — it only bites on a real `k6 run` against a live stack. So I re-derived what statuses the buy-only flood actually produces against order-service, instead of trusting the comments.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `http.setResponseCallback(http.expectedStatuses({min:200,max:399}, 409, 429))` whitelists **409** as a non-failure, and two comments assert out-of-stock returns a 409. But tracing it: inventory-service returns 409 *internally* → `InventoryClient` maps it to `InventoryRejectedException` → `OrderService.placeOrder` catches it → `order.reject()` → `saveWithEvent` → `created=true` → controller returns **201 with body status=REJECTED**. So to the k6 client the 297 losers are **201s**, never 409s. order-service only emits an external 409 on the **cancel / idempotency-race** paths (`GlobalExceptionHandler`: OrderNotCancellable / DataIntegrityViolation / OptimisticLocking) — and this test sends no Idempotency-Key and never cancels. | Two defects. (1) The whitelist **masks a real anomaly**: if order-service ever returned a 409 in a pure-buy flood (a regression — e.g. an unintended constraint violation on the hot path), `expectedStatuses(...,409,...)` swallows it instead of breaching `http_req_failed: rate<0.01`. The load test would stay green on a genuine fault. (2) The comments state "out-of-stock = 409" — **factually wrong about his own system** (it's 201 REJECTED). In an interview-prep repo (CLAUDE.md §5: notes stay honest), that's exactly the claim that collapses under a follow-up question. | Drop 409 from the whitelist — `http.expectedStatuses({min:200,max:399}, 429)` — so the one deliberate non-2xx (429, the rate limiter) still passes but an unexpected 409 now **fails the run** as it should. Rewrite both comments to the truth: out-of-stock is a 201 REJECTED (order-service absorbs inventory's internal 409), and the only legitimate non-2xx here is 429. `orders_confirmed: count==3` was already correct — reservation is synchronous (`placeOrder` → `inventoryClient.reserve()` → `order.confirm()` in the 201 body), so exactly the seeded stock of 3 confirms. |
+
+Walk 113 lesson: **a "lenient" whitelist is a silent test-coverage hole — every status you mark expected is a class of failure the test agrees in advance never to notice.** The 409 looked like harmless defense, but defense against a status the system-under-test can't legitimately emit in this scenario isn't defense, it's a blind spot. The tell was the mismatch between the comment's claim (out-of-stock=409) and the actual code path (out-of-stock=201 REJECTED): when a test's *justification* for a whitelist entry is wrong, the entry itself is usually wrong too. And because CI only syntax-checks the script, nothing but reading the real request path could have caught it.
+
+## Walk 114: payment-service gets a real guarded state machine — auth ≠ capture (Nov 11, 2026)
+
+Constructive walk (fintech increment 4, slice 1), not a bug hunt — but driven by the same honesty rule: add only states with a real driver, and make the new invariant impossible to violate rather than merely documented.
+
+**The gap.** payment-service collapsed the whole card flow into one `gateway.charge()` → status `CAPTURED`/`FAILED`. Two things wrong for a payments story: (1) a real charge is *two* processor calls — AUTHORIZE (the issuer's funds check, where declines happen) then CAPTURE (money actually moves) — and conflating them means you can't model a declined auth vs a failed capture, or ever do delayed capture; (2) the one real state invariant ("only a CAPTURED payment may be refunded") lived as an `if` in the listener, not in the entity — so any other caller, or an out-of-order saga replay, could call `markRefunded()` on a FAILED payment and silently corrupt it.
+
+**What shipped (payment-service only — order/ledger event contract unchanged):**
+- `Payment.Status` is now a guarded graph: `AUTHORIZED → {CAPTURED, FAILED}`, `CAPTURED → {REFUNDED}`, `FAILED`/`REFUNDED` terminal. Every mutation goes through `transitionTo`, which throws `IllegalPaymentTransitionException` on an illegal move. `markRefunded()` (unguarded setter) is gone; `capture()`/`failCapture()`/`refund()` are the only ways to move, each a guarded transition.
+- `PaymentGateway` split `charge` into `authorize` + `capture`; `FakePaymentGateway` puts the card-limit decline in `authorize` (where it belongs) and makes `capture` always succeed (a valid hold rarely fails to capture).
+- The listener now authorizes → persists the `AUTHORIZED` hold → captures → transitions to `CAPTURED`, emitting the same `PaymentCaptured` the order saga already consumes. A declined auth still produces `FAILED` + `PaymentFailed` exactly as before. So **external behaviour is identical; the internal model is now two honest steps and a guarded machine.**
+- No DB migration: `status varchar(16)` already holds `AUTHORIZED` (10 chars). 6 pure-Java `PaymentStateMachineTest` cases prove the illegal transitions throw and the happy path flows; the existing embedded-Kafka tests (capture, card-limit decline, refund, declined-refund, redelivery dedup) still assert the unchanged outward behaviour.
+
+**Why this is interview gold, not refactor theatre.** "My payment-service models the card lifecycle as a guarded state machine with distinct authorize and capture operations — authorize is the issuer funds check where declines happen, capture moves the money — so an out-of-order or replayed saga event can never drive an illegal transition (you can't refund a payment that only authorized, or re-capture a refunded one); it throws instead of silently rewriting a terminal state. Delayed capture is now a one-line change." Every clause of that is true against the code.
+
+Walk 114 lesson: **an invariant enforced by an `if` at the call site is enforced only at *that* call site — move it into the entity and it holds for every caller, forever.** The tell that it was in the wrong place: the refund guard (`if status != CAPTURED`) and the capture decision were both re-deriving "what state is legal next" in business code, while the entity happily exposed a setter that ignored all of it. Pushing the legal graph into `Status.next()` and routing every mutation through one `transitionTo` is what turns "we're careful about transitions" into "illegal transitions are unrepresentable." And the honest scoping — persisting `AUTHORIZED` even though shopflow captures immediately, instead of faking `SETTLED` with no driver — is what keeps the next slice (settlement from reconciliation) real.
+
+## Walk 115: the Grafana RED+saga dashboard — verified clean (Nov 11, 2026)
+
+A dashboard is the perfect place for a silent bug: a panel whose `expr` names a metric the code never registers, or a recording rule that drops the `{{application}}` label, renders as an empty graph or a blank legend — never an error, and `promtool`/CI never load the dashboard JSON. So I checked all 12 panels of `shopflow-red.json` against what the apps actually export and what the rules actually record.
+
+**Verified clean (each a way it could have been silently broken, checked):**
+- **Every raw-metric panel names a metric the code registers** — micrometer lowercases `.`→`_` and suffixes counters with `_total`, so `outbox.unpublished`→`outbox_unpublished` (gauge, OutboxRelay), `orders.stuck.confirmed`→`orders_stuck_confirmed` (gauge, OrderReconciler), `kafka.dead.lettered`→`kafka_dead_lettered_total`, `payments.refund.failed`→`payments_refund_failed_total`, `orders`/`payments`→`orders_total`/`payments_total`. All present; no "No data" panel.
+- **Every recording-rule panel resolves** — `service:http_requests:rate5m`, `service:http_error_ratio:rate5m`, `service:http_latency_p99:5m`, `sli:checkout_error_ratio:rate5m`/`rate1h` all exist in `recording-rules.yml`/`slo-rules.yml` with those exact names.
+- **Legends aren't blank** — panels 1–3 legend on `{{application}}`, and their rules keep it (`sum by (application) (...)`, `histogram_quantile(..., sum by (application, le) ...)`). A `sum()` without `by (application)` would have left every legend empty; it doesn't.
+- **The per-pod gauge uses the right aggregator** — panel 11 is `max(orders_stuck_confirmed)`, not `sum`. Every order-service pod sets that gauge to the same global DB count, so `sum` would report N×(pods) stuck orders; `max` reports the true N. Correct.
+- **Datasource uid matches provisioning** — all panels point at `datasource.uid: "prometheus"`, and `provisioning/datasources/datasources.yml` provisions exactly `uid: prometheus`. A mismatch here would blank the entire board; it lines up.
+- **Units match the data** — p99 in `s` (histogram is in seconds), rates in `reqps`, ratios in `percentunit` against a `0.005` budget line (0.5% = 99.5% SLO). Consistent.
+
+Forward note (not a defect): after Walk 114, `payments_total` now also carries `status="AUTHORIZED"`, so panel 6 ("Payments by status") will grow an AUTHORIZED line for free — which is exactly the auth-vs-capture visibility that increment wanted, no panel change needed.
+
+Walk 115 lesson: **a dashboard's correctness is entirely in the join between its `expr` strings and two things outside the JSON — the metric names the code emits and the label sets the rules preserve — and nothing in CI validates that join.** The only way to trust it is to walk every target back to its registration (does this counter exist? does micrometer spell it `_total`? does the rule keep `application`?). Earning "clean" here meant resolving all 12; promoting the new AUTHORIZED series into a "missing panel" bug would have been manufactured, since the existing by-status panel already renders it.
+
+## Walk 116: the ledger's whole lifecycle state machine was dead code — reconciliation now drives it (Nov 12, 2026)
+
+Hunting the ledger side of increment 4, I grepped for callers of `JournalEntry.transitionTo`. There were **none**. `LedgerService.record()` created every entry as `INITIATED`, and nothing ever moved it — so the entire `INITIATED→AUTHORIZED→CAPTURED→SETTLED→RECONCILED` lifecycle, with its guarded `canTransitionTo` graph and the `@Version` column that exists *specifically* "for the status transitions", was modelled, tested at the enum level, and then never used. Two defects in one: (1) the birth status was wrong — an entry posted from a `PaymentCaptured` event records money that has **already moved**, so `INITIATED` misrepresents it; (2) the lifecycle had no forward driver, so SETTLED/RECONCILED could never happen.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `transitionTo` has zero callers; saga-posted entries are born `INITIATED` and frozen there forever. The money-movement record never reflects capture, settlement, or reconciliation — the status column is a constant. | For a payments/post-trade story this is the core artifact: the ledger is supposed to show where each movement is in its lifecycle (captured → settled T+1/T+2 → reconciled). Frozen at INITIATED, it says nothing — and claiming "I model the trade lifecycle" while the code never leaves the first state is exactly the interview answer that collapses when someone reads the code. | **Reconciliation becomes the real driver** (the only authentic trigger for SETTLED/RECONCILED in the system). Saga entries are now born `CAPTURED` (via a `record(...)` overload; the generic REST path stays `INITIATED`). When `reconcile()` finds a reference that ties out — present on the statement (**settled**) *and* matching the ledger (**reconciled**) — it advances that reference's entries `CAPTURED→SETTLED→RECONCILED`. Mismatched / unmatched references are **not** advanced: they stay `CAPTURED`, flagged by the existing exception buckets + `LedgerReconExceptions` alert, until a human resolves them. New `ledger.recon.reconciled` gauge; 3 recon tests (settle closes a matched ref, a second run is idempotent on the terminal entry, a mismatch is never quietly closed). No schema change (`status varchar(16)`, no CHECK). |
+
+The transaction boundary was the trap to avoid: `reconcile()` is called by `scheduledReconcile()` **in the same bean**, so a `@Transactional` on it would be a self-invocation that bypasses the proxy and runs the settlement writes with no transaction on the scheduled path — the exact Walk 99/106 failure, and it would have looked fine from the direct-call test. So the writes run in an explicit `TransactionTemplate` (proxy-independent: identical on the scheduled and the test path), while the comparison reads and the possibly-remote statement fetch stay outside it so no DB connection is pinned across them.
+
+Walk 116 lesson: **a guarded state machine with no caller is more dangerous than no state machine — it reads as a solved problem.** The enum, the `canTransitionTo` graph, the `@Version` column "for status transitions", the lifecycle javadoc: every signal said "this entry has a lifecycle," and the one fact that mattered — that `transitionTo` was never once invoked — was invisible until you grepped for the caller. The discipline that found it is the same one from Walk 110: don't read the model and nod; verify the model is *driven*. And the fix had to bring its own honest driver (recon match = settled+reconciled) rather than sprinkle transitions wherever — a state only earns its place when a real event moves the entity into it.
+
+## Walk 117: Jenkinsfile vs GitHub Actions — image matrix verified consistent (Nov 12, 2026)
+
+The Jenkinsfile claims to mirror `.github/workflows/shopflow.yml`, and Walks 108/110 proved drift-between-two-definitions-of-the-same-thing is where real bugs hide. The highest-stakes place for drift is the build/push **image matrix**: if one pipeline images a service the other doesn't, a deploy can ship a stale or missing image. So I diffed the service lists.
+
+**Verified clean:**
+- Both matrices are exactly `[order-service, inventory-service, notification-service, payment-service]` (Jenkinsfile line 68 / `shopflow.yml` line 227 + the prod-overlay pin lines). No `ledger-service` in either — correct, because ledger imaging/deploy is increment 5 (still TODO); ledger currently runs only as reactor tests. The absence is consistent, not a gap.
+- The two `when { branch 'main' }` gates (Push images, Pin prod overlay) match the documented six-copies publish-on-main gate (STATE §4), and the comment at line 89–90 already flags them as copies to flip together.
+
+Honest caveat recorded, not inflated into a bug: the header comment says the stages are "identical," but the Jenkinsfile is a deliberately simplified mirror (it omits kyverno/helm-lint/terraform/ansible/k6/promtool-unit-tests that the GHA workflow runs). That is a demonstration file for "many shops still run Jenkins," and "identical in shape" is the fair reading — so it stays a note, not a finding. When increment 5 adds ledger-service to the GHA image matrix, **both** matrices and both prod-overlay pin blocks must gain it together — that is the drift this walk was guarding against.
+
+Walk 117 lesson: **two pipelines for one system are only as trustworthy as their most-divergent line; the matrix is the line that moves money (which image ships), so that is the one to diff first.** Finding them already in sync is the point — and the forward note (add ledger to both at inc 5) is what keeps them from drifting the moment the next service is deployable.
+
+## Walk 118: the Ansible deploy health-gated the OLD version, then restarted into the new one unguarded (Nov 12, 2026)
+
+The Ansible role (`infra/ansible/roles/shopflow`) is the "old-school: compose stack on one VM" path — CI only `ansible-lint`s and `--syntax-check`s it, so a *runtime ordering* bug is invisible to CI. I traced the actual execution order, because Ansible handlers do not run when notified — they run at the END of the play.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| Single play, roles `[docker, shopflow]`. On a code-update run: `Check out the repository` (git, new `repo_version`) → **notifies** `Restart shopflow` (deferred to play-end). `Build images and start the stack` uses `state: started` — a **no-op when the service is already running**, so it does NOT pick up the new code. `Wait for order-service readiness` then polls `:8081/health/readiness` — but the restart has not happened yet, so it validates the **OLD** version. The real restart into the new code runs **last, as the handler, with no readiness check after it.** | The health gate — the whole point of which is to fail a bad deploy — validates the wrong version, and the version actually being shipped is never gated. A new build that crashes on boot passes the play (green) because readiness already succeeded against the old container; the broken restart happens afterward and nothing checks it. Silent broken deploy. | Insert `ansible.builtin.meta: flush_handlers` immediately before the readiness task. It forces the notified `Restart shopflow` to execute THEN — restarting into the new code first — so the readiness gate below validates the version just deployed, and a failed new version trips the `retries/until` gate and fails the play loudly. Idempotent: a no-change run notifies nothing, so the flush is a no-op and readiness checks the running version as before. |
+
+Walk 118 lesson: **in Ansible, "notify" is not "do it now" — it is "do it at the end," and every health check written between a notify and the play's end validates the pre-change state.** The tasks *read* in deploy order (checkout → start → wait), which is exactly what hides the bug: the handler that does the real work is lexically at the bottom of a different file and runs after everything you can see. Whenever a play both notifies a restart and then health-checks, the flush has to sit between them — otherwise the gate is theater. CI's syntax-check can't catch it because the file is valid; only reading the handler-execution model does.
+
+## Walk 119: Helm chart deployment template — DB wiring verified clean (Nov 12, 2026)
+
+Walk 108 found a Helm *values* drift (JWT_AUDIENCE). The chart *template* that renders the DB connection is the next place the same class of bug could hide — only `helm lint` (syntax) runs in CI, never a render-vs-source diff. The sharpest line is `DB_USERNAME: {{ .Values.db.name }}` — the chart sets the DB username to the database name, which is wrong unless that is the actual convention.
+
+**Verified clean (diffed against the source of truth):**
+- **Username == database name is the real convention**, so `DB_USERNAME: {{ .Values.db.name }}` is correct. `k8s/base/*/deployment.yaml` set `DB_USERNAME=orders/inventory/notifications/payments` matching each `DB_URL` db name, and `k8s/base/postgres/init-db.sh` does `CREATE USER orders ... DATABASE orders OWNER orders` (and the same for each) — the user, the database, and the owner are all the service's name. Helm's `db.name` is `orders` (order-service) / `payments` (payment-service), so it renders identical username+dbname. No drift.
+- **The per-service secret key is overridden, not left at the default** — `values.yaml` defaults `db.secretKey: orders-db-password`, and `payment-service.yaml` overrides it to `payments-db-password` (order-service keeps the matching default). So `DB_PASSWORD` pulls each service's own key from the shared `shopflow-db` secret; no service reads another's password.
+- The template is otherwise hardened and correct: the `{{ fail }}` guard forbidding `replicas` + `hpa.enabled` together (Walk 68), `readOnlyRootFilesystem: true` with a writable `/tmp` emptyDir for the JVM, `runAsNonRoot`/seccomp/`drop: [ALL]`, topology spread, a `preStop` drain sleep, and `automountServiceAccountToken: false`.
+
+Walk 119 lesson: **a templated value that looks like a bug (`username = dbname`) is only a bug against the real convention — so the verification is always a diff to the source of truth (the base manifests and the DB bootstrap), never a judgement of the template in isolation.** Here the three places that had to agree — the chart, the Kustomize base, and `init-db.sh` — all encode the same "each service owns a database, a user, and a password named after it," so the chart is right. Confirming that agreement is the whole value of the walk; the template reads suspicious precisely because the convention is compact.
+
+## Walk 120: ledger-service was unrunnable — built and tested, but wired into nothing (Nov 14, 2026)
+
+Fintech increments 1–4b added `ledger-service` as a full Maven module (double-entry posting, idempotent saga consumer, reconciliation lifecycle — Walks 110/114/116) with ~9 test classes. But I had only ever verified its *code*. This walk asked the deployment question: can it actually **run** next to the other services? Grepping the runtime story said no, in five places at once.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `ledger-service` is in none of the runtime wiring: **not in `docker-compose.yml`**, **no `ledger` DB/user in `init-db.sh`**, **not in the CI image matrix** (`.github/workflows/shopflow.yml` + `Jenkinsfile`), and **no `PostgresSchemaValidationTest`** — so its Flyway migrations (`V1__ledger.sql`, `V2__control_accounts.sql`) had only ever been validated against **H2**, never real Postgres. | A service that compiles and passes unit tests but is in no compose file, no image build, and no Postgres schema check is **not deployable** — it exists only in the reactor. The interview claim "I built a ledger service into my payments stack" collapses the moment someone runs `docker compose up` and ledger isn't there. And H2-only schema validation is exactly the gap that ships a `timestamptz`/`numeric` mismatch to production (the reason every *other* service has a PG smoke test). The module's own `LedgerServiceApplicationTests` javadoc literally said the real-Postgres check "is increment 5 (add ledger to the CI postgres-smoke job)" — a TODO left in a comment. | **Wire it into the runtime, mirroring payment-service exactly (no new Dockerfile — the shared root `Dockerfile` is `SERVICE`-parameterised):** (1) `init-db.sh` + compose `postgres` env gain the `ledger` DB/user/password; (2) a `ledger-service` compose block (own DB `ledger`, port **8085**, `<<: *service-defaults`/`*service-env`, readiness healthcheck); (3) `ledger-service` added to the CI image matrix (GHA line 227) and the Jenkinsfile build-matrix + push-loop; (4) `ledger` added to the CI postgres-smoke DB-creation loop; (5) a new `PostgresSchemaValidationTest` + `application-pg.yml` (exact mirror of notification's) so the migrations now validate on **real Postgres** in CI. `docker compose config` validates locally (green). |
+
+Deliberately **not** done here (kept honest, deferred to Walk 121): ledger-service is still **not in `k8s/base`, the overlays, or the Helm values**, so it is buildable/pushable/runnable-in-compose but not yet deployed to the cluster. Per Walk 117's forward note, the moment ledger gains a Deployment in the prod overlay, **both** prod-overlay image-pin blocks (GHA line 358 + Jenkinsfile line 111) must gain it together — that pin is intentionally left untouched now, because pinning an image for a Deployment that does not exist would add a dangling `images:` entry. Splitting the increment this way keeps each commit a coherent, verifiable unit: "it can be built and run" now, "it is deployed to k8s" next.
+
+Verification honesty: the Java (`PostgresSchemaValidationTest`, the javadoc edit) could not be compiled locally — this machine has only JDK 17, and the modules target 21 (`release version 21 not supported`). It is a line-for-line mirror of notification-service's proven test, and the full check runs in CI (the `shopflow` workflow on JDK 21 + the postgres-smoke job, which now creates the `ledger` DB and boots ledger against real Postgres). The compose/YAML changes **were** verified here (`docker compose config -q` passes).
+
+Walk 120 lesson: **"the tests pass" and "it runs in the system" are different claims, and a learning repo quietly conflates them.** Every signal around ledger-service said *done* — nine test classes, a reconciliation state machine, teaching notes — and the one fact that mattered, that no compose file, image build, or Postgres schema check ever referenced it, was invisible until you went looking for the service name in the runtime wiring instead of the source tree. A module in the reactor is a library; a row in a compose file and an image in the matrix is a service. The TODO-in-a-javadoc (`is increment 5`) is the tell: when the code documents its own missing wiring, believe it and go wire it.
+
+## Walk 121: ledger-service promoted to a first-class deployable — k8s, Helm, prod/AWS, Terraform (Nov 14, 2026)
+
+Walk 120 made ledger-service runnable (compose) and built in CI. But it was still absent from the orchestration story: not in `k8s/base`, neither overlay, no Helm values, no NetworkPolicy, no prod/AWS wiring, and not in Terraform's per-service enumerations. "Runs in compose" is not "deployable like the other four services." This walk closes that — mirroring payment-service exactly, so ledger is wired identically everywhere.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `ledger-service` was in none of the cluster/infra wiring: no `k8s/base/ledger-service/` manifests, not in the base kustomization, no NetworkPolicy ingress/egress (and missing from the postgres + kafka ingress allow-lists), no Helm values, no prod RDS/IRSA/MSK patches, no `application-aws.yml` + MSK-IAM dependency, and absent from Terraform's `ecr.tf` / `irsa.tf` / `rds.tf` per-service lists. | A Kafka consumer that posts to the books but has no Deployment, no NetworkPolicy (default-deny would block its DB + Kafka traffic the moment policies are enforced), and no prod identity (IRSA role, RDS database, secret key) cannot actually run alongside the stack it claims to be part of. In prod specifically, a half-wired ledger would point `DB_URL` at the in-cluster Postgres that the prod overlay *deletes* — green manifests, dead service. And Terraform leaving ledger out of ECR/IRSA/RDS means no repo to push to, no IAM to authenticate to MSK, and no database to connect to. | **Full promotion, every surface mirrored on payment-service:** base `ledger-service/` (Deployment 8085, Service, HPA, PDB, kustomization) with env order identical to payment so the prod JSON6902 index-patches line up; base kustomization + postgres statefulset `LEDGER_DB_PASSWORD`; `ledger-service-ingress`/`-egress` NetworkPolicies + ledger added to the postgres & kafka ingress allow-lists; dev overlay (image `:dev` + `ledger-db-password` secret literal); prod overlay (image pin, DB_URL→RDS patch, `ledger-service` SA + `SPRING_PROFILES_ACTIVE=aws`, egress to VPC 5432/9092/9098 + 443 for STS, ExternalSecret `ledger-db-password`, ServiceAccount); Helm `values/ledger-service.yaml`; `application-aws.yml` + the `aws-msk-iam-auth` dependency; both prod-overlay image-pin blocks (GHA + Jenkinsfile) per Walk 117's forward note; Prometheus static target `ledger-service:8085`; Terraform `ecr.tf`/`irsa.tf` (SA + `ledger-service` consumer group ARN)/`rds.tf` (password + secret JSON + comment). |
+
+Capacity re-check (the kind of thing a 5th service quietly breaks — Walk 65): all five services share one Postgres. Worst case = services × HPA-max × pool. Base: 5 × 6 × 5 = 150 < 200 (`max_connections`). Prod: 5 × 10 × 5 = 250 < RDS 300. Still inside the budget — but it is now 250/300, so a sixth service, or raising prod HPA-max past 12, would need a bigger RDS instance or PgBouncer. Recorded so the next person sees the headroom shrinking.
+
+Verification honesty — this walk touches the layers this machine cannot run:
+- **Verified locally:** every touched YAML parses (`yaml.safe_load_all`), and the JSON6902 patch indices were checked against ledger's base env array by hand (env[0]=DB_POOL_SIZE, env[1]=DB_URL — identical to payment, so `replace /env/1`=DB_URL and `add /env/0`=RDS_ENDPOINT are correct). `docker compose config` was green in Walk 120.
+- **CI-gated (could NOT run here — no kustomize/kubeconform/helm/terraform binaries, and the Docker daemon is down so the dockerised versions the CI uses were unavailable):** `kustomize build` of both overlays + kubeconform, kyverno/gatekeeper against prod, `helm lint`/`template` (ledger values now in the CI loop), `terraform fmt`/`validate`, and the Java build (the new `aws-msk-iam-auth` dep + `application-aws.yml`). These ran green for payment-service, which every ledger change mirrors, so the expectation is green — but the push is the real test, and a red leg gets fixed before this is called done.
+- **Genuinely external (same assumption as the other four services):** the RDS `ledger` database/user is created by the one-off job that runs the same SQL as `init-db.sh` (which now creates it), and AWS Secrets Manager's `shopflow/prod/db` JSON gains a `ledger` key (Terraform's `aws_secretsmanager_secret_version.db` now writes it).
+
+Walk 121 lesson: **a service is "deployed" only when every per-service list in the repo contains its name — and those lists are scattered across five languages (kustomize YAML, NetworkPolicy, Helm values, Groovy, HCL).** The way to add one without missing a surface is not to invent it but to grep for an existing peer (`payment-service`) everywhere and mirror each hit; the places payment appears are exactly the places ledger was missing. The connection-budget recheck is the non-mechanical part: mirroring adds the service, but only arithmetic tells you the shared Postgres still fits — and at 250/300 it now barely does.
+
+## Walk 122: the multi-burn-rate SLO was missing its slowest tier — chronic budget drain was invisible (Nov 14, 2026)
+
+`slo-rules.yml`'s own header documents a **three-tier** multi-window multi-burn-rate design (Google SRE ch.5): 14.4×/1h → page, 6×/6h → page, **1×/3d → ticket**. But the file implemented only the two page tiers. The 1×/3d ticket tier was described and not built — a doc-vs-implementation mismatch in the one place it matters most.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| Only `CheckoutSLOBurnRateFast` (1h/14.4×, page) and `CheckoutSLOBurnRateSlow` (6h/6×, page) existed. No `rate3d` recording rule, no 1×/3d ticket alert — though the header lists it as part of the design. | The two page tiers only fire above **3%** error (6×0.005) and **7.2%** (14.4×0.005). A **chronic** error ratio *between the 0.5% budget and 3%* — say a steady 1-2% from one flaky dependency or a partial outage hitting a few % of traffic — trips **neither page**, yet it burns the 30-day budget at 2-4× and exhausts it in 1-2 weeks. That is exactly the failure mode the slowest tier exists to catch (alert *before* the outage, on the slow bleed), and it was the one tier missing. Promtool never caught the gap because you cannot test an alert that does not exist. | Add the tier, completing the design: (1) recording rule `sli:checkout_error_ratio:rate3d` (same SLI numerator/denominator, `[3d]` window); (2) alert `CheckoutSLOBurnRateTicket` — `rate3d > 0.005 AND rate6h > 0.005`, `for: 1h`, **severity: ticket** (not page), short-window partner 6h = 3d/12; (3) two promtool tests — a sustained 1% drain fires the ticket **and** trips neither page tier, and an in-budget 0.4% stays silent; (4) runbook updated with the Ticket tier (chronic-drain triage during working hours) + the README severity column now `page / ticket`. |
+
+Verification honesty: the three monitoring YAML files parse locally; the promtool unit test was reasoned through by hand (ratio = 1/100 = 0.01 > 0.005 for both windows at `eval_time: 73h`, so the `and` holds and `for: 1h` is long satisfied; the 0.4% case gives 0.004 < 0.005 → silent) but **could not be run here** — no local promtool and the Docker daemon is down, so CI's promtool-unit-tests job (prom/prometheus) is the gate. The exact-string `exp_annotations.summary` was copied verbatim from the alert to avoid the classic promtool mismatch.
+
+Walk 122 lesson: **a comment that describes a design is a claim, and the alert that is only in the comment is the one whose absence no test can detect.** The two page tiers looked complete — they cover the dramatic failures everyone pictures — but SLOs exist precisely to catch the *undramatic* drain that never pages, and that is the tier someone stopped before building. Reading the file's own stated design against what it implements is the whole technique here; the gap was written down, waiting, in line 5 of its own header.
+
+## Walk 123: I added the ledger everywhere EXCEPT the one place that protects it — the nightly backup (Nov 14, 2026)
+
+Immediately after Walks 120–121 wired `ledger-service` into every deploy/infra surface, I swept the postgres backup path (RPO/RTO). The nightly `pg_dump` CronJob loops `for db in orders inventory notifications payments` — and I had just added a fifth database, `ledger`, to compose, init-db, k8s, prod RDS and Terraform, but **not to this loop**.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `k8s/base/postgres/backup-cronjob.yaml` dumps four databases; `ledger` (added in Walks 120–121) is not in the loop. Its file header even claims "logical backup of **every** database." | The ledger is the **book of record** — the immutable double-entry journal that says where every rupee moved. Of all five databases it is the *most* backup-critical, and it was the *only* one with no nightly dump. A dev-cluster Postgres loss would take the entire financial history with it, unrecoverable, while the four operational DBs restored fine — the worst possible asymmetry. (Prod is safe: RDS PITR covers all DBs and the prod overlay deletes this CronJob; the gap is the dev/in-cluster path.) | Add `ledger` to the dump loop (now `orders inventory notifications payments ledger`), making the header's "every database" true again. Restore runbook updated: the cronjob dumps all five, and `ledger` is called out as restore-first in a full recovery. No PVC change (2Gi holds five small logical dumps × 7 days); the `postgres-backup-egress` policy + `postgres-ingress` allow-list already permit the dump (same instance, 5432). |
+
+Walk 123 lesson: **the "grep every per-service list and mirror the peer" discipline from Walk 121 had one more list than I grepped — and it was the backup.** I checked compose, init-db, kustomize, overlays, Helm, NetworkPolicies, CI, Terraform — the *deploy* surfaces — and missed the one *data-protection* surface, because it loops over database names inline in a shell script rather than appearing as a `ledger-service` token the way the others did. The lists that protect data (backups, retention, DR) are the ones whose omissions stay invisible until the day they are catastrophic, so they deserve the *first* grep when adding a stateful component, not the last. A service you added but did not back up is a liability you added, not a feature.
+
+---
+
+> **Merge note (Nov 19, 2026):** Walks 124-130 below come from a parallel CLI self-walk line (built comprehension 25-31 + drills, originally numbered Walks 36-42 against an older base) merged into this 123-walk log. Drill numbers were rebased to D17-D21 (origin keeps D16 = phantom-stock).
+
+## Walk 124: audit the newest fast-built docs + make them discoverable (Nov 4, 2026)
 
 Scope: self-improve pass over the same-day additions — `ARCHITECTURE.md`, `RAPID-REVISION.md`, and comprehension **21–24** (External Secrets, Cognito, MSK, NetworkPolicies), all written fast and grounded-while-building. Verify, then improve.
 
@@ -637,7 +1573,7 @@ Walk 36 lesson: **a summary doc goes stale the moment you add a topic it doesn't
 ### Honest status (Walks 22–36)
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–24**; debugging **D01–D15** (each with Reproduce/test); + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All claims verified against source; links clean (0 broken across all docs). Walks 22–35 + drills pushed; the newest batch (ARCHITECTURE/RAPID/21–24 + this record) committed **locally** (push pending Abhishek's word).
 
-## Walk 37: capstone sync + topic 26 (scaling-100x) — the throughput capstone (Nov 4, 2026)
+## Walk 125: capstone sync + topic 26 (scaling-100x) — the throughput capstone (Nov 4, 2026)
 
 Scope: self-decided. After building topic 25 (correctness capstone), the natural pair was missing — **correctness ≠ throughput**. A Google-architect comprehension round asks *both* "is it correct?" and "where does it break at scale?". Topic 25 answered the first; nothing answered the second. So: (a) finish wiring 25 into the aggregators, (b) build 26 as the scaling capstone, grounded in the repo's **real** limits.
 
@@ -661,17 +1597,17 @@ Walk 37 lesson: **a correctness capstone needs a throughput capstone beside it**
 ### Honest status (Walks 22–37)
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–26** (25 = correctness capstone, 26 = scaling capstone); debugging **D01–D15**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims verified against source; links clean. Committed **locally** (push pending Abhishek's word).
 
-## Walk 38: debugging twin for topic 26 — D16 (connection exhaustion) (Nov 4, 2026)
+## Walk 126: debugging twin for topic 26 — D17 (connection exhaustion) (Nov 4, 2026)
 
 Scope: self-decided. Topic 26 (scaling) teaches the *mechanism*; the "real-time debugging" half of the goal needs a **live symptom** to diagnose. The debugging README itself had listed "Postgres connection-pool exhaustion" as a planned drill — built it.
 
-**D16 — "You scaled pods to fix load, now payment-service throws connection errors."** Operator bumps order-service HPA 6→60; at 50x, order-service 500s **and** untouched payment-service logs `too many clients already`, orders stuck CONFIRMED, yet pods sit at **30% CPU**. Root cause: 60 pods × `DB_POOL_SIZE 5` = 300 conns past the **shared Postgres `max_connections`** → cross-service starvation. Deliberately distinct from **D03** (D03 = organic surge saturates *one* service's pool → slow-not-broken; D16 = operator action → *shared* instance ceiling → refused *across* services, CPU idle). Fix: scale back now; PgBouncer (txn-pooling) + read replicas (decouple pods from conns) = component, not a knob. Includes a laptop Reproduce block (`max_connections=20` + `pg_stat_activity`). Fix-path marked architect-proposal (not in repo).
+**D17 — "You scaled pods to fix load, now payment-service throws connection errors."** Operator bumps order-service HPA 6→60; at 50x, order-service 500s **and** untouched payment-service logs `too many clients already`, orders stuck CONFIRMED, yet pods sit at **30% CPU**. Root cause: 60 pods × `DB_POOL_SIZE 5` = 300 conns past the **shared Postgres `max_connections`** → cross-service starvation. Deliberately distinct from **D03** (D03 = organic surge saturates *one* service's pool → slow-not-broken; D17 = operator action → *shared* instance ceiling → refused *across* services, CPU idle). Fix: scale back now; PgBouncer (txn-pooling) + read replicas (decouple pods from conns) = component, not a knob. Includes a laptop Reproduce block (`max_connections=20` + `pg_stat_activity`). Fix-path marked architect-proposal (not in repo).
 
-Indexed: debugging `README.md` (row D16 + status D01–D16), comprehension `README.md` pairing (26↔D16), `RAPID-REVISION.md` symptom table (D16 row), `STATE.md` + `INDEX.md` (D01–D16). Link check clean.
+Indexed: debugging `README.md` (row D17 + status D01–D17), comprehension `README.md` pairing (26↔D17), `RAPID-REVISION.md` symptom table (D17 row), `STATE.md` + `INDEX.md` (D01–D17). Link check clean.
 
-Walk 38 lesson: **every architect-level mechanism topic earns a debugging twin** — "know how it scales" (comp 26) and "recognize it failing at 2am" (D16) are different skills, and the strongest drill is the one where the *operator's own fix* (add pods) is the cause. Pattern reinforced: a service you didn't touch failing → hunt the **shared resource**, and CPU is a liar when the limit is a connection/lock.
+Walk 38 lesson: **every architect-level mechanism topic earns a debugging twin** — "know how it scales" (comp 26) and "recognize it failing at 2am" (D17) are different skills, and the strongest drill is the one where the *operator's own fix* (add pods) is the cause. Pattern reinforced: a service you didn't touch failing → hunt the **shared resource**, and CPU is a liar when the limit is a connection/lock.
 
-## Walk 39: observability capstone (27) + concurrency-control (28) (Nov 4, 2026)
+## Walk 127: observability capstone (27) + concurrency-control (28) (Nov 4, 2026)
 
 **Topic 27 — observability SLI/incident-model** (3rd architect capstone; trilogy 25 correctness / 26 scale / 27 observability). The checkout SLI is availability+latency in one number: `bad = 5xx + (2xx − 2xx@le=1.0)` over `2xx+5xx` (4xx excluded), multi-window multi-burn (1h+5m > 14.4×0.005 → page). Verified against `monitoring/{recording-rules,slo-rules,alert-rules,tests}.yml` — `alerts_test.yml` case 7 (slow 429s, NO 5xx → **no page**) directly proves the 4xx-excluded claim; case 5/6 prove the fast-burn/latency thresholds. Adds metric→trace→log incident-reasoning + monitor-the-monitor (le=1.0 bucket must exist, the topic-06 bug).
 
@@ -679,24 +1615,24 @@ Walk 38 lesson: **every architect-level mechanism topic earns a debugging twin**
 - **No-lock atomic conditional UPDATE** — `inventory/ProductRepository.decrementStock` (`@Modifying`, `where quantity>=:qty`, rows-affected signal, `clearAutomatically/flushAutomatically`).
 - **Optimistic `@Version`** — `Order.java:58`; Hibernate `UPDATE ... WHERE version=?`; loser → `OptimisticLockException` → 409 (`GlobalExceptionHandler`).
 - **Pessimistic `FOR UPDATE SKIP LOCKED`** — `shopflow-outbox/OutboxRepository.findUnpublished` (`@Lock(PESSIMISTIC_WRITE)` + `jakarta.persistence.lock.timeout=-2`).
-Core teaching: a **JPA↔DB translation table** (annotation → actual SQL → lock → fail mode), a **contention-profile decision tree** (rare→optimistic/retry-storm, hot-row-short→pessimistic/convoy-deadlock, 1-col→atomic), **isolation levels** (READ COMMITTED default → 2-statement lost-update; SERIALIZABLE/SSI for write-skew; MVCC snapshot for big reads not `FOR UPDATE`), and a **per-API case table**. `[NEW]` cases (wallet debit, transfer deadlock + lock-ordering, reporting isolation) explicitly marked reasoned-not-in-repo. The E-question ties back to D16/topic-04: **holding a lock across a remote call = pool-starvation outage** (data correct, resource wrong).
+Core teaching: a **JPA↔DB translation table** (annotation → actual SQL → lock → fail mode), a **contention-profile decision tree** (rare→optimistic/retry-storm, hot-row-short→pessimistic/convoy-deadlock, 1-col→atomic), **isolation levels** (READ COMMITTED default → 2-statement lost-update; SERIALIZABLE/SSI for write-skew; MVCC snapshot for big reads not `FOR UPDATE`), and a **per-API case table**. `[NEW]` cases (wallet debit, transfer deadlock + lock-ordering, reporting isolation) explicitly marked reasoned-not-in-repo. The E-question ties back to D17/topic-04: **holding a lock across a remote call = pool-starvation outage** (data correct, resource wrong).
 
 Indexed 27+28 everywhere (comprehension README trilogy+28 row, RAPID-REVISION rows 27/28, INDEX 01..28, STATE). Pairings 27↔D03/D05. Link checks clean.
 
 Walk 39 lesson: topic 28 is the one where **ShopFlow already demonstrates all three lock families** — so it teaches by pointing at real code (`@Version` / atomic `UPDATE` / `FOR UPDATE SKIP LOCKED`) and only *reasons* the gaps (wallet/transfer/SERIALIZABLE). The honesty discipline matters most here: the three are real, the `[NEW]` four are labelled — exactly the "in my project X does Y" vs "I'd design Z" split an interview rewards.
 
 ### Honest status (Walks 22–39)
-- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–28** (25/26/27 capstone trilogy, 28 concurrency); debugging **D01–D16**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims source-verified; links clean. Committed **locally**, push pending Abhishek's word.
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–28** (25/26/27 capstone trilogy, 28 concurrency); debugging **D01–D17**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims source-verified; links clean. Committed **locally**, push pending Abhishek's word.
 
-## Walk 40: D17 — the concurrency debugging twin (Nov 4, 2026)
+## Walk 128: D18 — the concurrency debugging twin (Nov 4, 2026)
 
-Topic 28 teaches the three lock families; D17 is its **live** twin (as D16 is to 26). **D17 — "after a 'make it safe' change, the flash sale throws a storm of 409s":** someone replaces the atomic stock `UPDATE` with load-modify-save guarded by `@Version`; under 300-buyers/3-units the hot row sees a flood of `OptimisticLockingFailureException` — **correct data, collapsed throughput** (O(crowd) read-compute-fail-retry per sold unit, high DB CPU, low goodput). Distinct from D06 (that = *oversold* from too-little control; D17 = *thrash* from the **wrong** control). Fix: restore the atomic conditional `UPDATE` (check inside the write, µs row lock, rows-affected-0 = clean sold-out, no exception). Teaches topic 28's thesis live: **the contention profile, not the table, picks the concurrency control** — and `@Version` (rare admin edit) + atomic `UPDATE` (hot reserve) can coexist on one row.
+Topic 28 teaches the three lock families; D18 is its **live** twin (as D17 is to 26). **D18 — "after a 'make it safe' change, the flash sale throws a storm of 409s":** someone replaces the atomic stock `UPDATE` with load-modify-save guarded by `@Version`; under 300-buyers/3-units the hot row sees a flood of `OptimisticLockingFailureException` — **correct data, collapsed throughput** (O(crowd) read-compute-fail-retry per sold unit, high DB CPU, low goodput). Distinct from D06 (that = *oversold* from too-little control; D18 = *thrash* from the **wrong** control). Fix: restore the atomic conditional `UPDATE` (check inside the write, µs row lock, rows-affected-0 = clean sold-out, no exception). Teaches topic 28's thesis live: **the contention profile, not the table, picks the concurrency control** — and `@Version` (rare admin edit) + atomic `UPDATE` (hot reserve) can coexist on one row.
 
-Indexed: debugging README (row D17 + status D01–D17 + pairing note), comprehension README (28↔D17/D06), RAPID-REVISION symptom table, INDEX (D01..D17), STATE (D01–D17). Reproduce block uses the real 20-parallel-reserve burst (3×201/17×409, zero optimistic-lock errors on the shipped design). Links clean.
+Indexed: debugging README (row D18 + status D01–D18 + pairing note), comprehension README (28↔D18/D06), RAPID-REVISION symptom table, INDEX (D01..D18), STATE (D01–D18). Reproduce block uses the real 20-parallel-reserve burst (3×201/17×409, zero optimistic-lock errors on the shipped design). Links clean.
 
 Walk 40 lesson: the most memorable concurrency drill is the one where a **plausible "hardening" PR de-scales the system** — "correct but thrashing" is a distinct signal from "wrong data," and recognizing a flood of optimistic-lock failures on one hot row as *wrong-tool-for-contention* is the skill. Pairs the whole 28 theory to a 2am symptom.
 
-## Walk 41: silent-data-bug + replication/topology cluster (29, 30, D18, D19) (Nov 4, 2026)
+## Walk 129: silent-data-bug + replication/topology cluster (29, 30, D19, D20) (Nov 4, 2026)
 
 Scope: Abhishek's ask — (a) prod scenarios where data silently goes wrong / can't be debugged even in prod (JPA/index/lock), (b) replication strategies at DB level, multi-microservice DB updates, multi-instance same-DB/diff-DB issues. Built two topics + two drills, grounded in what ShopFlow does **right** (so the trap is "if you didn't").
 
@@ -711,16 +1647,16 @@ Source audit first (honest grounding):
 
 **Topic 30 — replication / DB-per-service / multi-instance:** data boundary = failure mode. DB-per-service → no cross-service txn/JOIN → outbox/saga (the data-side *why* of 01/25); many-pods-one-DB → concurrency at DB + connection ceiling (28/26); replication strategies — **sync standby (Multi-AZ, HA/zero-loss, not for reads)** vs **async replica (read-scale, lag→read-your-writes)** vs **logical/CDC (Debezium)** vs **multi-primary (conflict/split-brain)**; sync-vs-async = the Kafka minISR dial (23) / CAP (25). Match mode to data (payments sync, counter async); idempotency = replay-safe, not conflict-resolution.
 
-**D18 — stale read-your-writes** (replica lag): "placed order, list empty, ~1-3%, staging clean, no error" → async replica behind; fix = primary-pin / LSN-wait, not a sleep. The archetypal undiagnosable-in-prod Heisenbug (needs replica + sub-second race, which single-node staging structurally can't show). **D19 — index cliff**: 2ms staging / 4s prod / same SQL → Seq Scan from missing-or-defeated index; `EXPLAIN (ANALYZE, BUFFERS)` is the one command; index-present-but-unused traps (implicit cast, function, composite leading column, stale stats, low selectivity).
+**D19 — stale read-your-writes** (replica lag): "placed order, list empty, ~1-3%, staging clean, no error" → async replica behind; fix = primary-pin / LSN-wait, not a sleep. The archetypal undiagnosable-in-prod Heisenbug (needs replica + sub-second race, which single-node staging structurally can't show). **D20 — index cliff**: 2ms staging / 4s prod / same SQL → Seq Scan from missing-or-defeated index; `EXPLAIN (ANALYZE, BUFFERS)` is the one command; index-present-but-unused traps (implicit cast, function, composite leading column, stale stats, low selectivity).
 
-Indexed 29/30 + D18/D19 everywhere (comprehension README rows+pairings, debugging README rows+status D01–D19, RAPID-REVISION §1 rows + §2 symptom rows, INDEX 01..30/D01..D19, STATE). All link checks clean.
+Indexed 29/30 + D19/D20 everywhere (comprehension README rows+pairings, debugging README rows+status D01–D20, RAPID-REVISION §1 rows + §2 symptom rows, INDEX 01..30/D01..D20, STATE). All link checks clean.
 
 Walk 41 lesson: the "tagde" prod bugs are the **no-exception** ones, and teaching them demands pairing a *mechanism* topic with a *detection* drill — the fix is often one line, but the skill is **how you'd even see it** (primary re-read, EXPLAIN, node-tagged traces, lag gauges). Honesty mattered doubly here: ShopFlow's data layer is well-built, so most bugs are `[TRAP]`/`[NEW]` "if you didn't" — clearly labelled against the three it genuinely guards (`@Version`, `STRING`, `TransactionTemplate`, real indexes).
 
 ### Honest status (Walks 22–41)
-- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–30** (25/26/27 capstone trilogy; 28 concurrency; 29 silent-data; 30 replication/topology); debugging **D01–D19**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims source-verified; links clean. Committed **locally**, push pending Abhishek's word.
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–30** (25/26/27 capstone trilogy; 28 concurrency; 29 silent-data; 30 replication/topology); debugging **D01–D20**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims source-verified; links clean. Committed **locally**, push pending Abhishek's word.
 
-## Walk 42: two-row deadlock drill (D20) + JPA-at-scale (31) (Nov 4, 2026)
+## Walk 130: two-row deadlock drill (D21) + JPA-at-scale (31) (Nov 4, 2026)
 
 Self-walk continuation of the data/concurrency thread. Source audit first:
 - **No entity relationships** anywhere (`grep @OneToMany/@ManyToOne` = none) — `Order` is flat (`sku`/`quantity` columns) → **N+1 is structurally absent** (a design choice, not luck).
@@ -728,13 +1664,13 @@ Self-walk continuation of the data/concurrency thread. Source audit first:
 - List pagination is **OFFSET `Page`**: `OrderController` `PageRequest.of(page, size, Sort DESC createdAt)` + `OrderRepository.findByCustomerId(... Pageable)` → the deep-page cliff the HLD §5 already flags for 50M orders (keyset is the fix).
 - `ProductController.findAll()` unbounded (fine for small catalog, trap if it grows).
 
-**D20 — two-row deadlock:** random `deadlock detected` only under load, unreproducible single-threaded. Mirror-image transactions (A→B vs B→A) lock two rows in **opposite order** → cycle; Postgres aborts one. Primary fix = **consistent global lock order** (min id first, cycle impossible); secondary = **retry on deadlock**; anti-fix = a table/global lock (removes deadlock, creates a serialization convoy). Reproduce block uses two psql sessions on `product` rows. `[NEW]` transfer scenario (ShopFlow has none) — lock-ordering lesson applies to any multi-row write.
+**D21 — two-row deadlock:** random `deadlock detected` only under load, unreproducible single-threaded. Mirror-image transactions (A→B vs B→A) lock two rows in **opposite order** → cycle; Postgres aborts one. Primary fix = **consistent global lock order** (min id first, cycle impossible); secondary = **retry on deadlock**; anti-fix = a table/global lock (removes deadlock, creates a serialization convoy). Reproduce block uses two psql sessions on `product` rows. `[NEW]` transfer scenario (ShopFlow has none) — lock-ordering lesson applies to any multi-row write.
 
-**Topic 31 — JPA/Hibernate at scale:** the ORM traps that bite only in prod — **OSIV** (ShopFlow off; links to D16 pool), **N+1** (flat entities → none; `[TRAP]` if you add a lazy collection), **OFFSET-vs-keyset** (real current limitation; OFFSET scans+discards + `count(*)`, keyset seeks via `idx_orders_customer_created`), **unbounded `findAll`** (whale-customer OOM via data skew), **first-level cache in big loops** (relay is bounded-100 + `clear/flush`). Thesis: **see the generated SQL** — Java reads innocent while SQL does O(n); N+1's signature is "query-count ∝ rows."
+**Topic 31 — JPA/Hibernate at scale:** the ORM traps that bite only in prod — **OSIV** (ShopFlow off; links to D17 pool), **N+1** (flat entities → none; `[TRAP]` if you add a lazy collection), **OFFSET-vs-keyset** (real current limitation; OFFSET scans+discards + `count(*)`, keyset seeks via `idx_orders_customer_created`), **unbounded `findAll`** (whale-customer OOM via data skew), **first-level cache in big loops** (relay is bounded-100 + `clear/flush`). Thesis: **see the generated SQL** — Java reads innocent while SQL does O(n); N+1's signature is "query-count ∝ rows."
 
-Indexed 31 + D20 everywhere (comprehension README row+pairings, debugging README row+status D01–D20, RAPID-REVISION §1 row 31 + §2 D20, INDEX 01..31/D01..D20, STATE). Fixed a botched sed on STATE's topic-30 description (restored + appended 31). Link checks clean.
+Indexed 31 + D21 everywhere (comprehension README row+pairings, debugging README row+status D01–D21, RAPID-REVISION §1 row 31 + §2 D21, INDEX 01..31/D01..D21, STATE). Fixed a botched sed on STATE's topic-30 description (restored + appended 31). Link checks clean.
 
 Walk 42 lesson: ShopFlow's data layer is a *positive* teaching asset — OSIV-off, flat entities, bounded relay are the "done right" baseline, and the one genuine limitation (OFFSET pagination) is stated honestly against the HLD's own keyset recommendation. Deadlocks and N+1 are the two canonical "load-only, unreproducible, no-corruption" prod bugs — both diagnosed by their *shape* (timing-dependence; query-count ∝ rows), not by an error message.
 
 ### Honest status (Walks 22–42)
-- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–31** (25/26/27 capstones; 28 concurrency; 29 silent-data; 30 replication; 31 JPA-scale); debugging **D01–D20**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims source-verified; links clean. Committed **locally**, push pending Abhishek's word.
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–31** (25/26/27 capstones; 28 concurrency; 29 silent-data; 30 replication; 31 JPA-scale); debugging **D01–D21**; + `ARCHITECTURE.md`, `RAPID-REVISION.md`. All new claims source-verified; links clean. Committed **locally**, push pending Abhishek's word.

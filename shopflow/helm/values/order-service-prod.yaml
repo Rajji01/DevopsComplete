@@ -10,3 +10,34 @@ db:
 hpa:
   minReplicas: 3
   maxReplicas: 10
+# Helm REPLACES list values across -f files (it does not merge list items), so this prod env must
+# repeat the base entries from order-service.yaml, not just the delta — otherwise it would wipe
+# INVENTORY_URL/KAFKA/JWT_ISSUER_URI/OTLP. The reason it is here at all (Walk 108): prod must PIN
+# the JWT audience. order-service validates the audience only when JWT_AUDIENCE is non-empty
+# (JwtDecoderConfig); dev deliberately leaves it blank (issuer-only), but in prod a blank audience
+# means a token minted for ANY client of the Cognito pool passes (Walk 73). The Kustomize prod
+# overlay already injects JWT_AUDIENCE; the Helm path was missing it — a security drift between the
+# two deploy systems, closed here.
+env:
+  - name: INVENTORY_URL
+    value: http://inventory-service:8082
+  - name: KAFKA_BOOTSTRAP_SERVERS
+    valueFrom:
+      configMapKeyRef:
+        name: shopflow-endpoints
+        key: kafka-bootstrap-servers
+  - name: JWT_ISSUER_URI
+    valueFrom:
+      configMapKeyRef:
+        name: shopflow-endpoints
+        key: jwt-issuer-uri
+  - name: OTLP_ENDPOINT
+    valueFrom:
+      configMapKeyRef:
+        name: shopflow-endpoints
+        key: otlp-endpoint
+  - name: JWT_AUDIENCE          # prod pins the audience; dev leaves it blank (issuer-only) on purpose
+    valueFrom:
+      configMapKeyRef:
+        name: shopflow-endpoints
+        key: jwt-audience

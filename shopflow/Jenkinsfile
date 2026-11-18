@@ -48,8 +48,9 @@ pipeline {
             steps {
                 dir('shopflow') {
                     sh '''
-                      curl -sSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE}/kustomize_${KUSTOMIZE}_linux_amd64.tar.gz | tar xz
-                      curl -sSL https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM}/kubeconform-linux-amd64.tar.gz | tar xz
+                      curl -fsSL --retry 3 --retry-delay 5 -o kustomize.tar.gz https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE}/kustomize_${KUSTOMIZE}_linux_amd64.tar.gz
+                      curl -fsSL --retry 3 --retry-delay 5 -o kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM}/kubeconform-linux-amd64.tar.gz
+                      tar xzf kustomize.tar.gz && tar xzf kubeconform.tar.gz
                       for overlay in k8s/overlays/*/; do
                         ./kustomize build "$overlay" | ./kubeconform -strict -summary -ignore-missing-schemas -
                       done
@@ -64,7 +65,7 @@ pipeline {
                 axes {
                     axis {
                         name 'SERVICE'
-                        values 'order-service', 'inventory-service', 'notification-service', 'payment-service'
+                        values 'order-service', 'inventory-service', 'notification-service', 'payment-service', 'ledger-service'
                     }
                 }
                 stages {
@@ -85,12 +86,14 @@ pipeline {
         }
 
         stage('Push images') {
+            // NOTE (Walk 67): 'main' does not exist (master is canonical) — this gate is one of the
+            // six copies of the publish-on-main decision (STATE §4 / Walk 50); flip them together.
             when { branch 'main' }
             steps {
                 withCredentials([usernamePassword(credentialsId: 'ghcr', usernameVariable: 'USER', passwordVariable: 'TOKEN')]) {
                     sh '''
                       echo "$TOKEN" | docker login ghcr.io -u "$USER" --password-stdin
-                      for s in order-service inventory-service notification-service payment-service; do
+                      for s in order-service inventory-service notification-service payment-service ledger-service; do
                         docker push ${REGISTRY}/shopflow-$s:${IMAGE_TAG}
                       done
                     '''
@@ -108,7 +111,8 @@ pipeline {
                             shopflow/order-service=${REGISTRY}/shopflow-order-service:${IMAGE_TAG} \
                             shopflow/inventory-service=${REGISTRY}/shopflow-inventory-service:${IMAGE_TAG} \
                             shopflow/notification-service=${REGISTRY}/shopflow-notification-service:${IMAGE_TAG} \
-                            shopflow/payment-service=${REGISTRY}/shopflow-payment-service:${IMAGE_TAG}
+                            shopflow/payment-service=${REGISTRY}/shopflow-payment-service:${IMAGE_TAG} \
+                            shopflow/ledger-service=${REGISTRY}/shopflow-ledger-service:${IMAGE_TAG}
                           git config user.name jenkins && git config user.email jenkins@example.com
                           git commit -am "deploy(prod): pin images to ${IMAGE_TAG:0:7}" && git push origin HEAD:main
                         '''

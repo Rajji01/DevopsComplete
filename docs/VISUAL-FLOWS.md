@@ -18,6 +18,9 @@
 11. [Observability → alert → runbook](#11-observability)
 12. [Deploy — Kustomize / Helm / Rollouts + probes](#12-deploy)
 13. [CI/CD — commit se prod tak](#13-cicd)
+14. [JPA `save()` — persist vs merge (chhupa SELECT)](#14-save-persist-merge)
+15. [Poison pill → DLT → alert → replay](#15-poison-pill-dlt)
+16. [Zero-trust network map (NetworkPolicies)](#16-zero-trust-network)
 
 ---
 
@@ -240,7 +243,7 @@ inventory-service slow/down ho to order-service ko bachao.
 ```mermaid
 flowchart TB
     CALL[InventoryClient.reserve] --> RETRY{Retry<br/>transient? 5xx/timeout}
-    RETRY -->|haan, 3x backoff| CALL
+    RETRY -->|haan, 3x backoff+jitter| CALL
     RETRY --> CB{CircuitBreaker}
     CB -->|closed| OK[call jao]
     CB -->|open 10s| FAST[fail fast → FAILED/503]
@@ -249,7 +252,7 @@ flowchart TB
 
 **Kya:** har call `Retry(CircuitBreaker(call))`.
 **Kyu:** transient error pe retry; par agar inventory sach mein down hai to **breaker open** → fail fast (threads pile up nahi hote, cascading failure ruka).
-**Kaise:** breaker: last 10 calls mein 50% fail → open 10s → half-open 2 test. Retry sirf `ResourceAccessException`/`HttpServerErrorException` pe (business 409/404 pe nahi). Breaker open → `InventoryCircuitOpen` alert.
+**Kaise:** breaker: last 10 calls mein 50% fail → open 10s → half-open 2 test. Retry sirf `ResourceAccessException`/`HttpServerErrorException` pe (business 409/404 pe nahi), backoff 200ms→400ms **+ jitter ±50%** (pods lockstep mein retry na karein). Breaker open → `InventoryCircuitOpen` alert.
 **Code kahan:** `InventoryClient.java` + `application.yml` `resilience4j:`.
 **Related:** timeout (connect 1s/read 2s), bulkhead, [#11 alerts](#11-observability).
 
@@ -364,6 +367,167 @@ flowchart LR
 **Kaise:** `.github/workflows/shopflow.yml` (master+main pe gating; push/sign/deploy sirf main-gated). Jenkins + Argo CD alternatives.
 **Code kahan:** `.github/workflows/shopflow.yml`, `shopflow/Jenkinsfile`, `shopflow/argocd/`.
 **Related:** GitOps, keyless signing (OIDC), [#11 observability](#11-observability) (deploy ke baad watch).
+
+---
+
+## 14. JPA `save()` — persist vs merge (chhupa SELECT) <a id="14-save-persist-merge"></a>
+
+**Decision Spring Data har `save()` pe leta hai** (`SimpleJpaRepository.save`):
+
+```
+                    repo.save(entity)
+                          │
+                 entityInformation.isNew(entity)?
+                          │
+            ┌─────────────┴──────────────┐
+          TRUE                          FALSE
+            │                             │
+      em.persist(e)                 em.merge(e)
+            │                             │
+      ┌─────────┐              ┌──────────────────────┐
+      │ INSERT  │              │ SELECT ... WHERE id=? │  ← round-trip
+      └─────────┘              │   mila?  → UPDATE     │
+     1 query                   │   nahi? → INSERT      │
+                               └──────────────────────┘
+                                   2 queries
+```
+
+**Default `isNew()` kaise sochta hai** (no custom):
+```
+   @Version field hai?  ──yes──►  version == null  → NEW
+          │ no
+   @Id null hai?        ──yes──►  NEW      (persist → INSERT)
+          │ no (id set hai)
+          └──────────────────►  "purana"  (merge → SELECT+...)
+```
+
+**Humara trap:** `eventId` / UUID hum **khud** set karte hain → id kabhi null nahi → default bolta hai "purana" → **merge → bekaar SELECT**, har Kafka message pe, consumer txn ke andar.
+
+**Fix — `Persistable` se khud bata do insert-only hai:**
+```
+  class Payment implements Persistable<UUID> {
+      getId()  → eventId
+      isNew()  → true        // ye table sirf INSERT hoti hai
+  }
+            │
+            ▼
+      isNew()==true  →  persist()  →  pure INSERT   (SELECT gaya)
+```
+
+**Kaun-kaun (humare 7 entities):**
+```
+  assigned @Id (hum dete)        generated @Id (DB deta, IDENTITY)
+  ────────────────────────       ─────────────────────────────────
+  OutboxEvent      (W21) ✅       Product      → default sahi (id null→persist)
+  ProcessedEvent×2 (W38) ✅       Reservation  → default sahi
+  Payment          (W38) ✅       Order        → @Version + sach-much UPDATE
+                                                 hoti → merge SAHI hai, rehne do
+  → in sabko Persistable
+```
+
+**Kya:** assigned id + insert-only entity pe `Persistable isNew()==true` → `save()` = plain INSERT, merge ka SELECT nahi.
+**Kyu:** wo SELECT round-trip saga ke hot path pe bekaar hai; row hum jaante hain nayi hai.
+**Safe kyu:** ye rows `save()` se kabhi update nahi hoti (Payment refund `markRefunded()` dirty-check se, `save()` nahi); idempotency guard **PK** hai (duplicate eventId INSERT pe fail), merge ke SELECT pe kabhi depend nahi tha.
+**Jaal (interview):** "`isNew(){return true}` jhooth hai na?" — nahi, kyunki insert-only; agar kabhi update-via-save aaya to `isNew` ko `createdAt==null` banana padega.
+**Code kahan:** `shopflow-outbox/.../OutboxEvent.java`, `*/ProcessedEvent.java`, `payment-service/.../Payment.java`.
+**Related:** [#7 idempotency](#7-idempotency) (PK hi guard), [#5 outbox](#5-outbox) (OutboxEvent wahi pattern), `SELF-WALK.md` Walk 21 + 38.
+
+---
+
+## 15. Poison pill → DLT → alert → replay <a id="15-poison-pill-dlt"></a>
+
+Ek kharab message poori partition na roke, aur DLT pe jaake **chup bhi na ho jaaye**.
+
+```mermaid
+flowchart TB
+    M[record aata hai] --> L[listener process kare]
+    L -->|fail| R{retry with backoff<br/>500ms ×2, max ~10s}
+    R -->|phir bhi fail| D[DeadLetterPublishingRecoverer<br/>→ topic.DLT + exception headers]
+    D -->|publish OK| C[counter kafka.dead.lettered++]
+    C --> A[KafkaMessageDeadLettered alert<br/>ticket, by application]
+    A --> H[insaan: runbook<br/>inspect → fix → REPLAY]
+    H -->|same key se wapis original topic pe| M
+    R -->|success| OK[offset commit, aage badho]
+    D -. partition turant free .-> M2[agla record chalta rahta hai]
+```
+
+**Kya:** fail hota record backoff se retry hota hai; nahi sudhra to `.DLT` pe park + **counter** + **ticket**; insaan fix karke replay karta hai.
+**Kyu (do failure modes, dono cover):** (1) DLT na ho → ek poison pill **poori partition block** (uske peeche ke saare orders atke). (2) DLT ho par alert na ho → event **chupchaap lost** (email nahi gayi, payment outcome apply nahi hua) — Walk 40 se pehle yahi tha. DLT bina alert ke **graveyard hai, parking lot nahi**.
+**Replay safe kyu:** har consumer idempotent (`processed_event`/PK dedupe) → duplicate replay harmless. Same key (orderRef) se produce karo taaki same partition pe jaaye (ordering).
+**Counter kab badhta:** sirf DLT publish **succeed** hone ke baad (`accept()` ke baad increment) — "humne try kiya" nahi, "safely parked" ka matlab.
+**Code kahan:** teeno services ka `KafkaErrorConfig.java`; alert `monitoring/alert-rules.yml`; runbook `docs/runbooks/KafkaMessageDeadLettered.md`; dashboard panel 12.
+**Related:** [#7 idempotency](#7-idempotency) (replay isi pe tikta hai), [#11 observability](#11-observability), `SELF-WALK.md` Walk 40–41.
+
+---
+
+## 16. Zero-trust network map (NetworkPolicies) <a id="16-zero-trust-network"></a>
+
+Default **sab band** (ingress + egress deny), phir sirf zaroori raste khule. Har teer = ek explicit allow-rule (`k8s/base/network-policies.yaml`); jo teer nahi hai, wo connection **ho hi nahi sakta**.
+
+```mermaid
+flowchart LR
+    NGX[ingress-nginx ns] -->|8081 /api/v1/orders| OS[order-service]
+    NGX -->|8082 sirf /products route| INV[inventory-service]
+    NGX -->|8180 dev only| KC[keycloak]
+    OS -->|8082 reserve/release| INV
+    OS -->|8180 JWKS| KC
+    OS -->|9092| K[(kafka)]
+    PS[payment-service] -->|9092| K
+    NS[notification-service] -->|9092| K
+    OS & INV & PS & NS -->|5432| PG[(postgres)]
+    BK[postgres-backup] -->|5432| PG
+    INV -->|6379| R[(redis)]
+    MON[monitoring ns] -.->|scrape 808x sab pods| OS & INV & PS & NS
+    OS & INV & PS & NS -.->|4318 traces| MON
+```
+
+**Kya:** namespace ke andar zero-trust — `default-deny-ingress` + `default-deny-egress-allow-dns` (DNS sabko, kube-dns:53), phir per-pod allow.
+**Kyu:** compromised pod blast-radius chhota — payment-service ka pod hack ho to wo inventory ko chhu bhi nahi sakta (uske egress mein inventory hai hi nahi), internet pe kuch exfiltrate nahi kar sakta (egress deny).
+**Padhne ka tareeka (symmetry rule):** har connection ke **do** rules chahiye — caller ke egress mein target, target ke ingress mein caller. Ek bhi missing = connection blocked. Isliye audit dono taraf se karo.
+**Dhyaan:** (1) inventory ka reservations API app-level pe unauthenticated hai — guard = ye policies + "Ingress sirf `/products` route karta hai"; L3/L4 hai, identity nahi — next step mTLS/client-credentials (ROADMAP, documented trade-off). (2) Enforcement CNI pe depend karta hai (Calico/Cilium) — bina NetworkPolicy-supporting CNI ke ye YAML **silent no-op** hai. (3) inventory Kafka se jaan-bujh ke disconnected (REST-only service).
+**Code kahan:** `shopflow/k8s/base/network-policies.yaml` (prod overlay include karta hai).
+**Related:** [#1 big picture](#1-big-picture), [#10 auth](#10-auth) (edge JWT), `interview-notes/11` (mesh/mTLS next step).
+
+---
+
+## 17. Double-release race: read-guard vs atomic transition (Walk 55) <a id="17-double-release-race"></a>
+
+Do concurrent releases (reconciler pod A + customer cancel, ya pod A + pod B — HPA min-2!). `Reservation` pe `@Version` **nahi** hai.
+
+**Pehle (bug):** guard = plain read → dono paas ho jaate hain:
+
+```mermaid
+sequenceDiagram
+    participant A as release() — pod A
+    participant DB as Postgres
+    participant B as release() — pod B
+    A->>DB: SELECT status (orderRef)  → RESERVED
+    B->>DB: SELECT status (orderRef)  → RESERVED  (A ne commit nahi kiya)
+    A->>DB: UPDATE status=RELEASED; stock = stock + 3
+    A->>DB: COMMIT ✓
+    B->>DB: UPDATE status=RELEASED (last-writer-wins, koi error NahI); stock = stock + 3
+    B->>DB: COMMIT ✓  ← stock +6 for a 3-unit order = PHANTOM STOCK
+```
+
+**Ab (fix):** guard = conditional UPDATE — DB ka row lock serialise karta hai, WHERE dobara evaluate hota hai:
+
+```mermaid
+sequenceDiagram
+    participant A as release() — pod A
+    participant DB as Postgres
+    participant B as release() — pod B
+    A->>DB: UPDATE ... SET status=RELEASED WHERE orderRef=? AND status=RESERVED → 1 row
+    B->>DB: UPDATE ... (same)  — row lock pe WAIT
+    A->>DB: stock = stock + 3; COMMIT ✓
+    DB-->>B: lock mila, WHERE re-check: status ab RELEASED → 0 rows
+    B->>B: 0 rows → increment SKIP, log "released concurrently" ✓
+```
+
+**Kya:** `ReservationRepository.transition(orderRef, RESERVED, RELEASED)` — jisko `1` mila sirf wahi `incrementStock` karta hai.
+**Kyu ye pattern:** `@Version` alternative tha, par wo schema change + loser ko exception (HTTP 500 → order-service ise "inventory down" samajhta, Walk 53 doosre end pe repeat). Conditional UPDATE wahi hai jo `decrementStock` oversell ke liye pehle se karta hai — ek hi service mein ek hi problem ka ek hi jawab.
+**Test:** `concurrentReleasesRestoreStockOnlyOnce` (CyclicBarrier, 2 threads).
+**Code kahan:** `inventory-service/.../ReservationService.release`, `ReservationRepository.transition`.
+**Related:** [#14 save persist-vs-merge](#14-save-persist-merge) (JPA internals), EASY-NOTES §1 (atomic update), §2a (replay vs race).
 
 ---
 

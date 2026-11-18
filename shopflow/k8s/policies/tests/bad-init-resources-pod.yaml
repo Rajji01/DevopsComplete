@@ -1,0 +1,30 @@
+# Walk 110: a fully compliant app container but an initContainer with NO resource requests/limits.
+# require-resources must still reject it (the main container alone passing is not enough — the init
+# container must be governed too). Used by the kyverno apply check in CI.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-init-resources-pod
+  namespace: shopflow
+  labels:
+    app.kubernetes.io/name: bad
+    app.kubernetes.io/part-of: shopflow
+spec:
+  securityContext:
+    runAsNonRoot: true
+  initContainers:
+    - name: setup
+      image: busybox:1.36        # pinned tag + non-root-safe, but deliberately NO resources
+      securityContext:
+        allowPrivilegeEscalation: false
+  containers:
+    - name: app
+      image: nginx:1.27
+      securityContext:
+        allowPrivilegeEscalation: false
+      resources:
+        requests:
+          cpu: 100m
+          memory: 64Mi
+        limits:
+          memory: 128Mi

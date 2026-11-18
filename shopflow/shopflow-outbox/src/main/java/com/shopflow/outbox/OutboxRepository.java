@@ -20,7 +20,9 @@ public interface OutboxRepository extends JpaRepository<OutboxEvent, UUID> {
     /**
      * Oldest unpublished events first. PESSIMISTIC_WRITE + lock timeout -2 renders as
      * "FOR UPDATE SKIP LOCKED" on PostgreSQL, so several order-service pods can run the relay
-     * at the same time without publishing the same row twice.
+     * at the same time without publishing the same row twice. What SKIP LOCKED does NOT give
+     * (Walk 89): per-aggregate ordering across pods — two events of the same order can be
+     * claimed by different pods and arrive inverted during a backlog drain (see OutboxRelay).
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "-2"))

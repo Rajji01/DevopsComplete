@@ -14,7 +14,7 @@
 | Choice | ShopFlow | Milta | Issue (kya tootta) |
 |--------|----------|-------|--------------------|
 | **DB-per-service** | orders/payments/inventory/notifications alag | independent deploy/scale, blast-radius | **no cross-service txn/JOIN** → dual-write → outbox+saga, eventual consistency |
-| **Many instances, 1 DB** | N pods → ek service-DB | horizontal compute | concurrency DB pe (locks/SKIP LOCKED); **ceiling pods×pool ≤ max_connections** (D16) |
+| **Many instances, 1 DB** | N pods → ek service-DB | horizontal compute | concurrency DB pe (locks/SKIP LOCKED); **ceiling pods×pool ≤ max_connections** (D17) |
 | **Replication** | prod RDS Multi-AZ+PITR; replicas=scale step | HA + read-scale | lag (read-your-writes), failover loss, split-brain |
 
 ## REPLICATION STRATEGIES (DB level — "diff strategy db level")
@@ -53,7 +53,7 @@
  pod3 ─┘      stock  -> atomic UPDATE (row lock)
               state  -> @Version (optimistic)
               relay  -> FOR UPDATE SKIP LOCKED (pods divide rows, once-each)
- limit: pods × DB_POOL_SIZE ≤ max_connections  (warna D16 outage)
+ limit: pods × DB_POOL_SIZE ≤ max_connections  (warna D17 outage)
 ```
 
 ## ISSUES MATRIX ("kya kya issue aate")

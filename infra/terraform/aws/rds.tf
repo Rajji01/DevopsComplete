@@ -1,7 +1,7 @@
-# One PostgreSQL instance, three databases (one per service, created by the same init script
+# One PostgreSQL instance, five databases (one per service, created by the same init script
 # as docker-compose). Multi-AZ, encrypted, automated backups, deletion protection.
 resource "random_password" "db" {
-  for_each = toset(["master", "orders", "inventory", "notifications", "payments"])
+  for_each = toset(["master", "orders", "inventory", "notifications", "payments", "ledger"])
   length   = 32
   special  = false
 }
@@ -34,7 +34,8 @@ resource "aws_db_parameter_group" "postgres" {
   name_prefix = "${var.name}-pg16-"
   family      = "postgres16"
 
-  # 2 services x 10 pods x 5 connections = 100, plus notification-service and headroom
+  # worst case: 4 services x HPA max 10 (prod overlay) x pool 5 = 200, plus reconcilers/Flyway
+  # transients and superuser_reserved_connections -> 300 leaves real headroom (Walk 65)
   parameter {
     name         = "max_connections"
     value        = "300"
@@ -123,6 +124,7 @@ resource "aws_secretsmanager_secret_version" "db" {
     inventory     = random_password.db["inventory"].result
     notifications = random_password.db["notifications"].result
     payments      = random_password.db["payments"].result
+    ledger        = random_password.db["ledger"].result
     host          = aws_db_instance.postgres.address
     port          = aws_db_instance.postgres.port
   })

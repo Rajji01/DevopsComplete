@@ -49,3 +49,12 @@ groups:
           + (sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status=~"2.."}[6h]))
              - sum(rate(http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status=~"2..", le="1.0"}[6h]))))
           / sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status=~"[25].."}[6h]))
+      # 3-day window: the long window of the slowest burn-rate tier (1x over 3d -> ticket). Catches a
+      # CHRONIC low-grade drain (error ratio steadily above the 0.5% budget but below the 3% that the
+      # 6h/6x page needs) that the two page tiers never see. Short-window partner is rate6h (3d/12 = 6h).
+      - record: sli:checkout_error_ratio:rate3d
+        expr: |
+          (sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status=~"5.."}[3d]))
+          + (sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status=~"2.."}[3d]))
+             - sum(rate(http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status=~"2..", le="1.0"}[3d]))))
+          / sum(rate(http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status=~"[25].."}[3d]))

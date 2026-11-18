@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.shopflow</groupId>
+        <artifactId>shopflow-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>shopflow-cache</artifactId>
+    <name>shopflow-cache</name>
+    <description>Caching techniques as a small library: eviction (LRU/LFU/FIFO/TTL), read strategies
+        (cache-aside / read-through), write strategies (write-through / write-behind / write-around /
+        invalidate), and stampede protection (single-flight, TTL jitter, negative caching). Pure Java,
+        no Spring, fully unit-tested — a plain library like shopflow-outbox (it never boots).</description>
+
+    <!-- No extra dependencies: pure Java. Test deps (JUnit/AssertJ) are inherited from the parent. -->
+</project>

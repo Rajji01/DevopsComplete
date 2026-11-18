@@ -13,7 +13,7 @@ ORM easy cheez easy banata, **mehnga SQL/memory chhupa deta**. 5 traps: **OSIV**
 ## 5 TRAPS (+ ShopFlow + detect)
 | # | Trap | Chhupa cost | ShopFlow | Detect |
 |---|------|-------------|----------|--------|
-| 1 | **OSIV** (`open-in-view` default **true**) | session+**connection** poore request held; lazy in view | **`false`** (x4, sab service) | conn held time; pool pressure (D16) |
+| 1 | **OSIV** (`open-in-view` default **true**) | session+**connection** poore request held; lazy in view | **`false`** (x4, sab service) | conn held time; pool pressure (D17) |
 | 2 | **N+1** | lazy `@OneToMany` loop → 1+N queries | **flat entities** (koi relation) → none | **query-count ∝ rows** (SQL log) |
 | 3 | **OFFSET pagination** | `OFFSET n` n rows scan+discard + `count(*)` | **OFFSET `Page`** (current limitation) | `EXPLAIN` deep OFFSET; HLD→keyset |
 | 4 | **Unbounded `findAll()`** | saari rows memory+hydrate | products `findAll()` (small catalog) | big result → OOM/slow |
@@ -42,7 +42,7 @@ ORM easy cheez easy banata, **mehnga SQL/memory chhupa deta**. 5 traps: **OSIV**
 ```
 
 ## KYU (key reasons)
-- **OSIV off → short conn hold:** service method khatam = connection wapas pool mein; OSIV on = render tak held → pool jaldi khatam (D16 worse). ShopFlow off.
+- **OSIV off → short conn hold:** service method khatam = connection wapas pool mein; OSIV on = render tak held → pool jaldi khatam (D17 worse). ShopFlow off.
 - **Keyset fast kyun:** index sorted, cursor pe **seek**; OFFSET index use karke bhi skipped entries **traverse** karta (skip free nahi).
 - **N+1 avoid:** flat entity = koi relation = koi +N; warna `join fetch`/`@EntityGraph`/DTO.
 - **findAll bound:** skew — p50 customer chhota, whale (B2B) laakhon → ek call OOM. Hamesha paginate.
@@ -65,14 +65,14 @@ ORM easy cheez easy banata, **mehnga SQL/memory chhupa deta**. 5 traps: **OSIV**
 - **OSIV off → `LazyInitializationException` if view touches unfetched** → fetch in service (DTO/join fetch). Good: forces explicit queries.
 
 ## UNDERSTANDING CHECK (khud bol)
-1. OSIV on kya held rakhta, D16 pe asar? → *session+connection poore request; conn jaldi khatam, pool exhaust sooner.*
+1. OSIV on kya held rakhta, D17 pe asar? → *session+connection poore request; conn jaldi khatam, pool exhaust sooner.*
 2. Index hai phir bhi OFFSET 1M slow kyun? → *index order deta, par skipped 1M entries traverse karni padti; seek nahi.*
 3. ShopFlow mein N+1 kyun nahi? → *flat entities, koi `@OneToMany` nahi, load karne ko relation hi nahi.*
 4. `findByCustomerId` bina Pageable — kab tootta? → *B2B whale customer (laakhon orders) → OOM/timeout; data-skew.*
 5. Nightly job lakhs CONFIRMED load → OOM; fix? → *batch + flush/clear per chunk + index; unbounded context mat banao.*
 
 ## INTERVIEW LINE
-> *"ORM mehnga SQL chhupa deta. ShopFlow `open-in-view: false` (connection request bhar held nahi — pool-friendly, D16 se juda), entities **flat** (koi `@OneToMany` → N+1 by design nahi). List abhi **OFFSET `Page`** — deep page pe `OFFSET` skipped rows scan+discard + `count(*)` mehnga; 50M pe HLD **keyset/seek** (index seek, no skip). `findAll()` unbounded = whale-customer OOM → hamesha paginate. Bade loop mein flush/clear batches (relay 100-bounded). Hamesha **generated SQL dekho** — query-count rows ke saath badhe to N+1."*
+> *"ORM mehnga SQL chhupa deta. ShopFlow `open-in-view: false` (connection request bhar held nahi — pool-friendly, D17 se juda), entities **flat** (koi `@OneToMany` → N+1 by design nahi). List abhi **OFFSET `Page`** — deep page pe `OFFSET` skipped rows scan+discard + `count(*)` mehnga; 50M pe HLD **keyset/seek** (index seek, no skip). `findAll()` unbounded = whale-customer OOM → hamesha paginate. Bade loop mein flush/clear batches (relay 100-bounded). Hamesha **generated SQL dekho** — query-count rows ke saath badhe to N+1."*
 
 ---
 **Grounded:** `open-in-view: false` (4 services), no `@OneToMany`/`@ManyToOne` (flat `Order`), `OrderController`/`OrderService.list` OFFSET `Page` (`PageRequest.of`, `findByCustomerId(... Pageable)`), `ProductController.findAll()`, relay bounded-100 + `@Modifying(clearAutomatically, flushAutomatically)`, `INDEXING-HIBERNATE.md`, HLD §5 keyset. `[TRAP]` = N+1/unbounded (if you did it); OFFSET = real current limitation.

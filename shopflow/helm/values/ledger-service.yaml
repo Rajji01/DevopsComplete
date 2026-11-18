@@ -1,0 +1,18 @@
+name: ledger-service
+image:
+  repository: shopflow/ledger-service
+port: 8085
+db:
+  name: ledger
+  secretKey: ledger-db-password
+env:
+  - name: KAFKA_BOOTSTRAP_SERVERS
+    valueFrom:
+      configMapKeyRef:
+        name: shopflow-endpoints
+        key: kafka-bootstrap-servers
+  - name: OTLP_ENDPOINT
+    valueFrom:
+      configMapKeyRef:
+        name: shopflow-endpoints
+        key: otlp-endpoint

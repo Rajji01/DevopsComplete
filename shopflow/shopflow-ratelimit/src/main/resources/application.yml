@@ -1,0 +1,40 @@
+server:
+  port: 8086
+
+spring:
+  application:
+    name: shopflow-ratelimit
+  data:
+    redis:                      # only used when ratelimit.backend=REDIS (Lettuce connects lazily, so
+      host: ${REDIS_HOST:localhost}   # LOCAL backend starts fine even with no Redis running)
+      port: ${REDIS_PORT:6379}
+      timeout: 250ms
+
+# ---- the whole knob panel: change these, restart, and GET /api/config to confirm what is live ----
+ratelimit:
+  algorithm: ${RL_ALGO:TOKEN_BUCKET}   # FIXED_WINDOW | SLIDING_WINDOW_LOG | SLIDING_WINDOW_COUNTER | TOKEN_BUCKET | LEAKY_BUCKET
+  backend: ${RL_BACKEND:LOCAL}         # LOCAL (in-memory, per-pod) | REDIS (distributed, shared, Lua)
+  fail-open: true                      # on backend error: true=allow (availability), false=deny (protection)
+  key-prefix: rl
+  # window algorithms (FIXED_WINDOW, SLIDING_WINDOW_*): "limit per window"
+  limit: 5
+  window: 10s
+  # bucket algorithms (TOKEN_BUCKET, LEAKY_BUCKET): burst up to capacity, then this steady rate
+  capacity: 5
+  refill-per-second: 1
+
+management:
+  health:
+    redis:
+      enabled: false          # LOCAL backend needs no Redis; flip true when running backend=REDIS
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus   # GET /actuator/prometheus shows ratelimit.backend.errors
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+logging:
+  level:
+    com.shopflow.ratelimit: INFO

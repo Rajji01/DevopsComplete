@@ -1,0 +1,55 @@
+# HPAs that target the ROLLOUT, not the Deployment (Walk 109).
+#
+# The base HPAs (k8s/base/*/hpa.yaml) point scaleTargetRef at the Deployment. That is correct for
+# the base (plain Deployment) path, but WRONG once a Rollout owns these two services: the Rollout
+# uses workloadRef with scaleDown=onsuccess, so after it is healthy it scales the Deployment to 0
+# and serves from its own ReplicaSets. An HPA still pointing at the Deployment would then autoscale
+# a workload scaled to 0 (no pods, no CPU metrics) while the real, Rollout-owned serving pods are
+# never autoscaled at all. Argo Rollouts exposes the /scale subresource precisely so the HPA can
+# target the Rollout instead. These share the base HPAs' names, so applying `kubectl apply -k
+# k8s/rollouts` over the base UPDATES each HPA in place to point at the Rollout. Only order-service
+# (canary) and inventory-service (blue-green) are Rollouts; notification/payment stay Deployments
+# and keep the base HPA unchanged.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: order-service
+spec:
+  scaleTargetRef:
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    name: order-service
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inventory-service
+spec:
+  scaleTargetRef:
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    name: inventory-service
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300

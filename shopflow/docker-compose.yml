@@ -3,6 +3,7 @@
 #   inventory-service     http://localhost:8082/swagger-ui.html
 #   notification-service  http://localhost:8083/actuator/health
 #   payment-service       http://localhost:8084/actuator/health
+#   ledger-service        http://localhost:8085/actuator/health
 #   keycloak              http://localhost:8180  (admin / admin; realm "shopflow", users alice/alice, bob/bob)
 #   prometheus            http://localhost:9090
 #   alertmanager          http://localhost:9093  (routing: page -> PagerDuty+Slack, ticket -> Slack)
@@ -36,13 +37,28 @@ services:
       INVENTORY_DB_PASSWORD: inventory
       NOTIFICATIONS_DB_PASSWORD: notifications
       PAYMENTS_DB_PASSWORD: payments
+      LEDGER_DB_PASSWORD: ledger
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./k8s/base/postgres/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    ports:
+      - "5432:5432"            # expose to the host so a desktop GUI (DBeaver / pgAdmin / IntelliJ) can connect to localhost:5432
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       retries: 10
+
+  # lightweight browser DB viewer. Open http://localhost:8888  (System: PostgreSQL, Server: postgres, user/pass/db: orders)
+  adminer:
+    image: adminer:5.3.0
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    ports:
+      - "8888:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   # single-node Kafka in KRaft mode (no ZooKeeper). Production: Amazon MSK (see infra/terraform/aws).
   kafka:
@@ -80,7 +96,9 @@ services:
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
-      KC_HOSTNAME: http://localhost:8180      # issuer in the tokens must match what order-service expects
+      # one issuer URL reachable from BOTH the host (to get a token) and the order-service
+      # container (to validate it); localhost would resolve to the container itself, not keycloak
+      KC_HOSTNAME: http://host.docker.internal:8180
     volumes:
       - ./k8s/base/keycloak/shopflow-realm.json:/opt/keycloak/data/import/shopflow-realm.json:ro
     ports:
@@ -126,9 +144,9 @@ services:
       DB_USERNAME: orders
       DB_PASSWORD: orders
       INVENTORY_URL: http://inventory-service:8082
-      JWT_ISSUER_URI: http://localhost:8180/realms/shopflow   # same host the browser/curl uses to get tokens
+      JWT_ISSUER_URI: http://host.docker.internal:8180/realms/shopflow   # must equal the token's iss (KC_HOSTNAME) AND be reachable from this container
     extra_hosts:
-      - "localhost:host-gateway"   # lets the container reach keycloak's JWKS via the issuer host
+      - "host.docker.internal:host-gateway"   # resolve the issuer host to the Docker host (auto on Docker Desktop; explicit for Linux)
     ports:
       - "8081:8081"
     healthcheck:
@@ -171,6 +189,27 @@ services:
       - "8084:8084"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8084/actuator/health/readiness"]
+      interval: 10s
+      start_period: 40s
+
+  # keeps the books: consumes payments.events and records every capture/refund as a balanced
+  # double entry (DR CASH / CR SALES_REVENUE and the reverse), then reconciles. Own DB, like every service.
+  ledger-service:
+    <<: *service-defaults
+    build:
+      context: .
+      args:
+        SERVICE: ledger-service
+    image: shopflow/ledger-service:local
+    environment:
+      <<: *service-env
+      DB_URL: jdbc:postgresql://postgres:5432/ledger
+      DB_USERNAME: ledger
+      DB_PASSWORD: ledger
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8085/actuator/health/readiness"]
       interval: 10s
       start_period: 40s
 

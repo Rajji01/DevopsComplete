@@ -7,14 +7,27 @@ import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.util.backoff.ExponentialBackOff;
 
-/** Retry with backoff, then dead-letter (payments.events.DLT), so one bad record never blocks the partition. */
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+
+/**
+ * Retry with backoff, then dead-letter (payments.events.DLT), so one bad record never blocks the
+ * partition. Each dead-lettering increments kafka.dead.lettered -> KafkaMessageDeadLettered alert (Walk 40).
+ */
 @Configuration
 public class KafkaErrorConfig {
 
     @Bean
-    DefaultErrorHandler kafkaErrorHandler(KafkaOperations<Object, Object> template) {
+    DefaultErrorHandler kafkaErrorHandler(KafkaOperations<Object, Object> template, MeterRegistry meterRegistry) {
+        var deadLetter = new DeadLetterPublishingRecoverer(template);
+        var deadLettered = Counter.builder("kafka.dead.lettered")
+                .description("Records moved to a dead-letter topic after retries were exhausted")
+                .register(meterRegistry);
         var backOff = new ExponentialBackOff(500L, 2.0);
         backOff.setMaxElapsedTime(10_000L);
-        return new DefaultErrorHandler(new DeadLetterPublishingRecoverer(template), backOff);
+        return new DefaultErrorHandler((record, ex) -> {
+            deadLetter.accept(record, ex); // throws if the DLT publish fails -> record retried, not counted
+            deadLettered.increment();
+        }, backOff);
     }
 }

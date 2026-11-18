@@ -25,6 +25,9 @@ spec:
         args:
           - name: service
             value: order-service
+          - name: canary-hash   # the NEW ReplicaSet's hash -> the analysis measures only canary pods
+            valueFrom:
+              podTemplateHashValue: Latest
         startingStep: 1          # analysis begins after the first 10% step
       steps:
         - setWeight: 10

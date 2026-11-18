@@ -2,10 +2,16 @@ package com.shopflow.payment;
 
 import java.math.BigDecimal;
 import java.util.Map;
+import java.util.Optional;
 
 import org.springframework.stereotype.Component;
 
-/** Prices live here for the demo; a real system asks a catalog service or carries the price in the event. */
+/**
+ * Prices live here for the demo; a real system asks a catalog service or carries the price in the
+ * event. An unknown sku returns empty — it used to silently fall back to 999.00, which meant
+ * "add a product to inventory, forget it here, and every order for it is charged a made-up
+ * price" (Walk 42). Never invent an amount of money: the caller declines the charge instead.
+ */
 @Component
 public class PriceList {
 
@@ -15,7 +21,7 @@ public class PriceList {
             "AIRPODS-PRO", new BigDecimal("24900.00"),
             "PS5-SLIM", new BigDecimal("54990.00"));
 
-    public BigDecimal priceOf(String sku) {
-        return PRICES.getOrDefault(sku, new BigDecimal("999.00"));
+    public Optional<BigDecimal> priceOf(String sku) {
+        return Optional.ofNullable(PRICES.get(sku));
     }
 }

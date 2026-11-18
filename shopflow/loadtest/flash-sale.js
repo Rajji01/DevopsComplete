@@ -1,6 +1,8 @@
 // k6 load test: 300 virtual buyers rush the 3 PS5 units, while others browse products.
 //   docker compose up -d && TOKEN=$(...) k6 run -e TOKEN=$TOKEN loadtest/flash-sale.js
 // Pass/fail is encoded in thresholds, so this can gate a CI job.
+// NOTE: orders_confirmed==3 assumes a FRESH stack (seeded PS5-SLIM stock = 3). A re-run against
+// the same database finds 0 units left and fails the threshold — reset the stack between runs.
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Counter, Trend } from 'k6/metrics';
@@ -26,12 +28,20 @@ export const options = {
     },
   },
   thresholds: {
-    http_req_failed: ['rate<0.01'],          // 5xx are failures; 409/429 are not (see check below)
+    http_req_failed: ['rate<0.01'],          // 5xx + any other UNexpected status are failures; 429 is not
     'http_req_duration{scenario:browse}': ['p(99)<300'],
     'order_latency': ['p(95)<800'],
     'orders_confirmed': ['count==3'],        // exactly the stock, never more: the whole point
   },
 };
+
+// Without this, k6 counts EVERY non-2xx as http_req_failed. In this buy-only flood the one
+// DELIBERATE non-2xx is 429 (the rate limiter doing its job, Walk 47) — whitelist it so it does
+// not breach rate<0.01. Out-of-stock is NOT a 409 to this client: order-service catches inventory's
+// internal 409 and returns 201 with body status REJECTED (OrderService.placeOrder), so the 297
+// losers are 201s, not errors. order-service only emits a 409 on the cancel / idempotency-race
+// paths — which a pure-buy test never exercises — so a 409 HERE is a real anomaly and SHOULD fail.
+http.setResponseCallback(http.expectedStatuses({ min: 200, max: 399 }, 429));
 
 const BASE = __ENV.BASE_URL || 'http://localhost:8081';
 const INVENTORY = __ENV.INVENTORY_URL || 'http://localhost:8082';
@@ -48,7 +58,8 @@ export function buy() {
   } else if (res.status === 429) {
     throttled.add(1);
   }
-  check(res, { 'no server error': (r) => r.status < 500 });
+  // status 0 = network-level failure in k6 — a plain `< 500` would count it as "no error" (Walk 83)
+  check(res, { 'no server error': (r) => r.status >= 200 && r.status < 500 });
 }
 
 export function browse() {
@@ -57,6 +68,8 @@ export function browse() {
   sleep(0.1);
 }
 
+// Deliberate trade-off (Walk 83): defining handleSummary REPLACES k6's default end-of-run report.
+// The thresholds still gate the exit code either way; this one business line is what a human needs.
 export function handleSummary(data) {
   const c = data.metrics.orders_confirmed ? data.metrics.orders_confirmed.values.count : 0;
   const r = data.metrics.orders_rejected ? data.metrics.orders_rejected.values.count : 0;

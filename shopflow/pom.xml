@@ -19,10 +19,21 @@
 
     <modules>
         <module>shopflow-outbox</module>
+        <module>shopflow-ratelimit</module>
+        <module>shopflow-cache</module>
+        <module>shopflow-lock</module>
+        <module>shopflow-id</module>
+        <module>shopflow-balance</module>
+        <module>shopflow-resilience</module>
+        <module>shopflow-sketch</module>
+        <module>shopflow-stream</module>
+        <module>shopflow-merkle</module>
+        <module>shopflow-skiplist</module>
         <module>inventory-service</module>
         <module>order-service</module>
         <module>notification-service</module>
         <module>payment-service</module>
+        <module>ledger-service</module>
     </modules>
 
     <properties>

@@ -12,6 +12,18 @@ resource "aws_security_group" "msk" {
     security_groups = local.cluster_sg_ids
   }
 
+  # open_monitoring below turns on the JMX (11001) and node (11002) exporters — without this rule
+  # they are enabled but unreachable, and "scraped by the in-cluster Prometheus" is a lie the
+  # security group quietly tells (Walk 93: enabling a feature and opening its port are two ends
+  # of one contract, like the Redis TLS pair in Walk 90).
+  ingress {
+    description     = "MSK JMX + node exporters for Prometheus, from EKS nodes only"
+    from_port       = 11001
+    to_port         = 11002
+    protocol        = "tcp"
+    security_groups = local.cluster_sg_ids
+  }
+
   egress {
     from_port   = 0
     to_port     = 0

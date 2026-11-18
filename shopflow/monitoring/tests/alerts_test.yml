@@ -143,3 +143,308 @@ tests:
       - eval_time: 70m
         alertname: CheckoutSLOBurnRateFast
         exp_alerts: []
+
+  # 7b. SLO ticket tier (chronic drain): a steady 1% bad rate — above the 0.5% budget but below the 3%
+  #     the 6h page needs and the 7.2% the 1h page needs — sustained for days. rate3d and rate6h both
+  #     exceed 0.5% -> CheckoutSLOBurnRateTicket (ticket). Neither page tier fires. (hourly samples)
+  - interval: 1h
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="201"}'
+        values: '0+99x73'
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="503"}'
+        values: '0+1x73'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="1.0"}'
+        values: '0+99x73'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="+Inf"}'
+        values: '0+99x73'
+    alert_rule_test:
+      - eval_time: 73h
+        alertname: CheckoutSLOBurnRateTicket
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              slo: checkout-availability
+            exp_annotations:
+              summary: "checkout is chronically over its error budget (1x burn, 3d window) — investigate before it exhausts"
+              runbook: docs/runbooks/CheckoutSLOBurnRate.md
+      # the same chronic 1% must NOT trip either page tier (1% is below both 3% and 7.2%)
+      - eval_time: 73h
+        alertname: CheckoutSLOBurnRateSlow
+        exp_alerts: []
+      - eval_time: 73h
+        alertname: CheckoutSLOBurnRateFast
+        exp_alerts: []
+
+  # 7c. SLO ticket tier stays silent below budget: a steady 0.4% bad rate is under the 0.5% threshold,
+  #     so even the slowest tier must not fire (no false chronic-drain ticket for in-budget noise).
+  - interval: 1h
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="201"}'
+        values: '0+996x73'
+      - series: 'http_server_requests_seconds_count{application="order-service", uri="/api/v1/orders", method="POST", status="503"}'
+        values: '0+4x73'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="1.0"}'
+        values: '0+996x73'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", method="POST", status="201", le="+Inf"}'
+        values: '0+996x73'
+    alert_rule_test:
+      - eval_time: 73h
+        alertname: CheckoutSLOBurnRateTicket
+        exp_alerts: []
+
+  # 8. PaymentRefundFailed: the refund-failed counter ticks up once -> ticket fires
+  - interval: 1m
+    input_series:
+      - series: 'payments_refund_failed_total{application="payment-service"}'
+        values: '0+0x5 1+0x15'      # flat 0 for 6m, then jumps to 1 -> increase>0 within 15m
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PaymentRefundFailed
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: "a refund was declined by the processor (order stuck in REFUND_PENDING, money not returned)"
+              runbook: docs/runbooks/PaymentRefundFailed.md
+
+  # 8b. no refund failures -> silent
+  - interval: 1m
+    input_series:
+      - series: 'payments_refund_failed_total{application="payment-service"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PaymentRefundFailed
+        exp_alerts: []
+
+  # 9. KafkaMessageDeadLettered: a record lands on a DLT -> ticket fires, labelled by service
+  - interval: 1m
+    input_series:
+      - series: 'kafka_dead_lettered_total{application="notification-service"}'
+        values: '0+0x5 1+0x15'      # flat 0 for 6m, then jumps to 1 -> increase>0 within 15m
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: KafkaMessageDeadLettered
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              application: notification-service
+            exp_annotations:
+              summary: "notification-service dead-lettered a Kafka record (event lost until replayed from the DLT)"
+              runbook: docs/runbooks/KafkaMessageDeadLettered.md
+
+  # 9b. nothing dead-lettered -> silent
+  - interval: 1m
+    input_series:
+      - series: 'kafka_dead_lettered_total{application="notification-service"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: KafkaMessageDeadLettered
+        exp_alerts: []
+
+  # 10. HighP99Latency: most requests land in the (1s, 2.5s] bucket -> p99 ~2.5s -> ticket (Walk 70)
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="0.5"}'
+        values: '0+1x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="1.0"}'
+        values: '0+1x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="2.5"}'
+        values: '0+20x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="+Inf"}'
+        values: '0+20x25'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HighP99Latency
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              application: order-service
+            exp_annotations:
+              summary: "order-service: p99 latency above 1s"
+              runbook: docs/runbooks/HighP99Latency.md
+
+  # 10b. everything under 0.5s -> silent
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="0.5"}'
+        values: '0+20x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="1.0"}'
+        values: '0+20x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="2.5"}'
+        values: '0+20x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/api/v1/orders", le="+Inf"}'
+        values: '0+20x25'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HighP99Latency
+        exp_alerts: []
+
+  # 10c. ONLY the actuator being slow must not ticket (the uri!~"/actuator.*" filter earns its keep)
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/actuator/prometheus", le="0.5"}'
+        values: '0+1x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/actuator/prometheus", le="1.0"}'
+        values: '0+1x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/actuator/prometheus", le="2.5"}'
+        values: '0+20x25'
+      - series: 'http_server_requests_seconds_bucket{application="order-service", uri="/actuator/prometheus", le="+Inf"}'
+        values: '0+20x25'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: HighP99Latency
+        exp_alerts: []
+
+  # 11. ServiceDown: a scrape target gone for 3 minutes -> page (Walk 70)
+  - interval: 1m
+    input_series:
+      - series: 'up{job="shopflow", instance="order-service:8081"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              job: shopflow
+              instance: order-service:8081
+            exp_annotations:
+              summary: "order-service:8081 is not being scraped"
+              runbook: docs/runbooks/ServiceDown.md
+
+  # 12. KafkaConsumerLagHigh: 2000 records behind for 11 minutes -> ticket; 500 -> silent (Walk 70)
+  - interval: 1m
+    input_series:
+      - series: 'kafka_consumer_fetch_manager_records_lag_max{application="notification-service", partition="0"}'
+        values: '2000x15'
+      - series: 'kafka_consumer_fetch_manager_records_lag_max{application="payment-service", partition="0"}'
+        values: '500x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: KafkaConsumerLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              application: notification-service
+            exp_annotations:
+              summary: "notification-service: Kafka consumer lag above 1000 records"
+              runbook: docs/runbooks/KafkaConsumerLagHigh.md
+
+  # 13. PaymentFailureRateHigh: 60% of payments FAILED for >10m -> page (Walk 70)
+  - interval: 1m
+    input_series:
+      - series: 'payments_total{application="payment-service", status="FAILED"}'
+        values: '0+6x25'
+      - series: 'payments_total{application="payment-service", status="CAPTURED"}'
+        values: '0+4x25'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: PaymentFailureRateHigh
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "more than half of all payments are failing"
+              runbook: docs/runbooks/PaymentFailureRateHigh.md
+
+  # 13b. 10% declined cards are normal -> silent
+  - interval: 1m
+    input_series:
+      - series: 'payments_total{application="payment-service", status="FAILED"}'
+        values: '0+1x25'
+      - series: 'payments_total{application="payment-service", status="CAPTURED"}'
+        values: '0+9x25'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: PaymentFailureRateHigh
+        exp_alerts: []
+
+  # 14. ProductCacheSilentlyDead: steady reads, zero hits -> the fail-open cache is off -> ticket (Walk 91)
+  - interval: 1m
+    input_series:
+      - series: 'cache_gets_total{application="inventory-service", cache="products", result="miss"}'
+        values: '0+60x20'
+      - series: 'cache_gets_total{application="inventory-service", cache="products", result="hit"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ProductCacheSilentlyDead
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: "products cache has traffic but zero hits (fail-open cache is silently dead)"
+              runbook: docs/runbooks/ProductCacheSilentlyDead.md
+
+  # 14b. healthy mix of hits and misses -> silent; 14c-shape: no traffic at all -> silent (guard term)
+  - interval: 1m
+    input_series:
+      - series: 'cache_gets_total{application="inventory-service", cache="products", result="miss"}'
+        values: '0+20x20'
+      - series: 'cache_gets_total{application="inventory-service", cache="products", result="hit"}'
+        values: '0+40x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ProductCacheSilentlyDead
+        exp_alerts: []
+
+  # 15. PostgresBackupMissed: last success 28h ago -> ticket; fresh success -> silent (Walk 92)
+  - interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_successful_time{cronjob="postgres-backup", namespace="shopflow"}'
+        values: '7200x1800'
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: PostgresBackupMissed
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              cronjob: postgres-backup
+              namespace: shopflow
+            exp_annotations:
+              summary: "postgres-backup has not succeeded in over 26h (failed or never ran)"
+              runbook: docs/runbooks/PostgresBackupMissed.md
+
+  # 15b. success 2h ago -> silent
+  - interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_successful_time{cronjob="postgres-backup", namespace="shopflow"}'
+        values: '100800x1800'
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: PostgresBackupMissed
+        exp_alerts: []
+
+  # 16. LedgerReconExceptions: the daily recon finds an unmatched reference -> ticket (increment 3).
+  #     The aggregated expr drops all labels, so the fired alert carries only severity: ticket.
+  - interval: 1m
+    input_series:
+      - series: 'ledger_recon_unmatched{application="ledger-service"}'
+        values: '1x20'
+      - series: 'ledger_recon_mismatch{application="ledger-service"}'
+        values: '0x20'
+      - series: 'ledger_recon_matched{application="ledger-service"}'
+        values: '7x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LedgerReconExceptions
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: "ledger reconciliation has unexplained exceptions (ledger vs settlement statement disagree)"
+              runbook: docs/runbooks/LedgerReconExceptions.md
+
+  # 16b. a clean reconciliation (everything tied out) -> silent
+  - interval: 1m
+    input_series:
+      - series: 'ledger_recon_unmatched{application="ledger-service"}'
+        values: '0x20'
+      - series: 'ledger_recon_mismatch{application="ledger-service"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LedgerReconExceptions
+        exp_alerts: []

@@ -3,9 +3,10 @@ groups:
   - name: shopflow
     rules:
       - alert: HighErrorRate
-        expr: |
-          sum by (application) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
-            / sum by (application) (rate(http_server_requests_seconds_count[5m])) > 0.05
+        # uses the recorded ratio so alert + dashboard share ONE definition (Walk 74). The old inline
+        # expr had no uri exclusion: actuator scrapes + kubelet probes inflated the denominator, so a
+        # low-traffic service needed well over 5% business-request failures before this paged
+        expr: service:http_error_ratio:rate5m > 0.05
         for: 5m
         labels:
           severity: page
@@ -14,9 +15,8 @@ groups:
           runbook: docs/runbooks/HighErrorRate.md
 
       - alert: HighP99Latency
-        expr: |
-          histogram_quantile(0.99,
-            sum by (application, le) (rate(http_server_requests_seconds_bucket{uri!~"/actuator.*"}[5m]))) > 1
+        # same single-definition rule as HighErrorRate: the recorded p99, not a private copy (Walk 74)
+        expr: service:http_latency_p99:5m > 1
         for: 10m
         labels:
           severity: ticket
@@ -86,3 +86,81 @@ groups:
         annotations:
           summary: "more than half of all payments are failing"
           runbook: docs/runbooks/PaymentFailureRateHigh.md
+
+      - alert: PaymentRefundFailed
+        # the processor DECLINED a refund (Walk 20): the order stays REFUND_PENDING and the money is
+        # still with us. Rare and always needs a human — no retry loop fixes a declined refund — so we
+        # alert on any occurrence, faster and more specific than the OrdersStuckConfirmed backstop.
+        expr: sum(increase(payments_refund_failed_total[15m])) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "a refund was declined by the processor (order stuck in REFUND_PENDING, money not returned)"
+          runbook: docs/runbooks/PaymentRefundFailed.md
+
+      - alert: PostgresBackupMissed
+        # Outcome watchdog (Walk 92): a backup that failed AND a backup that silently never ran
+        # (suspended, schedule typo, PVC full) both show up as "no success in >26h" — the nightly
+        # job leaves ~2h of slack. Metric comes from kube-state-metrics: like the Rollouts
+        # analysis labels (Walk 51), the k8s scrape config is the lab cluster's part; compose has
+        # no CronJob to watch. Dev-overlay only — prod deletes the CronJob (RDS snapshots + PITR).
+        expr: time() - kube_cronjob_status_last_successful_time{cronjob="postgres-backup"} > 26 * 3600
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "postgres-backup has not succeeded in over 26h (failed or never ran)"
+          runbook: docs/runbooks/PostgresBackupMissed.md
+
+      - alert: ProductCacheSilentlyDead
+        # The products cache fails OPEN (LoggingCacheErrorHandler): a broken/misconfigured Redis
+        # (wrong host, missing TLS — Walk 90) degrades to silent misses, not errors. So watch the
+        # outcome: sustained read traffic with ZERO hits means the cache is effectively off and
+        # Postgres is taking the full read load. Requires spring.cache.redis.enable-statistics.
+        # for: 5m, not 15m — the [15m] rate window already supplies the smoothing (a real cache
+        # death only shows zero hits once ~15m of pre-death hits age out), so a long `for` on top
+        # just doubles detection latency. 5m guards against a single-eval blip. (Walk 94: the old
+        # for:15m also made the promtool test un-fireable inside a 16m window — rate needs 2 points
+        # before the condition can start, leaving <15m of pending time.)
+        expr: |
+          sum(rate(cache_gets_total{cache="products", result="hit"}[15m])) == 0
+            and sum(rate(cache_gets_total{cache="products"}[15m])) > 0.1
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "products cache has traffic but zero hits (fail-open cache is silently dead)"
+          runbook: docs/runbooks/ProductCacheSilentlyDead.md
+
+      - alert: KafkaMessageDeadLettered
+        # a record exhausted its retries and was moved to a .DLT topic (Walk 40). Nothing consumes
+        # the DLTs, so without this alert a dead-lettered event (an order email, a payment event) is
+        # silently lost until someone notices the side effect missing. Any occurrence needs a human:
+        # inspect the DLT record, fix the bug/data, replay. Counter lives in each service's
+        # KafkaErrorConfig and only increments after the DLT publish succeeded.
+        expr: sum by (application) (increase(kafka_dead_lettered_total[15m])) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $labels.application }} dead-lettered a Kafka record (event lost until replayed from the DLT)"
+          runbook: docs/runbooks/KafkaMessageDeadLettered.md
+
+      - alert: LedgerReconExceptions
+        # The daily reconciliation (ReconciliationService, increment 3) compares the ledger's net
+        # cash per reference against the external settlement statement (PSP/bank). A non-zero
+        # unmatched (present on only one side) or mismatch (same ref, different net) count means
+        # money moved on one side without the other — a settlement we never booked, an entry the
+        # statement does not show, or a differing amount. The money is not lost, it is UNEXPLAINED:
+        # the post-trade control that must be worked the same day, not paged at 3am.
+        # The gauges hold the LAST run's result (updated once/day), so this is a raw-value check,
+        # not a rate — no rate window, so a short `for` is safely fireable (Walk 94). max() across
+        # pods because each replica may run the job (no leader election yet) and they agree.
+        expr: max(ledger_recon_unmatched) + max(ledger_recon_mismatch) > 0
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "ledger reconciliation has unexplained exceptions (ledger vs settlement statement disagree)"
+          runbook: docs/runbooks/LedgerReconExceptions.md

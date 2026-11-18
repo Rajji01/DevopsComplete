@@ -35,6 +35,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: kubeconform
+        # download to a file with retries, THEN extract: "curl | tar" fails the whole job on one
+        # truncated byte (a retry mid-pipe can't help tar), which is exactly what flaked (Walk 44)
         run: |
-          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          curl -fsSL --retry 3 --retry-delay 5 -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar xzf kubeconform.tar.gz
           ./kubeconform -strict -summary Devops/*.yaml microservice01/*.yaml

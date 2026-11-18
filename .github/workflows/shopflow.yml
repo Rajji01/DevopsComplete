@@ -83,6 +83,47 @@ jobs:
           name: surefire-reports
           path: shopflow/**/target/surefire-reports/
 
+  postgres-smoke:
+    # Every other test runs on H2; production runs Postgres. This job boots each service's full
+    # Spring context (Flyway DDL + ddl-auto=validate) against a real Postgres — the engine can
+    # reject types H2 forgives (e.g. Hibernate 6's Instant -> TIMESTAMP_UTC vs plain timestamp).
+    name: Schema vs real Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Create one database per service
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for db in orders inventory payments notifications ledger; do
+            psql -h localhost -U postgres -c "create database $db"
+          done
+      - name: Boot every service context against Postgres
+        env:
+          PG_SMOKE: "true"
+        # -Dtest selects only the smoke test in each service module;
+        # failIfNoSpecifiedTests=false lets modules without it (shopflow-outbox) pass
+        run: |
+          ./mvnw -B test -Dtest=PostgresSchemaValidationTest \
+            -Dsurefire.failIfNoSpecifiedTests=false
+
   validate-manifests:
     name: Validate K8s + monitoring config
     runs-on: ubuntu-latest
@@ -93,10 +134,17 @@ jobs:
         # shopflow, which already has a helm/ directory -> extracting ./helm there collided
         # ("tar: helm: Cannot open: File exists") and failed the whole job.
         working-directory: ${{ runner.temp }}
+        # download to files with retries, THEN extract: "curl | tar" fails the job on one truncated
+        # byte and a retry mid-pipe can't help tar (this exact flake failed a run — Walk 44)
         run: |
-          curl -sSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_amd64.tar.gz | tar xz
-          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
-          curl -sSL https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz | tar xz --strip-components=1 linux-amd64/helm
+          curl -fsSL --retry 3 --retry-delay 5 -o kustomize.tar.gz \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_amd64.tar.gz
+          curl -fsSL --retry 3 --retry-delay 5 -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          curl -fsSL --retry 3 --retry-delay 5 -o helm.tar.gz https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz
+          tar xzf kustomize.tar.gz
+          tar xzf kubeconform.tar.gz
+          tar xzf helm.tar.gz --strip-components=1 linux-amd64/helm
           echo "$PWD" >> "$GITHUB_PATH"
       - name: kustomize build | kubeconform
         run: |
@@ -113,7 +161,9 @@ jobs:
           kubeconform -strict -summary -schema-location default -schema-location "$CRDS" k8s/policies/kyverno/*.yaml
       - name: "Kyverno policies: prod overlay passes, bad pod fails"
         run: |
-          curl -sSL https://github.com/kyverno/kyverno/releases/download/v1.19.1/kyverno-cli_v1.19.1_linux_x86_64.tar.gz | tar xz kyverno
+          curl -fsSL --retry 3 --retry-delay 5 -o kyverno.tar.gz \
+            https://github.com/kyverno/kyverno/releases/download/v1.19.1/kyverno-cli_v1.19.1_linux_x86_64.tar.gz
+          tar xzf kyverno.tar.gz kyverno
           POLICIES=$(ls k8s/policies/kyverno/*.yaml | grep -v verify-image-signature)   # signature check needs a registry
           kustomize build k8s/overlays/prod > /tmp/prod.yaml
           ./kyverno apply $POLICIES --resource /tmp/prod.yaml
@@ -125,6 +175,10 @@ jobs:
           # init-container securityContext coverage (Walk 17): a privilege-escalating initContainer must fail
           if ./kyverno apply k8s/policies/kyverno/require-non-root.yaml --resource k8s/policies/tests/bad-init-privesc-pod.yaml | grep -q 'fail: 0'; then
             echo "bad-init-privesc-pod should have been rejected by require-non-root"; exit 1; fi
+          # init-container resource coverage (Walk 110): a compliant app container but an initContainer
+          # without requests/limits must still fail require-resources
+          if ./kyverno apply k8s/policies/kyverno/require-resources.yaml --resource k8s/policies/tests/bad-init-resources-pod.yaml | grep -q 'fail: 0'; then
+            echo "bad-init-resources-pod should have been rejected by require-resources"; exit 1; fi
       - name: "Prometheus rules: syntax + unit tests; Alertmanager config"
         run: |
           docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v3.5.0 \
@@ -138,7 +192,7 @@ jobs:
         # not the local helm/ chart directory (only `./helm` would have collided).
         run: |
           helm lint helm/shopflow-service -f helm/values/order-service.yaml
-          for v in helm/values/order-service.yaml helm/values/payment-service.yaml; do
+          for v in helm/values/order-service.yaml helm/values/payment-service.yaml helm/values/ledger-service.yaml; do
             helm template svc helm/shopflow-service -f "$v" | kubeconform -strict -summary -
           done
 
@@ -170,7 +224,7 @@ jobs:
     strategy:
       fail-fast: false   # independent per-service builds; one leg's problem shouldn't cancel the rest
       matrix:
-        service: [order-service, inventory-service, notification-service, payment-service]
+        service: [order-service, inventory-service, notification-service, payment-service, ledger-service]
     steps:
       - uses: actions/checkout@v7
       # OCI image references must be lowercase, but github.repository_owner keeps its original case
@@ -208,12 +262,20 @@ jobs:
           trivyignores: .trivyignore   # triaged, documented accepts (see the file); new CVEs still fail
       # Supply chain: an SBOM (what is inside the image) is kept with the build so a future CVE
       # can be answered with "which images contain log4j 2.14?" without rebuilding anything.
+      # Direct pinned syft instead of anchore/sbom-action: the action's own syft download has no
+      # retry and "failed to install syft" flaked 3 of 4 parallel image jobs (same Walk 44 class
+      # of failure as the curl|tar installs — a bad hour for GitHub release downloads kills CI).
       - name: SBOM (CycloneDX)
-        uses: anchore/sbom-action@v0
+        run: |
+          curl -fsSL --retry 3 --retry-delay 5 -o syft.tar.gz \
+            https://github.com/anchore/syft/releases/download/v1.57.0/syft_1.57.0_linux_amd64.tar.gz
+          tar xzf syft.tar.gz syft
+          ./syft ${{ env.IMAGE }}:${{ github.sha }} -o cyclonedx-json > sbom-${{ matrix.service }}.cdx.json
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
         with:
-          image: ${{ env.IMAGE }}:${{ github.sha }}
-          format: cyclonedx-json
-          artifact-name: sbom-${{ matrix.service }}.cdx.json
+          name: sbom-${{ matrix.service }}.cdx.json
+          path: sbom-${{ matrix.service }}.cdx.json
       - name: Log in to GHCR
         if: github.ref == 'refs/heads/main'
         uses: docker/login-action@v4
@@ -285,7 +347,9 @@ jobs:
       - name: Install kustomize
         working-directory: ${{ runner.temp }}
         run: |
-          curl -sSL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_amd64.tar.gz | tar xz
+          curl -fsSL --retry 3 --retry-delay 5 -o kustomize.tar.gz \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_amd64.tar.gz
+          tar xzf kustomize.tar.gz
           echo "$PWD" >> "$GITHUB_PATH"
       - name: Set image tags to the commit SHA
         working-directory: shopflow/k8s/overlays/prod
@@ -294,7 +358,8 @@ jobs:
             shopflow/order-service=ghcr.io/${{ github.repository_owner }}/shopflow-order-service:${{ github.sha }} \
             shopflow/inventory-service=ghcr.io/${{ github.repository_owner }}/shopflow-inventory-service:${{ github.sha }} \
             shopflow/notification-service=ghcr.io/${{ github.repository_owner }}/shopflow-notification-service:${{ github.sha }} \
-            shopflow/payment-service=ghcr.io/${{ github.repository_owner }}/shopflow-payment-service:${{ github.sha }}
+            shopflow/payment-service=ghcr.io/${{ github.repository_owner }}/shopflow-payment-service:${{ github.sha }} \
+            shopflow/ledger-service=ghcr.io/${{ github.repository_owner }}/shopflow-ledger-service:${{ github.sha }}
           kustomize build . > /dev/null      # still renders?
       - name: Commit and push
         run: |

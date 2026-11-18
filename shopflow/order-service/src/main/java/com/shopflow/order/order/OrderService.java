@@ -6,6 +6,8 @@ import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -66,7 +68,27 @@ public class OrderService {
             }
         }
 
-        Order order = orderRepository.save(Order.pending(sku, quantity, idempotencyKey, caller.customerId()));
+        Order order;
+        try {
+            order = orderRepository.save(Order.pending(sku, quantity, idempotencyKey, caller.customerId()));
+        } catch (DataIntegrityViolationException e) {
+            // Two requests with the same Idempotency-Key raced past the pre-check above (a double
+            // click lands both before either commits); the unique index on idempotency_key made one
+            // of them lose. Same answer as inventory's reservation race (Walk 45): the loser returns
+            // the winner's order instead of a 409 — the pre-check is an optimization, the constraint
+            // is the guarantee, and this catch is the recovery.
+            var winner = idempotencyKey == null ? java.util.Optional.<Order>empty()
+                    : orderRepository.findByIdempotencyKey(idempotencyKey);
+            if (winner.isEmpty()) {
+                throw e; // some other constraint: not the key race, don't swallow it
+            }
+            if (!winner.get().isOwnedBy(caller.customerId())) {
+                throw new IdempotencyKeyConflictException(idempotencyKey);
+            }
+            meterRegistry.counter("orders.idempotency.race").increment();
+            log.info("idempotency race for key {}: returning winner order {}", idempotencyKey, winner.get().getId());
+            return new PlacedOrder(winner.get(), false);
+        }
         try {
             inventoryClient.reserve(order.getOrderRef(), sku, quantity);
             order.confirm();
@@ -120,12 +142,26 @@ public class OrderService {
         return saveWithEvent(order);
     }
 
-    /** Saga step 3: payment-service answered. Both branches are idempotent (status-guarded). */
+    /** Saga step 3: payment-service answered. Every branch is idempotent (status-guarded). */
     public void onPaymentCaptured(String orderRef) {
-        orderRepository.findByOrderRef(orderRef).filter(Order::isConfirmed).ifPresent(order -> {
-            order.markPaid();
-            saveWithEvent(order);
-            log.info("order {} PAID", orderRef);
+        orderRepository.findByOrderRef(orderRef).ifPresent(order -> {
+            if (order.isConfirmed()) {
+                order.markPaid();
+                saveWithEvent(order);
+                log.info("order {} PAID", orderRef);
+            } else if (order.isCancelled()) {
+                // Cancel/charge race (Walk 43): the customer cancelled the CONFIRMED order while
+                // payment-service was still charging — with consumer lag that window is minutes, not
+                // millis. The money HAS been captured for an order we already cancelled, so compensate:
+                // REFUND_PENDING re-enters the normal refund saga (OrderRefundPending event ->
+                // payment-service refunds -> PaymentRefunded -> REFUNDED). Stock was already released
+                // by cancel(); the release in onPaymentRefunded is idempotent, so the replay is safe.
+                order.requestRefund();
+                saveWithEvent(order);
+                meterRegistry.counter("orders.cancel.charge.race").increment();
+                log.warn("order {} was CANCELLED but the payment captured anyway (cancel/charge race) -> REFUND_PENDING, refunding", orderRef);
+            }
+            // PAID / REFUND_PENDING / REFUNDED: duplicate or late delivery, nothing to do
         });
     }
 
@@ -184,6 +220,13 @@ public class OrderService {
             } catch (RestClientException | CallNotPermittedException e) {
                 log.warn("inventory still unavailable, order {} stays {}: {}", order.getOrderRef(), order.getStatus(), e.getMessage());
                 break; // inventory is down; no point hammering it for the rest of the batch
+            } catch (OptimisticLockingFailureException e) {
+                // Expected with >1 pod (every replica runs the reconciler on the same stale rows — no
+                // SKIP LOCKED here) or when the customer cancels concurrently: someone else settled
+                // this order between our find and save. That is success, not failure — before Walk 53
+                // this escaped, aborting the rest of the batch and this tick's gauge update with an
+                // ERROR stacktrace for a normal race. The double release was already idempotent.
+                log.info("order {} was settled concurrently (another pod or the customer), skipping", order.getOrderRef());
             }
         }
         return settled;

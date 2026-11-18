@@ -13,8 +13,13 @@ One page per alert: **what it means → what to check first (commands) → likel
 | OutboxBacklogGrowing | page | [OutboxBacklogGrowing.md](OutboxBacklogGrowing.md) |
 | KafkaConsumerLagHigh | ticket | [KafkaConsumerLagHigh.md](KafkaConsumerLagHigh.md) |
 | PaymentFailureRateHigh | page | [PaymentFailureRateHigh.md](PaymentFailureRateHigh.md) |
+| PaymentRefundFailed | ticket | [PaymentRefundFailed.md](PaymentRefundFailed.md) |
+| ProductCacheSilentlyDead | ticket | [ProductCacheSilentlyDead.md](ProductCacheSilentlyDead.md) |
+| PostgresBackupMissed | ticket | [PostgresBackupMissed.md](PostgresBackupMissed.md) |
+| KafkaMessageDeadLettered | ticket | [KafkaMessageDeadLettered.md](KafkaMessageDeadLettered.md) |
+| LedgerReconExceptions | ticket | [LedgerReconExceptions.md](LedgerReconExceptions.md) |
 | OrdersStuckConfirmed | ticket | [OrdersStuckConfirmed.md](OrdersStuckConfirmed.md) |
-| CheckoutSLOBurnRateFast / Slow | page | [CheckoutSLOBurnRate.md](CheckoutSLOBurnRate.md) |
+| CheckoutSLOBurnRateFast / Slow / Ticket | page / ticket | [CheckoutSLOBurnRate.md](CheckoutSLOBurnRate.md) |
 | (procedure) Restore PostgreSQL from backup | — | [RestorePostgres.md](RestorePostgres.md) |
 | (procedure) Roll back a deploy | — | [Rollback.md](Rollback.md) |
 

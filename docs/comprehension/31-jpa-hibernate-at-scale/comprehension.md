@@ -33,7 +33,7 @@ The thread: **the ORM's convenience hides a SQL and a memory cost, and both scal
 3. Why does ShopFlow have **no** N+1 problem today, structurally?
 
 ### B — Inference
-4. OSIV being **off** interacts directly with the connection-pool ceiling of topic 26. Explain the link — how would OSIV **on** make the pool exhaustion of D16 *worse*?
+4. OSIV being **off** interacts directly with the connection-pool ceiling of topic 26. Explain the link — how would OSIV **on** make the pool exhaustion of D17 *worse*?
 5. The order list's `ORDER BY created_at DESC` is backed by `idx_orders_customer_created (customer_id, created_at desc)`. Why does that index make **keyset** pagination fast but **not** rescue deep **OFFSET** pagination?
 
 ### C — Trade-off
@@ -62,7 +62,7 @@ The thread: **the ORM's convenience hides a SQL and a memory cost, and both scal
 <details>
 <summary>B — Inference</summary>
 
-4. With OSIV **on**, the connection is held **until the response is fully rendered**, not just until the service method returns — so each in-flight request occupies a pool connection for **longer** (serialization, slow clients, big payloads all extend the hold). Under load that means **more concurrent connections held for longer**, so the `pods × DB_POOL_SIZE` demand against `max_connections` is reached **sooner** — OSIV-on would make D16's connection exhaustion arrive at **lower** traffic. OSIV-off returns the connection the instant the service method (and its transaction) ends, keeping holds short. (ShopFlow off = pool-friendly.)
+4. With OSIV **on**, the connection is held **until the response is fully rendered**, not just until the service method returns — so each in-flight request occupies a pool connection for **longer** (serialization, slow clients, big payloads all extend the hold). Under load that means **more concurrent connections held for longer**, so the `pods × DB_POOL_SIZE` demand against `max_connections` is reached **sooner** — OSIV-on would make D17's connection exhaustion arrive at **lower** traffic. OSIV-off returns the connection the instant the service method (and its transaction) ends, keeping holds short. (ShopFlow off = pool-friendly.)
 5. Keyset does `WHERE created_at < :lastSeen ORDER BY created_at DESC LIMIT :size`: the index is **sorted by `created_at desc`**, so the DB **seeks** directly to `:lastSeen` and reads the next `:size` entries — O(log n + size). Deep **OFFSET** still says "give me rows, skip the first 2,000,000": even using the same sorted index, the engine must **walk past** (count through) those 2,000,000 index entries before emitting yours — the index orders the rows but **can't skip** without traversing. So the index fixes *ordering/seeking*, not the *skip cost* OFFSET demands. (This is the whole reason to switch to keyset.)
 </details>
 
@@ -77,7 +77,7 @@ The thread: **the ORM's convenience hides a SQL and a memory cost, and both scal
 <summary>D — Transfer / extension</summary>
 
 8. **[TRAP]** It's an **N+1**: 1 query loads the N orders, then rendering "latest history" triggers a **lazy load per order** → N more queries (and with OSIV off you'd instead get a `LazyInitializationException` in the view, which is its own tell). **Two fixes:** **(a)** `join fetch` / `@EntityGraph` to load orders **with** their history in **one** query; **(b)** a **DTO projection** that selects just the latest-history field via a single join/subquery (best for a list — don't hydrate full collections you only partly use). **Detect:** the per-request **query count** jumps with result size (visible in `hibernate.SQL` logs, `datasource` metrics, or an APM span count); `pg_stat_statements` shows the per-row query executed thousands of times; latency scales with page size. The signature is "**query count ∝ rows returned**."
-9. **Memory cause:** loading **millions** of entities into **one persistence context** keeps them all in the first-level cache → heap blows (OOM); staging's small set fits. **Query cause:** `WHERE status='CONFIRMED'` may also be a big scan if not well-indexed, and returning all rows at once is a huge result set. **Fix pattern:** process in **bounded batches** — page/keyset through the CONFIRMED orders in chunks (e.g. 1,000), **`flush()` + `clear()`** the context between chunks (or use a stateless session / streaming), commit per batch, and ensure a usable index on the filter. Never load an unbounded set into one transaction/context. (Same shape as D19's "index + batching" for big writes.)
+9. **Memory cause:** loading **millions** of entities into **one persistence context** keeps them all in the first-level cache → heap blows (OOM); staging's small set fits. **Query cause:** `WHERE status='CONFIRMED'` may also be a big scan if not well-indexed, and returning all rows at once is a huge result set. **Fix pattern:** process in **bounded batches** — page/keyset through the CONFIRMED orders in chunks (e.g. 1,000), **`flush()` + `clear()`** the context between chunks (or use a stateless session / streaming), commit per batch, and ensure a usable index on the filter. Never load an unbounded set into one transaction/context. (Same shape as D20's "index + batching" for big writes.)
 </details>
 
 <details>
@@ -118,7 +118,7 @@ Big-data pagination → [`ONLINE-LABS.md`](../ONLINE-LABS.md): seed millions of 
 ---
 
 ## Interview concepts is passage se
-- **OSIV** (default on) — connection held for whole request; ShopFlow **off** (pool-friendly, links to D16).
+- **OSIV** (default on) — connection held for whole request; ShopFlow **off** (pool-friendly, links to D17).
 - **N+1** — lazy association in a loop; avoid via `join fetch`/`@EntityGraph`/DTO; ShopFlow flat → none.
 - **OFFSET vs keyset pagination** — skip-cost + `count(*)` vs seek; ShopFlow uses OFFSET (HLD flags keyset at 50M).
 - **Unbounded `findAll()` / collection** — always bound a list query.
@@ -128,4 +128,4 @@ Big-data pagination → [`ONLINE-LABS.md`](../ONLINE-LABS.md): seed millions of 
 
 **Interviewer's lens:** kya tu ORM ke **chhupe SQL/memory cost** jaanta — OSIV, N+1, OFFSET deep-page, unbounded findAll — aur **generated SQL dekhna** (query-count ∝ rows) jaanta; aur ki ShopFlow ne kya already sahi kiya (OSIV off, flat, bounded relay) vs kya limitation hai (OFFSET pagination).
 
-> Interview line: *"ORM easy cheez easy banata, mehnga SQL chhupa deta. ShopFlow ne `open-in-view: false` rakha (connection request bhar held nahi — pool-friendly, D16 se juda), entities **flat** hain (koi `@OneToMany` nahi → N+1 by design nahi). List abhi **OFFSET `Page`** use karti — deep page pe `OFFSET` saari skipped rows scan+discard karta + `count(*)` mehnga; 50M orders pe HLD **keyset/seek** bolta (`WHERE created_at < :cursor`, index seek). `findAll()` bina bound = trap (bada customer pe OOM). Bade loop mein first-level cache flush/clear batches mein (relay 100-bounded). Aur hamesha **generated SQL dekho** — query-count rows ke saath badhe to N+1."*
+> Interview line: *"ORM easy cheez easy banata, mehnga SQL chhupa deta. ShopFlow ne `open-in-view: false` rakha (connection request bhar held nahi — pool-friendly, D17 se juda), entities **flat** hain (koi `@OneToMany` nahi → N+1 by design nahi). List abhi **OFFSET `Page`** use karti — deep page pe `OFFSET` saari skipped rows scan+discard karta + `count(*)` mehnga; 50M orders pe HLD **keyset/seek** bolta (`WHERE created_at < :cursor`, index seek). `findAll()` bina bound = trap (bada customer pe OOM). Bade loop mein first-level cache flush/clear batches mein (relay 100-bounded). Aur hamesha **generated SQL dekho** — query-count rows ke saath badhe to N+1."*

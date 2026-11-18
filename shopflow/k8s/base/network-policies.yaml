@@ -66,7 +66,7 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/name
                 operator: In
-                values: ["order-service", "inventory-service", "notification-service", "payment-service", "postgres-backup"]
+                values: ["order-service", "inventory-service", "notification-service", "payment-service", "ledger-service", "postgres-backup"]
       ports:
         - port: 5432
 ---
@@ -107,6 +107,23 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: ledger-service-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ledger-service
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring   # only Prometheus scrapes it; no public API
+      ports:
+        - port: 8085
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: kafka-ingress
 spec:
   podSelector:
@@ -119,7 +136,7 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/name
                 operator: In
-                values: ["order-service", "notification-service", "payment-service"]
+                values: ["order-service", "notification-service", "payment-service", "ledger-service"]
       ports:
         - port: 9092
     - from:
@@ -238,6 +255,35 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: payment-service
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kafka
+      ports:
+        - port: 9092
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 4318
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ledger-service-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ledger-service
   policyTypes: ["Egress"]
   egress:
     - to:

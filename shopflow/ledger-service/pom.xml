@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.shopflow</groupId>
+        <artifactId>shopflow-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>ledger-service</artifactId>
+    <name>ledger-service</name>
+    <description>Double-entry ledger: every money movement as balanced immutable postings (payments/post-trade core)</description>
+
+    <!-- Increment 1 (Walk 96): domain + double-entry invariant + state machine + Flyway schema.
+         Increment 2 (Walk 104): inbound saga consumer — posts a balanced entry from each
+         PaymentCaptured / PaymentRefunded on payments.events. That is the one dependency this
+         module adds over the parent (web, jpa, actuator, flyway, postgres, test, h2). -->
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+        <!-- MSK IAM auth for the aws profile (Walk 121): same as the other Kafka clients
+             (order/notification/payment) — SASL_SSL + IAMLoginModule in application-aws.yml. -->
+        <dependency>
+            <groupId>software.amazon.msk</groupId>
+            <artifactId>aws-msk-iam-auth</artifactId>
+            <version>${aws-msk-iam-auth.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>app</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

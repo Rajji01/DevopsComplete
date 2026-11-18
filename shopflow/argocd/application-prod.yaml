@@ -1,6 +1,11 @@
 # GitOps: Argo CD watches k8s/overlays/prod on main and makes the cluster match it.
 # CI never runs kubectl against prod; it only commits the new image tag (deploy-manifests job).
 #   kubectl apply -n argocd -f shopflow/argocd/application-prod.yaml
+# NOTE (Walk 67): `main` does not exist in this repo (master is canonical) — applying this
+# Application today errors with "revision main not found". targetRevision is one of the SIX
+# copies of the publish-on-main gate (STATE §4 / Walk 50): workflow if-gates, Kyverno keyless
+# subject, ci-oidc.tf trust `sub`, this file, and the Jenkinsfile's two `when { branch 'main' }`
+# stages. Flipping publishing on means changing ALL of them together.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
