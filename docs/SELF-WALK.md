@@ -1700,3 +1700,14 @@ Walk 132 lesson: id generation is a top HLD interview topic and the merge handed
 
 ### Honest status
 - Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–33**, debugging **D01–D22**. Post-merge. Grounded in real `shopflow-id`/`shopflow-lock`. Links clean. Committed **locally**, push pending Abhishek's word.
+
+## Walk 133: topic 34 (rate limiting) on real shopflow-ratelimit (Nov 19, 2026)
+
+**Topic 34 — rate limiting: five algorithms, local vs distributed, fail-open.** Grounded in `shopflow-ratelimit`: `RateLimitAlgorithm` (fixed/sliding-log/sliding-counter/token/leaky with trade-off comments), the five `local/*Limiter.java` (atomic via `ConcurrentHashMap.compute`/`synchronized`), `redis/RedisRateLimiter.java` (one Lua script per algorithm, atomic, `[allowed,remaining,retryAfterMs]`, PEXPIRE reap), and `FailOpenRateLimiter.java` (fail-open vs fail-closed + `ratelimit.backend.errors`). This **closes the loop topic 26 opened** — the per-pod `@RateLimiter 50/s` drifts with replicas; the Redis backend is the global shared-counter fix. Three-decision framing (algorithm / backend / limiter-down), token-vs-leaky (burst vs smooth), fixed-window boundary burst, sliding-counter O(1) estimate, lazy refill, and fail-open sharing the topic-12 cache idea.
+
+Indexed 34 (comp README row+status, RAPID §1 row 34, INDEX 01..34, STATE). Links clean.
+
+Walk 133 lesson: the merged `shopflow-ratelimit` turns topic 26's hand-wave ("you'd want a shared/distributed limiter") into a concrete, five-algorithm, two-backend module — so topic 34 answers the exact open question an interviewer would ask after topic 26. Building on the real modules keeps the whole series honest and interconnected (26→34, 12→34 fail-open, 32→34 Lua-atomic).
+
+### Honest status
+- Docs/review only; **not executed** (no Docker/JDK). Comprehension **01–34**, debugging **D01–D22**. Post-merge; 32–34 grounded in real `shopflow-lock`/`-id`/`-ratelimit`. Links clean. Committed **locally**, push pending Abhishek's word.
