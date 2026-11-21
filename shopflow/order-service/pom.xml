@@ -30,6 +30,13 @@
             <artifactId>shopflow-outbox</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- shared, configurable rate limiter (5 algos x LOCAL/REDIS). Wired at the edge on the
+             order-create write; brings spring-boot-starter-data-redis transitively for backend=REDIS. -->
+        <dependency>
+            <groupId>com.shopflow</groupId>
+            <artifactId>shopflow-ratelimit</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka</artifactId>

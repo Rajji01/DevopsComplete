@@ -34,6 +34,13 @@ resilience4j:
       inventory:
         wait-duration: 10ms
 
+ratelimit:
+  # effectively off for the integration tests that POST many orders under one mock JWT sub — the
+  # rate limiter's own behaviour is covered deterministically by OrderRateLimitFilterTest instead.
+  backend: LOCAL
+  capacity: 1000000
+  refill-per-second: 1000000
+
 management:
   otlp:
     tracing:

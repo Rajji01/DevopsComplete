@@ -28,6 +28,14 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <!-- This module is BOTH a runnable demo AND a library other services depend on
+                     (order-service wires its RateLimiter). A classifier keeps the plain library jar
+                     as the MAIN artifact (so a dependent compiles against its classes) and attaches
+                     the executable fat jar as 'app-exec.jar' for the local demo. Without this the
+                     repackaged fat jar replaces the main artifact and cannot be used as a dependency. -->
+                <configuration>
+                    <classifier>exec</classifier>
+                </configuration>
             </plugin>
         </plugins>
     </build>
