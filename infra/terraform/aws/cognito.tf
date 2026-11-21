@@ -38,6 +38,12 @@ resource "aws_cognito_user_pool_client" "web" {
 
   explicit_auth_flows = ["ALLOW_USER_SRP_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
 
+  # Without this, Cognito defaults to LEGACY: a failed login tells the caller WHETHER the account
+  # exists (distinct "user not found" vs "incorrect password" responses + timing), so the hosted
+  # login page is a free username-enumeration oracle. ENABLED returns a single generic failure for
+  # both — the standard mitigation for an auth surface that fronts real customer orders + payments.
+  prevent_user_existence_errors = "ENABLED"
+
   access_token_validity  = 15 # minutes
   id_token_validity      = 15
   refresh_token_validity = 30 # days
