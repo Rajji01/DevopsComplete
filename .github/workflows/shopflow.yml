@@ -148,17 +148,25 @@ jobs:
           echo "$PWD" >> "$GITHUB_PATH"
       - name: kustomize build | kubeconform
         run: |
+          # kubeconform fetches the k8s JSON schemas from raw.githubusercontent.com at run time with no
+          # built-in retry, so one transient blip fails the job (seen Walk 147). Render to a file, then
+          # retry kubeconform on it — same "download with retries" rule the tool installs follow (Walk 44).
+          # Retrying re-reads the same file, so a genuinely invalid manifest still fails (just 3x slower).
+          retry() { for i in 1 2 3; do "$@" && return 0; echo "::warning::kubeconform failed (attempt $i), retrying"; sleep 5; done; return 1; }
           for overlay in k8s/overlays/*/; do
             echo "::group::$overlay"
             # -ignore-missing-schemas: ExternalSecret CRDs have no upstream JSON schema
-            kustomize build "$overlay" | kubeconform -strict -summary -ignore-missing-schemas -
+            kustomize build "$overlay" > /tmp/kc-overlay.yaml
+            retry kubeconform -strict -summary -ignore-missing-schemas /tmp/kc-overlay.yaml
             echo "::endgroup::"
           done
       - name: Argo Rollouts + Kyverno manifests (CRD schemas from the datreeio catalog)
         run: |
+          retry() { for i in 1 2 3; do "$@" && return 0; echo "::warning::kubeconform failed (attempt $i), retrying"; sleep 5; done; return 1; }
           CRDS='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
-          kustomize build k8s/rollouts | kubeconform -strict -summary -schema-location default -schema-location "$CRDS" -
-          kubeconform -strict -summary -schema-location default -schema-location "$CRDS" k8s/policies/kyverno/*.yaml
+          kustomize build k8s/rollouts > /tmp/kc-rollouts.yaml
+          retry kubeconform -strict -summary -schema-location default -schema-location "$CRDS" /tmp/kc-rollouts.yaml
+          retry kubeconform -strict -summary -schema-location default -schema-location "$CRDS" k8s/policies/kyverno/*.yaml
       - name: "Kyverno policies: prod overlay passes, bad pod fails"
         run: |
           curl -fsSL --retry 3 --retry-delay 5 -o kyverno.tar.gz \
@@ -191,9 +199,11 @@ jobs:
         # helm is installed on PATH (see the install step); a bare `helm` resolves to that binary,
         # not the local helm/ chart directory (only `./helm` would have collided).
         run: |
+          retry() { for i in 1 2 3; do "$@" && return 0; echo "::warning::kubeconform failed (attempt $i), retrying"; sleep 5; done; return 1; }
           helm lint helm/shopflow-service -f helm/values/order-service.yaml
           for v in helm/values/order-service.yaml helm/values/payment-service.yaml helm/values/ledger-service.yaml; do
-            helm template svc helm/shopflow-service -f "$v" | kubeconform -strict -summary -
+            helm template svc helm/shopflow-service -f "$v" > /tmp/kc-helm.yaml
+            retry kubeconform -strict -summary /tmp/kc-helm.yaml
           done
 
   terraform:

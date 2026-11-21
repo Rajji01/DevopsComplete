@@ -6,6 +6,16 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-22 — CLI (Opus 4.8) — shared rate-limit wired into order-service (Walks 146–147)
+**Branch:** `master`
+**Hua:** §4 ka "shared (Redis) rate limit instead of per-pod" item **build kiya** (autonomous). `shopflow-ratelimit` ab consumable library (classifier=exec) + order-service ki dependency. `OrderRateLimitFilter` → `POST /api/v1/orders` ko PER CUSTOMER (JWT sub) limit karta, security chain mein `AuthorizationFilter` se pehle. Algorithm+backend config: dev/test `LOCAL` (no infra), prod `REDIS` (prod overlay mein `RL_BACKEND`/`REDIS_HOST`/`REDIS_SSL` + `order-service-egress` mein 6379). Purana per-pod `resilience4j.ratelimiter.orders` coarse flood-cap ke roop mein raha (layered). Deterministic `OrderRateLimitFilterTest`.
+- **146 fixes (self-inflicted, root-cause pe fix):** (a) `SC_TOO_MANY_REQUESTS` constant exist nahi karta → `HttpStatus.TOO_MANY_REQUESTS.value()`; (b) `@Import(RateLimitConfiguration)` ne `RateLimiter`+hard `MeterRegistry` ko consumer ke `@WebMvcTest` slice mein required bana diya (jahan metrics bean nahi) → context load fail → `MeterRegistry`/`StringRedisTemplate` ab `ObjectProvider` (SimpleMeterRegistry fallback).
+- **147 (CI robustness):** kubeconform runtime pe schemas `raw.githubusercontent.com` se fetch karta, no retry → ek transient blip (payment HPA schema) ne poora validate job gira diya. Teeno kubeconform steps ab temp-file + `retry()` (3×) — Walk-44 ki "download with retries" philosophy schema-fetch pe bhi.
+**Verify:** 146 commits (`76429ae`→`95b1b34`→`33507ce`) — verify + pg + kustomize-validate + Kyverno(`pass:15`) + helm-lint sab green; ek transient kubeconform schema-download pe re-run → green. 147 abhi push ho raha.
+**Pending / next:** Fintech **inc 4c = FX** (multi-currency presentment vs settlement + rate capture) still the big open feature-change; settlement abhi currency-blind (Walk 141 note). Optional: cache→inventory wiring; shopflow-hll rebuild.
+
+---
+
 ## 2026-11-21 — CLI (Opus 4.8) — autonomous self-walk: Walks 138–145 (recon race, prod-security, CI self-heal)
 **Branch:** `master`
 **Hua:** Non-stop adversarial self-walk. Real fixes + honest hardening + honest documented gaps — all CI-green, none manufactured. Detail per walk in [`SELF-WALK.md`](SELF-WALK.md) 138–145; authoritative state in [`STATE.md`](STATE.md).
