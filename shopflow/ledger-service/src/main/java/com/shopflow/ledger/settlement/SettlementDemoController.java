@@ -2,6 +2,7 @@ package com.shopflow.ledger.settlement;
 
 import java.util.Map;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -37,9 +38,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  *   curl -XPOST :8085/api/settlement/publish -H 'Content-Type: application/json' -d '{...}'
  *
  *   curl :8085/api/settlement/accounts/ACC        # check the balance after each step
+ *
+ * {@code @Profile("!aws")}: this is a demo/teaching harness that mutates financial state with NO
+ * authentication (ledger-service has no Spring Security, and it is not internet-facing but any pod
+ * that can reach its ClusterIP could seed balances via /accounts or inject arbitrary settlement
+ * events via /publish). It exists in dev + tests so the walkthrough above works, and simply does
+ * not get registered in prod (the 'aws' profile) — a test harness is not attack surface we ship.
  */
 @RestController
 @RequestMapping("/api/settlement")
+@Profile("!aws")
 public class SettlementDemoController {
 
     private final BrokenSettlementConsumer broken;
