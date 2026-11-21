@@ -79,7 +79,8 @@ resource "aws_iam_policy" "kafka_clients" {
         # topic ARN format: arn:aws:kafka:region:account:topic/cluster-name/cluster-uuid/topic-name
         Resource = [
           "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:topic/${var.name}/*/orders.events*",
-          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:topic/${var.name}/*/payments.events*"
+          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:topic/${var.name}/*/payments.events*",
+          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:topic/${var.name}/*/settlements*"
         ]
       },
       {
@@ -89,7 +90,8 @@ resource "aws_iam_policy" "kafka_clients" {
           "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/notification-service",
           "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/payment-service",
           "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/order-service",
-          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/ledger-service"
+          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/ledger-service",
+          "arn:aws:kafka:${var.region}:${data.aws_caller_identity.current.account_id}:group/${var.name}/*/ledger-settlement"
         ]
       }
     ]
