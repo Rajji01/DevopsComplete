@@ -22,7 +22,10 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: maven
-      - run: mvn -B verify
+      # -U forces re-resolution: a transient Maven Central 429 writes a *.lastUpdated failure marker into
+      # the cached ~/.m2, and Maven never retries a failed RELEASE artifact without -U, so the restored
+      # (poisoned) cache would keep the build red forever. -U lets it self-heal on the next run.
+      - run: mvn -B -U verify
       - name: Docker build (no push)
         # a docker tag must be lowercase, but the matrix value is the directory name (e.g. "Devops")
         run: docker build -t "${SERVICE,,}:ci" .
