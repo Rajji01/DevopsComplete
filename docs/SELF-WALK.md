@@ -1847,3 +1847,13 @@ Right after 146 went green, the shopflow `Validate K8s + monitoring config` job 
 | All three `kubeconform` steps (overlays, rollouts+Kyverno, helm templates) pipe into `kubeconform ... -` and rely on the remote **default** schema location, which has no retry. | A single transient network error on any schema download fails the entire validate leg — exactly the "flaky infra masquerading as a code failure" the repo already guards against for tool DOWNLOADS (`curl --retry`, Walk 44), but the schema FETCHES inside kubeconform were unguarded. | Render each manifest set to a temp file, then run kubeconform through a small `retry()` (3×, 5s) wrapper. Re-reading the same file means a genuinely invalid manifest still fails (just slower) — the retry only absorbs the transient fetch, it never masks a real validation error. |
 
 Walk 147 lesson: the same hardening has to reach every place that touches the network, not just the obvious one. Walk 44 retried the binary downloads at the top of this very job; the schema downloads kubeconform does *mid-run* were the same risk one layer down, invisible until a blip hit them.
+
+## Walk 148: Money.fromMajor hardcoded a 2-digit minor unit — silently 100x-wrong for JPY (FX inc-4c, first step) (Nov 22, 2026)
+
+The settlement currency-blindness flagged in Walk 141 pointed at FX (inc-4c). The smallest honest first step, and a real latent bug: `Money.fromMajor` scaled every currency with `movePointRight(2)`.
+
+| Found | Why it mattered | Fix |
+|---|---|---|
+| `fromMajor` assumed 2 minor-unit digits for every currency (the comment even admitted "a 0-dp currency like JPY ... arrive[s] with FX in increment 4"). | The moment a non-2dp currency flows in, the amount is silently wrong at the boundary: 500 JPY becomes 50000 minor units (100x — yen has no sub-unit), 1.234 BHD becomes 123 instead of 1234 (fils are 3dp). In a ledger that's not a rounding nit, it's a 100x booking error that balances (both legs wrong by the same factor) so the double-entry invariant wouldn't even catch it. | `minorUnitDigits(currency)` — ISO-4217 exponent (JPY/KRW…=0, BHD/KWD…=3, default 2); `fromMajor` scales by it, plus a symmetric scale-correct `toMajor()`. 3 new MoneyTest cases (JPY 0dp, BHD 3dp, unknown→2, round-trip). INR stays 2dp so nothing in the live saga changes. |
+
+Walk 148 lesson: a wrong-but-consistent scale is the dangerous kind — because BOTH legs of the double entry are inflated by the same factor, the `sum == 0` invariant still holds, every existing test (all INR) still passes, and the error is invisible until the first foreign-currency trade. The guardrail (balanced entries) can't catch an error in the shared unit itself. This is the FX foundation; the conversion leg + rate capture is the next inc-4c step.

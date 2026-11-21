@@ -2,6 +2,7 @@ package com.shopflow.ledger.domain;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.Set;
 
 /**
  * Money as (minor units, currency) — never a float/double (the classic payments filter question).
@@ -33,18 +34,43 @@ public record Money(long minorUnits, String currency) {
      *
      * Rounding is HALF_EVEN (banker's rounding): it rounds a half to the nearest even digit, so a
      * stream of .005 amounts does not bias systematically upward the way HALF_UP would — the
-     * convention mandated for financial sums. {@code movePointRight(2)} assumes a 2-dp minor unit
-     * (paise/cents); a 0-dp currency like JPY and multi-currency scaling arrive with FX in
-     * increment 4, so this deliberately takes the currency only to carry it onto the Money, not yet
-     * to vary the exponent.
+     * convention mandated for financial sums. The scale is the currency's ISO-4217 minor-unit
+     * exponent (see {@link #minorUnitDigits}), NOT a hardcoded 2 — so 500 JPY becomes 500 minor
+     * units (yen has no sub-unit), not 50000, and 1.234 BHD becomes 1234 fils (FX / inc-4c).
      */
     public static Money fromMajor(BigDecimal major, String currency) {
         if (major == null) {
             throw new IllegalArgumentException("amount required");
         }
-        long minor = major.movePointRight(2).setScale(0, RoundingMode.HALF_EVEN).longValueExact();
+        long minor = major.movePointRight(minorUnitDigits(currency))
+                .setScale(0, RoundingMode.HALF_EVEN).longValueExact();
         return new Money(minor, currency);
     }
+
+    /** The major-unit decimal view (e.g. 74999 paise -> 749.99 INR, 500 minor -> 500 JPY), scaled per currency. */
+    public BigDecimal toMajor() {
+        return BigDecimal.valueOf(minorUnits).movePointLeft(minorUnitDigits(currency));
+    }
+
+    /**
+     * ISO-4217 minor-unit exponent: how many decimal places the currency's minor unit has. Most are 2
+     * (paise, cents), but a correct multi-currency ledger must not assume it: JPY/KRW have 0 (the yen
+     * has no sub-unit), and a few Gulf currencies have 3 (BHD/KWD fils). Hardcoding 2 would inflate a
+     * JPY amount 100x and a BHD amount 10x at the fromMajor boundary. Only the common exceptions are
+     * listed; every other currency defaults to 2.
+     */
+    public static int minorUnitDigits(String currency) {
+        if (ZERO_DECIMAL.contains(currency)) {
+            return 0;
+        }
+        if (THREE_DECIMAL.contains(currency)) {
+            return 3;
+        }
+        return 2;
+    }
+
+    private static final Set<String> ZERO_DECIMAL = Set.of("JPY", "KRW", "VND", "CLP", "ISK", "XOF", "XAF", "PYG", "UGX", "RWF");
+    private static final Set<String> THREE_DECIMAL = Set.of("BHD", "KWD", "OMR", "JOD", "TND", "LYD", "IQD");
 
     public Money plus(Money other) {
         requireSameCurrency(other);

@@ -25,6 +25,31 @@ class MoneyTest {
     }
 
     @Test
+    void fromMajorUsesTheCurrencysMinorUnitExponentNotAHardcoded2() {
+        // JPY has 0 minor-unit digits: 500 yen is 500 minor units, NOT 50000 (the hardcoded-2 bug)
+        assertThat(Money.fromMajor(new BigDecimal("500"), "JPY")).isEqualTo(Money.of(500, "JPY"));
+        // BHD has 3 (fils): 1.234 dinar is 1234 minor units
+        assertThat(Money.fromMajor(new BigDecimal("1.234"), "BHD")).isEqualTo(Money.of(1234, "BHD"));
+        // an unlisted currency defaults to 2
+        assertThat(Money.fromMajor(new BigDecimal("9.99"), "USD")).isEqualTo(Money.of(999, "USD"));
+    }
+
+    @Test
+    void minorUnitDigitsKnowsTheIso4217Exceptions() {
+        assertThat(Money.minorUnitDigits("JPY")).isZero();
+        assertThat(Money.minorUnitDigits("KWD")).isEqualTo(3);
+        assertThat(Money.minorUnitDigits("INR")).isEqualTo(2);
+        assertThat(Money.minorUnitDigits("ZZZ")).isEqualTo(2);   // unknown -> default 2
+    }
+
+    @Test
+    void toMajorIsTheScaleCorrectInverseOfFromMajor() {
+        assertThat(Money.of(74999, "INR").toMajor()).isEqualByComparingTo("749.99");
+        assertThat(Money.of(500, "JPY").toMajor()).isEqualByComparingTo("500");
+        assertThat(Money.of(1234, "BHD").toMajor()).isEqualByComparingTo("1.234");
+    }
+
+    @Test
     void plusAddsMinorUnitsOfTheSameCurrency() {
         assertThat(Money.of(1000, "INR").plus(Money.of(250, "INR")))
                 .isEqualTo(Money.of(1250, "INR"));
