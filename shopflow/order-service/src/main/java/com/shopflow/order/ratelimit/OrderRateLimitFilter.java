@@ -6,6 +6,7 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -72,7 +73,7 @@ public class OrderRateLimitFilter extends OncePerRequestFilter {
         long retryAfter = result.retryAfterSeconds();
         log.info("rate limit hit on order-create for {} -> 429 (retry after {}s)", key, retryAfter);
         response.setHeader("Retry-After", Long.toString(retryAfter)); // RFC 7231: whole seconds
-        response.setStatus(HttpServletResponse.SC_TOO_MANY_REQUESTS);
+        response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value()); // 429 — not a Servlet SC_ constant
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.getWriter().write(objectMapper.writeValueAsString(Map.of(
                 "error", "rate_limited",
