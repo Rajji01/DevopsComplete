@@ -148,6 +148,27 @@ patches:
             configMapKeyRef:
               name: shopflow-endpoints
               key: rds-endpoint
+      # shared rate limit in prod: point the order-create limiter at ElastiCache so the allowance is
+      # cluster-wide, not per-pod (Walk 146). Appended (env/-) so the positional DB_URL patch above is
+      # unaffected. REDIS_SSL=true because ElastiCache enforces TLS (same as inventory, Walk 90).
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: RL_BACKEND
+          value: REDIS
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: shopflow-endpoints
+              key: redis-host
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: REDIS_SSL
+          value: "true"
   - target:
       kind: Deployment
       name: inventory-service
@@ -302,6 +323,9 @@ patches:
             - port: 5432
             - port: 9092
             - port: 9098                 # MSK IAM auth listener
+            - port: 6379                 # ElastiCache: shared rate-limit backend (Walk 146) — without
+                                         # this egress rule the default-deny policy blocks it and the
+                                         # fail-open limiter hides a dead backend (the Walk-139 lesson)
       - op: add
         path: /spec/egress/-
         value:

@@ -48,6 +48,10 @@ spring:
       host: ${REDIS_HOST:localhost}   # the default LOCAL backend starts fine with no Redis running)
       port: ${REDIS_PORT:6379}
       timeout: 250ms
+      ssl:
+        # ElastiCache enforces TLS (transit_encryption_enabled); in-cluster/compose redis is plaintext,
+        # so the default stays false and prod sets REDIS_SSL=true (same pattern as inventory, Walk 90)
+        enabled: ${REDIS_SSL:false}
 
 jwt:
   audience: ${JWT_AUDIENCE:}   # Keycloak client id / Cognito app client id; empty = not checked
