@@ -11,6 +11,7 @@ import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -159,40 +160,59 @@ public class ReconciliationService {
 
     /**
      * Close the lifecycle for every tied-out reference: advance its entries CAPTURED -> SETTLED ->
-     * RECONCILED in one transaction. Idempotent — an entry a prior run already took to RECONCILED is
-     * skipped (daily runs re-see yesterday's matches), as is any entry not yet CAPTURED (a raw
-     * INITIATED/AUTHORIZED entry that happens to match is not money that moved, so it is not settled
-     * here). @Version on JournalEntry guards a concurrent run. Returns how many entries were advanced.
+     * RECONCILED. Idempotent — an entry a prior run already took to RECONCILED is skipped (daily runs
+     * re-see yesterday's matches), as is any entry not yet CAPTURED (a raw INITIATED/AUTHORIZED entry that
+     * happens to match is not money that moved, so it is not settled here). Returns how many were advanced.
+     *
+     * Each reference is advanced in its OWN transaction, and an {@link OptimisticLockingFailureException}
+     * (@Version on JournalEntry) is caught PER REFERENCE and skipped. This matters because {@code @Scheduled}
+     * fires on every pod — with >1 ledger replica the daily run executes concurrently, and two pods racing
+     * the same reference is normal, not an error. Two consequences of doing it this way (both deliberate):
+     *   - a loser skips just the contended reference instead of the whole batch rolling back (so it still
+     *     advances everything else it won), and
+     *   - the concurrent race is logged at info and never throws out of {@link #scheduledReconcile()} as a
+     *     daily ERROR — exactly how order-service's reconciler treats the same multi-pod race (Walk 53).
+     * The entry is already RECONCILED by the winner, so a skip loses no work (the lifecycle still closes).
      */
     private int settle(List<String> matchedReferences) {
         if (matchedReferences.isEmpty()) {
             return 0;
         }
-        Integer advanced = transactionTemplate.execute(tx -> {
-            int count = 0;
-            for (String reference : matchedReferences) {
-                for (JournalEntry entry : journalEntries.findByReference(reference)) {
-                    if (entry.getStatus() == JournalEntryStatus.CAPTURED) {
-                        entry.transitionTo(JournalEntryStatus.SETTLED);
-                        entry.transitionTo(JournalEntryStatus.RECONCILED);
-                        journalEntries.save(entry);
-                        count++;
-                    } else if (entry.getStatus() == JournalEntryStatus.SETTLED) {
-                        entry.transitionTo(JournalEntryStatus.RECONCILED);
-                        journalEntries.save(entry);
-                        count++;
-                    }
-                    // RECONCILED (already done, prior run) / INITIATED / AUTHORIZED / REVERSED / FAILED:
-                    // nothing to advance here.
-                }
+        int advanced = 0;
+        for (String reference : matchedReferences) {
+            try {
+                Integer count = transactionTemplate.execute(tx -> advanceReference(reference));
+                advanced += count == null ? 0 : count;
+            } catch (OptimisticLockingFailureException concurrentRun) {
+                // another pod's scheduled run advanced this reference between our read and write — success,
+                // not failure (the entries are RECONCILED either way); skip it rather than failing the run.
+                log.info("reference {} reconciled concurrently by another pod, skipping", reference);
             }
-            return count;
-        });
+        }
         if (advanced > 0) {
             log.info("reconciliation settled {} journal entr{} across {} reference(s)",
                     advanced, advanced == 1 ? "y" : "ies", matchedReferences.size());
         }
-        return advanced == null ? 0 : advanced;
+        return advanced;
+    }
+
+    /** Advance one reference's entries (CAPTURED -> SETTLED -> RECONCILED); runs inside a per-reference tx. */
+    private int advanceReference(String reference) {
+        int count = 0;
+        for (JournalEntry entry : journalEntries.findByReference(reference)) {
+            if (entry.getStatus() == JournalEntryStatus.CAPTURED) {
+                entry.transitionTo(JournalEntryStatus.SETTLED);
+                entry.transitionTo(JournalEntryStatus.RECONCILED);
+                journalEntries.save(entry);
+                count++;
+            } else if (entry.getStatus() == JournalEntryStatus.SETTLED) {
+                entry.transitionTo(JournalEntryStatus.RECONCILED);
+                journalEntries.save(entry);
+                count++;
+            }
+            // RECONCILED (already done, prior run) / INITIATED / AUTHORIZED / REVERSED / FAILED: nothing here.
+        }
+        return count;
     }
 
     /**
