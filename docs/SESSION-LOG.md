@@ -6,6 +6,21 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-21 — CLI (Opus 4.8) — autonomous self-walk: Walks 138–145 (recon race, prod-security, CI self-heal)
+**Branch:** `master`
+**Hua:** Non-stop adversarial self-walk. Real fixes + honest hardening + honest documented gaps — all CI-green, none manufactured. Detail per walk in [`SELF-WALK.md`](SELF-WALK.md) 138–145; authoritative state in [`STATE.md`](STATE.md).
+- **138** (`23847cb`): ledger `ReconciliationService` `@Scheduled` fires on every pod, `settle()` was one big tx with no catch → a multi-pod race made the loser throw `OptimisticLockingFailureException` out of the scheduled run AND roll back the whole batch. Now per-reference `TransactionTemplate` + per-reference optimistic-catch→skip. Verified consistent with order-service's reconciler (Walk 53/145).
+- **139** (`5e7c466`): `irsa.tf` MSK-IAM policy was missing the new `settlements` topic + `ledger-settlement` group → prod (MSK IAM) auth-denied. Granted both.
+- **140** (`a46eac7`): a transient Maven Central 429 wrote a `.lastUpdated` failure marker into the cached `~/.m2`; Maven never retries a failed RELEASE without `-U`, so the restored cache wedged the legacy `Devops`/`microservice01` CI permanently red (error even changed 429 → "could not find"). Fix: `mvn -B -U verify` self-heals.
+- **141** (`a98751b`, docs): prod MSK `auto.create.topics.enable=false` + NO in-repo topic provisioning (no `NewTopic`/`KafkaAdmin`) → all topics need out-of-band creation; proper fix needs profile-aware RF (1 compose vs 3 MSK), so documented in STATE §4, not shipped half-right. Order state machine verified clean (service-layer guarded).
+- **142** (`390a995`): Cognito client had no `prevent_user_existence_errors` → LEGACY → prod login was a username-enumeration oracle. Set `ENABLED`.
+- **143** (`1a7fcf1`): `SettlementDemoController` (unauthenticated `/accounts` seed + `/publish` arbitrary-event-inject) had no profile guard → shipped to prod. Added `@Profile("!aws")` (kept in dev + tests, dropped in prod).
+- **145** (`d95da37`, docs): documented the notification `notify()` dual-write trap (a real SES send inside the @Transactional before the dedup row commits → duplicate email on at-least-once redelivery; fix = provider idempotency key on eventId or outbox). Order reconciler verified Walk-138-consistent.
+**Verify:** every commit confirmed via the authenticated check-runs REST API; HEAD `d95da37` fully green (15/15). Verified-clean sweeps (no change, not manufactured): ElastiCache TLS/private, MSK config, actuator exposure (all `health,info,prometheus`), k8s securityContext + readOnlyRootFilesystem+/tmp emptyDir, Money/DoubleEntry.
+**Pending / next:** Fintech **inc 4c = FX** (multi-currency presentment vs settlement + rate capture) still the big open feature-change. Optional: wire concept modules into services (ratelimit→order filter, cache→inventory); rebuild shopflow-hll properly; the MSK topic-provisioning (141) if prod is ever really brought up.
+
+---
+
 ## 2026-11-15 — CLI (Opus 4.8) — concept-library series part 2: resilience / sketch / stream / merkle
 **Branch:** `master`
 **Hua:** Continued the autonomous "pick-a-concept, implement-all-its-techniques, next-one-myself, non-stop" series (part 1 was cache/lock/id/balance). Four more standalone, prod-grade, fully-unit-tested (pure Java, no infra) libraries, each with a teaching README:
