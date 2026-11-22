@@ -187,6 +187,19 @@ jobs:
           # without requests/limits must still fail require-resources
           if ./kyverno apply k8s/policies/kyverno/require-resources.yaml --resource k8s/policies/tests/bad-init-resources-pod.yaml | grep -q 'fail: 0'; then
             echo "bad-init-resources-pod should have been rejected by require-resources"; exit 1; fi
+          # Kyverno ran only on the kustomize output above; the Helm chart is an ALTERNATE deploy path
+          # (Walk 68/108/119) whose rendered manifests were never policy-checked -- helm lint +
+          # kubeconform are structural only, so a template/values edit that dropped runAsNonRoot,
+          # resources or probes (or set image tag :latest) would ship unnoticed. Gate the Helm output on
+          # the same policies the kustomize output gets (Walk 157).
+          for v in helm/values/order-service.yaml helm/values/payment-service.yaml helm/values/ledger-service.yaml; do
+            helm template svc helm/shopflow-service -f "$v" > /tmp/helm-rendered.yaml
+            if ! ./kyverno apply $POLICIES --resource /tmp/helm-rendered.yaml | grep -q 'fail: 0'; then
+              echo "::error::Helm-rendered $v violates a Kyverno policy:"
+              ./kyverno apply $POLICIES --resource /tmp/helm-rendered.yaml
+              exit 1
+            fi
+          done
       - name: "Prometheus rules: syntax + unit tests; Alertmanager config"
         run: |
           docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool prom/prometheus:v3.5.0 \
