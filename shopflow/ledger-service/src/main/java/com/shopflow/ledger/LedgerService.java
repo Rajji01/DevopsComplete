@@ -10,7 +10,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.shopflow.ledger.domain.Account;
+import com.shopflow.ledger.domain.AccountType;
 import com.shopflow.ledger.domain.DoubleEntry;
+import com.shopflow.ledger.domain.FxConversion;
+import com.shopflow.ledger.domain.FxRate;
 import com.shopflow.ledger.domain.JournalEntry;
 import com.shopflow.ledger.domain.JournalEntryStatus;
 import com.shopflow.ledger.domain.Money;
@@ -94,6 +97,59 @@ public class LedgerService {
         }
         log.info("recorded entry {} (ref {}) with {} postings", entry.getId(), reference, lines.size());
         return entry;
+    }
+
+    /** Both journal entries of one FX conversion, plus the amounts (base {@code sold}, quote {@code bought}). */
+    public record FxPosting(JournalEntry sell, JournalEntry buy, Money sold, Money bought) {
+    }
+
+    /**
+     * Book a cross-currency conversion durably: {@code amount} (in {@code rate.base()}) leaves
+     * {@code fromAccount} and the converted quote amount lands in {@code toAccount}, as the TWO balanced
+     * single-currency entries {@link FxConversion} produces (FX inc-4c). Both entries are written in ONE
+     * transaction, so the conversion is all-or-nothing — there is no window where the base left but the
+     * quote never arrived (the clearing accounts would otherwise be left lopsided).
+     *
+     * Idempotent on {@code idempotencyKey} (each leg keyed {@code :fx-sell}/{@code :fx-buy}); a replay
+     * returns the same pair and never double-posts. Same NOT-@Transactional structure as {@link #record}
+     * (Walk 99): the atomic write is in the TransactionTemplate, the unique-key race recovery is caught
+     * outside it. The per-currency {@code FX_CLEARING:<ccy>} control accounts are ensured on first use —
+     * they are DERIVED from the (FxRate-validated) currency, not user input, so there is no typo-absorbs-
+     * money risk that the deliberate-creation rule guards business accounts against.
+     */
+    public FxPosting convertCurrency(String idempotencyKey, String reference,
+                                     String fromAccount, String toAccount, Money amount, FxRate rate) {
+        String baseClearing = "FX_CLEARING:" + rate.base();
+        String quoteClearing = "FX_CLEARING:" + rate.quote();
+        FxConversion.Result r = FxConversion.convert(fromAccount, toAccount, baseClearing, quoteClearing, amount, rate);
+
+        // invariant first — both legs, before any write
+        DoubleEntry.validate(rate.base(), r.sellLeg());
+        DoubleEntry.validate(rate.quote(), r.buyLeg());
+
+        String sellKey = idempotencyKey + ":fx-sell";
+        String buyKey = idempotencyKey + ":fx-buy";
+        var existingSell = journalEntries.findByIdempotencyKey(sellKey);
+        var existingBuy = journalEntries.findByIdempotencyKey(buyKey);
+        if (existingSell.isPresent() && existingBuy.isPresent()) {
+            return new FxPosting(existingSell.get(), existingBuy.get(), r.sold(), r.bought());
+        }
+
+        accounts.create(baseClearing, AccountType.ASSET, rate.base());   // idempotent; derived control accounts
+        accounts.create(quoteClearing, AccountType.ASSET, rate.quote());
+
+        try {
+            return transactionTemplate.execute(status -> new FxPosting(
+                    persist(sellKey, reference, rate.base(), r.sellLeg(), JournalEntryStatus.INITIATED),
+                    persist(buyKey, reference, rate.quote(), r.buyLeg(), JournalEntryStatus.INITIATED),
+                    r.sold(), r.bought()));
+        } catch (DataIntegrityViolationException raceLost) {
+            log.info("fx conversion idempotency race for key {}: returning the winners", idempotencyKey);
+            return new FxPosting(
+                    journalEntries.findByIdempotencyKey(sellKey).orElseThrow(() -> raceLost),
+                    journalEntries.findByIdempotencyKey(buyKey).orElseThrow(() -> raceLost),
+                    r.sold(), r.bought());
+        }
     }
 
     /**
