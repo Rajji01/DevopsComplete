@@ -6,6 +6,19 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 
 ---
 
+## 2026-11-22 — CLI (Opus 4.8) — FX inc-4c foundation (Walks 148–152)
+**Branch:** `master`
+**Hua:** Fintech **inc-4c (FX)** ki domain foundation build ki — pure-domain, incremental, har step CI-green (settlement currency-blindness, Walk 141, ne yahan point kiya tha). Tracker: [`docs/fintech/README.md`](fintech/README.md) row 4c.
+- **148** (`8cfa8af`): `Money.fromMajor`/`toMajor` ab currency ka ISO-4217 minor-unit exponent use karte (`minorUnitDigits`: JPY/KRW=0, BHD/KWD=3, default 2), 2-dp hardcode nahi — JPY 100x / BHD 10x latent bug (dono legs same factor se inflate → `sum==0` invariant pakad nahi paata). INR unchanged.
+- **149** (`2ec6fc1`): `FxRate(base,quote,rate,capturedAt)` — `apply` base→quote, target-currency scale pe HALF_EVEN round; rate captured-with-trade (reproducible/auditable). Degenerate rates rejected at construction.
+- **150** (`7199790`): `FxConversion` — cross-currency move = do balanced single-currency entries (base SELL + quote BUY) FX_CLEARING se; `DoubleEntry` invariant kabhi weaken nahi.
+- **151** (`cd19226`): apne 150 ka fix — `LedgerService.persist` account.currency==entry.currency enforce karta, to single clearing account dono currencies hold nahi kar sakta → per-currency (`FX_CLEARING:USD`/`:INR`). Pure-domain test (DoubleEntry-only) ne nahi pakda tha; persistence enforcement padhke pakda.
+- **152** (push ho raha): `FxController POST /api/v1/fx/preview` (`@Profile("!aws")`, read-only) — curl se poora FX stack live dekho (converted amount + dono legs); no persistence. `@WebMvcTest` test.
+**Verify:** 148–151 sab 14/14 green; 152 push hote hi.
+**Pending / next:** FX **persistence** — Flyway se `FX_CLEARING:<ccy>` seed + `LedgerService` path jo dono entries **atomically** likhe (two-entry vs Walk-99 TransactionTemplate structure + half-conversion window = real design points), realised FX gain/loss on position square-off, delayed-capture variant. Ye bada deliberate step hai (local compile nahi, slow CI) — blind nahi karna.
+
+---
+
 ## 2026-11-22 — CLI (Opus 4.8) — shared rate-limit wired into order-service (Walks 146–147)
 **Branch:** `master`
 **Hua:** §4 ka "shared (Redis) rate limit instead of per-pod" item **build kiya** (autonomous). `shopflow-ratelimit` ab consumable library (classifier=exec) + order-service ki dependency. `OrderRateLimitFilter` → `POST /api/v1/orders` ko PER CUSTOMER (JWT sub) limit karta, security chain mein `AuthorizationFilter` se pehle. Algorithm+backend config: dev/test `LOCAL` (no infra), prod `REDIS` (prod overlay mein `RL_BACKEND`/`REDIS_HOST`/`REDIS_SSL` + `order-service-egress` mein 6379). Purana per-pod `resilience4j.ratelimiter.orders` coarse flood-cap ke roop mein raha (layered). Deterministic `OrderRateLimitFilterTest`.
