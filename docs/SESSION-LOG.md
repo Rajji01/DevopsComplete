@@ -475,3 +475,15 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 - **Drill renumber:** my `D16..D20` rebased to **`D17..D21`** (origin keeps `D16` = phantom-stock). Files renamed + all links/labels/pairings updated across comprehension & debugging READMEs, RAPID-REVISION, INDEX, STATE.
 - **SELF-WALK:** took origin's 1–123 log, appended my 7 walks as **124–130** (merge note inline).
 - **NOTE on earlier SESSION-LOG entries (2026-11-04):** they reference the pre-rebase numbers (`D16`=scaled-pods conn-exhaustion, `D17`=optimistic-409); those are now **`D17`/`D18`**. Current canonical: comprehension **01–31**, debugging **D01–D21**.
+
+---
+
+## 2026-11-22 — CLI (Opus 4.8) — autonomous self-walk, continued (Walks 157–159)
+**Branch:** `master`. Non-stop adversarial review per Abhishek's "self walk kr 1 hour".
+- **Walk 157:** CI ran Kyverno only on the kustomize output; the Helm chart (alternate deploy path) got only `helm lint`/`kubeconform` (structural). Added a loop that renders each service's Helm chart and runs `kyverno apply $POLICIES` on it — same security gate both paths. Chart is compliant today; this catches tomorrow's regression.
+- **Walk 158:** `vpc.tf` had no flow logs — the payments network had no accepted/rejected connection audit trail. Enabled `enable_flow_log` (module owns CloudWatch log group + IAM role), `traffic_type=ALL`, 60s aggregation, 14-day retention. **Hardening, not a bug** — labelled honestly.
+- **Walk 159 (REAL BUG):** swept the concept libs; Snowflake / Count-Min / SkipList / CountingBloom all **clean**, but `shopflow-lock/RedLock.tryAcquire` dropped antirez's Redlock steps 3–5 (validity-time check). It returned "held" the instant a majority granted, ignoring how long acquiring the quorum took, and set `expiresAtMillis` to end-of-loop `now+ttl`. If acquisition outlasts the TTL the lock has already expired on the earliest nodes → **two holders, mutual exclusion gone**; the expiry also overstated validity. Fix: `validity = ttl − (now−start) − drift` (drift = 1% + 2ms); acquire only if `majority AND validity>0`; `expiresAtMillis = start + ttl − drift`. Clock injected (`LongSupplier`) like `InMemoryLockStore` for deterministic tests. Two JUnit tests added.
+
+**Honest verification status:** local JDK is **17**, module targets **21** → couldn't run `make test` here (STATE §3: this verifies in CI). Compiled the touched `shopflow-lock` sources with `javac` (clean) and ran a standalone harness driving the real `RedLock` through a clock-advancing `SlowStore`: quorum-outlasts-TTL → **empty** (was "held"), modest acquisition → present, expiry `~9898` from start (not `now+ttl`). Full module build + the 2 new tests run in CI.
+
+**Git:** committing locally this session (per CLAUDE.md commit-when-told; push on Abhishek's word). **Deferred, scoped (not rushed):** FX square-off entry **booking** (zero `FX_CLEARING` + post to `FX_GAIN_LOSS` — needs deliberate multi-currency settlement accounting) and delayed-capture (payment-side).

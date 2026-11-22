@@ -48,4 +48,59 @@ class RedLockTest {
         // and it must have released n3 — it never sits on a minority
         assertThat(n3.acquire("k", "rival", 10_000).acquired()).isTrue();
     }
+
+    @Test
+    void failsWhenAcquiringTheQuorumOutlastsTheTtl() {
+        // Each node's acquire costs 5s of wall-clock. By the time a majority of three nodes is locked, >10s
+        // has passed — more than the 10s TTL — so the lock has already expired on the first node(s). A bare
+        // majority is present, but there is no validity left: Redlock MUST reject this, or two clients could
+        // believe they hold the same lock. (Before the validity check this returned a "held" lock.)
+        var slow = List.<LockStore>of(
+                new SlowStore(new InMemoryLockStore(clock), now, 5_000),
+                new SlowStore(new InMemoryLockStore(clock), now, 5_000),
+                new SlowStore(new InMemoryLockStore(clock), now, 5_000));
+        var redlock = new RedLock(slow, () -> "tok", clock);
+        assertThat(redlock.tryAcquire("k", Duration.ofSeconds(10))).isEmpty();
+    }
+
+    @Test
+    void stillAcquiresWhenAcquisitionIsWellInsideTheTtl() {
+        // A little acquisition cost (3 nodes × 1s = 3s against a 10s TTL) still leaves plenty of validity.
+        var slow = List.<LockStore>of(
+                new SlowStore(new InMemoryLockStore(clock), now, 1_000),
+                new SlowStore(new InMemoryLockStore(clock), now, 1_000),
+                new SlowStore(new InMemoryLockStore(clock), now, 1_000));
+        var redlock = new RedLock(slow, () -> "tok", clock);
+        assertThat(redlock.tryAcquire("k", Duration.ofSeconds(10))).isPresent();
+    }
+
+    /** A store that advances the shared clock by {@code costMillis} on each acquire, to model slow nodes. */
+    private static final class SlowStore implements LockStore {
+        private final LockStore delegate;
+        private final AtomicLong clock;
+        private final long costMillis;
+
+        SlowStore(LockStore delegate, AtomicLong clock, long costMillis) {
+            this.delegate = delegate;
+            this.clock = clock;
+            this.costMillis = costMillis;
+        }
+
+        @Override
+        public AcquireResult acquire(String key, String token, long ttlMillis) {
+            AcquireResult r = delegate.acquire(key, token, ttlMillis); // happens at the current time...
+            clock.addAndGet(costMillis);                               // ...then time passes
+            return r;
+        }
+
+        @Override
+        public boolean release(String key, String token) {
+            return delegate.release(key, token);
+        }
+
+        @Override
+        public boolean extend(String key, String token, long ttlMillis) {
+            return delegate.extend(key, token, ttlMillis);
+        }
+    }
 }
