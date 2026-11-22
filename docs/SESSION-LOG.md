@@ -14,8 +14,12 @@ Rule: naya entry **sabse upar** add karo (newest first), is line ke theek neeche
 - **150** (`7199790`): `FxConversion` — cross-currency move = do balanced single-currency entries (base SELL + quote BUY) FX_CLEARING se; `DoubleEntry` invariant kabhi weaken nahi.
 - **151** (`cd19226`): apne 150 ka fix — `LedgerService.persist` account.currency==entry.currency enforce karta, to single clearing account dono currencies hold nahi kar sakta → per-currency (`FX_CLEARING:USD`/`:INR`). Pure-domain test (DoubleEntry-only) ne nahi pakda tha; persistence enforcement padhke pakda.
 - **152** (push ho raha): `FxController POST /api/v1/fx/preview` (`@Profile("!aws")`, read-only) — curl se poora FX stack live dekho (converted amount + dono legs); no persistence. `@WebMvcTest` test.
-**Verify:** 148–151 sab 14/14 green; 152 push hote hi.
-**Pending / next:** FX **persistence** — Flyway se `FX_CLEARING:<ccy>` seed + `LedgerService` path jo dono entries **atomically** likhe (two-entry vs Walk-99 TransactionTemplate structure + half-conversion window = real design points), realised FX gain/loss on position square-off, delayed-capture variant. Ye bada deliberate step hai (local compile nahi, slow CI) — blind nahi karna.
+- **153** (`bcd0b00`): `LedgerService.convertCurrency` — dono entries **ek tx** mein (atomic, no half-conversion window — wo window sirf do alag `record()` calls mein tha), idempotent `:fx-sell`/`:fx-buy`, `FX_CLEARING:<ccy>` first-use pe auto-ensure (derived control account, no Flyway seed). `@SpringBootTest`.
+- **154** (`095257a`): `POST /api/v1/fx/convert` — real booking end-to-end over HTTP; `@MockitoBean LedgerService` slice test mein (Walk-146 ka slice-context sabak dobara na toote).
+- **155** (`8f20d1a`, docs): [`fx-multicurrency.md`](fintech/fx-multicurrency.md) — poora teaching note + curl walkthrough + interview Q&A.
+- **156** (`6874e39`): `FxPnl.realised` — square-off pe realised gain/loss (pure, 4 tests; gain/loss/zero/wrong-ccy).
+**Verify:** 148–156 sab 14/14 green.
+**Pending / next:** FX **square-off booking** — `FxPnl` ko persist karo (clearing zero + `FX_GAIN_LOSS` post) — ye **deliberate multi-currency settlement accounting** maangta (account model + direction choices), isliye marathon-tail pe blind nahi, fresh karna. Delayed-capture = payment-side feature (auth≠capture already guarded, Walk 114).
 
 ---
 
