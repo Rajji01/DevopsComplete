@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.shopflow.ledger.domain.AccountNotFoundException;
 import com.shopflow.ledger.domain.FxConversion;
 import com.shopflow.ledger.domain.FxRate;
 import com.shopflow.ledger.domain.Money;
@@ -42,6 +43,12 @@ import com.shopflow.ledger.domain.PostingLine;
 @RequestMapping("/api/v1/fx")
 @Profile("!aws")
 public class FxController {
+
+    private final LedgerService ledger;
+
+    public FxController(LedgerService ledger) {
+        this.ledger = ledger;
+    }
 
     public record PreviewRequest(
             @NotBlank @Size(max = 64) String fromAccount,
@@ -75,10 +82,51 @@ public class FxController {
                 r.buyLeg().stream().map(LegLine::from).toList());
     }
 
+    public record ConvertRequest(
+            @NotBlank @Size(max = 100) String idempotencyKey,
+            @NotBlank @Size(max = 64) String reference,
+            @NotBlank @Size(max = 64) String fromAccount,
+            @NotBlank @Size(max = 64) String toAccount,
+            @Positive long amountMinor,
+            @NotBlank @Size(min = 3, max = 3) String base,
+            @NotBlank @Size(min = 3, max = 3) String quote,
+            @NotNull @Positive BigDecimal rate) {
+    }
+
+    public record ConvertResponse(Long sellEntryId, Long buyEntryId,
+                                  long soldMinor, String soldCurrency, long boughtMinor, String boughtCurrency) {
+    }
+
+    /**
+     * The durable sibling of /preview: actually posts the two balanced entries via
+     * {@link LedgerService#convertCurrency} (atomic, idempotent). The {@code fromAccount}/{@code toAccount}
+     * business accounts must already exist (create them via POST /api/v1/accounts first); the
+     * {@code FX_CLEARING:*} control accounts are ensured by the service.
+     *
+     *   curl -XPOST :8085/api/v1/fx/convert -H 'Content-Type: application/json' -d '{"idempotencyKey":"k1",
+     *     "reference":"trade-1","fromAccount":"CUSTOMER_USD","toAccount":"CASH_INR","amountMinor":10000,
+     *     "base":"USD","quote":"INR","rate":83.50}'
+     */
+    @PostMapping("/convert")
+    public ConvertResponse convert(@Valid @RequestBody ConvertRequest req) {
+        FxRate rate = new FxRate(req.base(), req.quote(), req.rate(), Instant.now());
+        LedgerService.FxPosting p = ledger.convertCurrency(req.idempotencyKey(), req.reference(),
+                req.fromAccount(), req.toAccount(), Money.of(req.amountMinor(), req.base()), rate);
+        return new ConvertResponse(p.sell().getId(), p.buy().getId(),
+                p.sold().minorUnits(), p.sold().currency(), p.bought().minorUnits(), p.bought().currency());
+    }
+
     /** A degenerate rate / same base-and-quote (FxRate's own guards) is a bad request, not a 500. */
     @ExceptionHandler(IllegalArgumentException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public String badRequest(IllegalArgumentException e) {
+        return e.getMessage();
+    }
+
+    /** A conversion naming a business account that was never created is a 404, not a 500. */
+    @ExceptionHandler(AccountNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public String notFound(AccountNotFoundException e) {
         return e.getMessage();
     }
 }
