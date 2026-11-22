@@ -7,15 +7,17 @@ import java.util.List;
  * can't be a mixed-currency journal entry (DoubleEntry rejects legs whose currency differs from the
  * entry currency, because "debits == credits" is only meaningful within one currency).
  *
- * The answer is TWO balanced single-currency entries joined through an FX clearing account:
- *   - the SELL leg (base currency):  CR fromAccount, DR fxClearing   — the base amount leaves the
- *                                     source and is parked in clearing;
- *   - the BUY  leg (quote currency): DR toAccount,   CR fxClearing   — the converted amount arrives
- *                                     at the target out of clearing.
- * Each leg is single-currency and sums to zero, so each passes {@link DoubleEntry#validate} on its
- * own. The clearing account is left holding +base and -quote: that two-currency residual IS the book's
- * FX position, and the realised gain/loss is recognised later when the position is squared off at a
- * different rate (not in this single-conversion primitive — it only captures WHAT the trade converted).
+ * The answer is TWO balanced single-currency entries joined through a PER-CURRENCY FX clearing account:
+ *   - the SELL leg (base currency):  CR fromAccount, DR fxClearingBase   — the base amount leaves the
+ *                                     source and is parked in the base-currency clearing account;
+ *   - the BUY  leg (quote currency): DR toAccount,   CR fxClearingQuote  — the converted amount arrives
+ *                                     at the target out of the quote-currency clearing account.
+ * Each leg is single-currency and sums to zero, so each passes {@link DoubleEntry#validate} on its own.
+ * The two clearing accounts are DISTINCT and single-currency on purpose: the ledger persists an account
+ * with exactly one currency and {@code LedgerService} rejects a posting whose currency differs from the
+ * account's, so one shared clearing account could not hold both sides — the base clearing is left +base
+ * and the quote clearing -quote, and that cross-account pair IS the book's FX position, squared off
+ * later at a rate that realises the gain/loss (not in this single-conversion primitive).
  *
  * Amounts are computed with the captured {@link FxRate}, so the conversion is reproducible: the same
  * trade re-booked from the stored rate yields the same minor units, which is what lets it reconcile.
@@ -34,21 +36,24 @@ public final class FxConversion {
 
     /**
      * Book moving {@code amount} (in the rate's base currency) out of {@code fromAccount} and the
-     * converted quote amount into {@code toAccount}, through {@code fxClearingAccount}. {@code amount}
-     * must be in {@code rate.base()} — enforced by {@link FxRate#apply} — so a wrong-currency amount is
-     * a programming error, not a silent re-interpretation.
+     * converted quote amount into {@code toAccount}, through the base- and quote-currency FX clearing
+     * accounts. {@code amount} must be in {@code rate.base()} — enforced by {@link FxRate#apply} — so a
+     * wrong-currency amount is a programming error, not a silent re-interpretation. The two clearing
+     * accounts must be single-currency (base and quote respectively), matching how the ledger persists
+     * and validates account currency; passing one account for both would fail to post.
      */
-    public static Result convert(String fromAccount, String toAccount, String fxClearingAccount,
+    public static Result convert(String fromAccount, String toAccount,
+                                 String fxClearingBase, String fxClearingQuote,
                                  Money amount, FxRate rate) {
         Money bought = rate.apply(amount); // validates amount.currency() == rate.base(), rounds in quote
 
         List<PostingLine> sellLeg = List.of(
-                new PostingLine(fromAccount, PostingDirection.CREDIT, amount),        // base leaves the source
-                new PostingLine(fxClearingAccount, PostingDirection.DEBIT, amount));  // ...into FX clearing (base)
+                new PostingLine(fromAccount, PostingDirection.CREDIT, amount),      // base leaves the source
+                new PostingLine(fxClearingBase, PostingDirection.DEBIT, amount));   // ...into base FX clearing
 
         List<PostingLine> buyLeg = List.of(
-                new PostingLine(toAccount, PostingDirection.DEBIT, bought),           // quote arrives at the target
-                new PostingLine(fxClearingAccount, PostingDirection.CREDIT, bought)); // ...out of FX clearing (quote)
+                new PostingLine(toAccount, PostingDirection.DEBIT, bought),         // quote arrives at the target
+                new PostingLine(fxClearingQuote, PostingDirection.CREDIT, bought)); // ...out of quote FX clearing
 
         return new Result(amount, bought, sellLeg, buyLeg);
     }
