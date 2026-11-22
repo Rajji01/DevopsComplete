@@ -27,6 +27,17 @@ module "vpc" {
   enable_dns_hostnames = true
   enable_dns_support   = true
 
+  # VPC flow logs: a network-layer audit trail (who talked to whom, accepted + rejected) — a baseline
+  # control for a payments platform, and the record you need to investigate an incident or spot
+  # exfiltration. Without it the network is a black box after the fact. To CloudWatch with a bounded
+  # retention; the module owns the log group + IAM role.
+  enable_flow_log                                 = true
+  create_flow_log_cloudwatch_log_group            = true
+  create_flow_log_cloudwatch_iam_role             = true
+  flow_log_traffic_type                           = "ALL"
+  flow_log_max_aggregation_interval               = 60
+  flow_log_cloudwatch_log_group_retention_in_days = 14
+
   create_database_subnet_group = true
 
   # the AWS Load Balancer Controller and cluster autoscaler discover subnets by these tags
