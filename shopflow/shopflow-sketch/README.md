@@ -19,6 +19,17 @@ before an expensive check — if the filter says *no*, skip the DB/disk/network 
 A plain Bloom can't remove (clearing a bit might clear one another item shares). Keep a small counter per
 slot instead of a bit: add increments, remove decrements, present = all k non-zero. Costs a few bytes/slot.
 
+## Cuckoo filter — Bloom membership you can DELETE from, cheaply
+Stores a short **fingerprint** of each item in one of two candidate buckets instead of setting k bits. A
+lookup reads just two buckets (cache-friendly); no false negatives, only false positives. The clever bit is
+the *partial-key* trick: the two buckets are `i1 = hash(x)` and `i2 = i1 XOR hash(fingerprint)`, and because
+XOR is its own inverse you can recover either bucket from the other using only the stored fingerprint — so an
+eviction ("cuckoo kick") can relocate a fingerprint to its alternate bucket without ever knowing the
+original key. Supports **delete** (Bloom can't) in less space than a counting Bloom at the same error rate.
+- cost: an insert can FAIL near-full (a kick chain exceeds the limit) — `add` returns `false` so you size up
+  rather than corrupt. Delete only items you actually inserted (deleting an un-inserted item can drop a
+  colliding fingerprint).
+
 ## Count-Min sketch — "how many times have I seen this?"
 A `depth × width` grid of counters; a key adds to one cell per row; the estimate is the **min** across its
 rows. Collisions only ADD, so it **never underestimates**, and the min throws away the rows where this key
@@ -57,6 +68,11 @@ BloomFilter<String> seen = BloomFilter.create(1_000_000, 0.01);
 seen.add(url);
 if (!seen.mightContain(url)) { /* definitely new -> crawl */ }
 
+CuckooFilter recent = CuckooFilter.create(1_000_000);       // membership WITH delete
+recent.add(sessionId);
+recent.remove(sessionId);                                   // Bloom can't do this
+boolean maybe = recent.mightContain(sessionId);
+
 CountMinSketch freq = CountMinSketch.create(0.001, 0.01);   // ~1% over-count, 99% confidence
 freq.add(sourceIp, 1);
 long hits = freq.estimate(sourceIp);                        // >= true count, good enough for "is this a flood?"
@@ -78,7 +94,9 @@ are exactly these structures.
 
 ## Tests
 `BloomFilterTest` (no false negatives; measured false-positive rate under target), `CountingBloomFilterTest`
-(remove makes absent; double-add survives one remove; no false negatives), `CountMinSketchTest` (never
+(remove makes absent; double-add survives one remove; no false negatives), `CuckooFilterTest` (no false
+negatives over 5000 inserts; FP rate < 5%; remove makes absent; removing one of two copies leaves the other;
+size tracks add/remove; non-positive capacity rejected), `CountMinSketchTest` (never
 underestimates over a 5000-event stream; a heavy hitter estimated within the ε bound), `HyperLogLogTest`
 (100k distinct estimated within the standard error; empty = 0; small-range linear counting exact; re-adding is
 idempotent; merge of disjoint and of overlapping streams estimates the true union; bad precision / mismatched
