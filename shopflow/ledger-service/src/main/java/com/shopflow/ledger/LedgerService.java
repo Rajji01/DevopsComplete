@@ -132,7 +132,12 @@ public class LedgerService {
         var existingSell = journalEntries.findByIdempotencyKey(sellKey);
         var existingBuy = journalEntries.findByIdempotencyKey(buyKey);
         if (existingSell.isPresent() && existingBuy.isPresent()) {
-            return new FxPosting(existingSell.get(), existingBuy.get(), r.sold(), r.bought());
+            // Idempotent replay: return what was ACTUALLY booked, read back from the persisted legs — NOT
+            // r.sold()/r.bought(), which are recomputed from THIS call's amount+rate. A replay carrying the
+            // same key with a different body (a buggy client, a mutated retry) must still get the original
+            // conversion back, the same way record() returns the persisted entry rather than re-deriving it.
+            return new FxPosting(existingSell.get(), existingBuy.get(),
+                    bookedAmount(existingSell.get()), bookedAmount(existingBuy.get()));
         }
 
         accounts.create(baseClearing, AccountType.ASSET, rate.base());   // idempotent; derived control accounts
@@ -144,12 +149,27 @@ public class LedgerService {
                     persist(buyKey, reference, rate.quote(), r.buyLeg(), JournalEntryStatus.INITIATED),
                     r.sold(), r.bought()));
         } catch (DataIntegrityViolationException raceLost) {
+            // a concurrent request with the same key won; return ITS booked amounts, read from the persisted
+            // legs, for the same reason as the replay fast-path above (not this call's recomputed r).
+            JournalEntry sell = journalEntries.findByIdempotencyKey(sellKey).orElseThrow(() -> raceLost);
+            JournalEntry buy = journalEntries.findByIdempotencyKey(buyKey).orElseThrow(() -> raceLost);
             log.info("fx conversion idempotency race for key {}: returning the winners", idempotencyKey);
-            return new FxPosting(
-                    journalEntries.findByIdempotencyKey(sellKey).orElseThrow(() -> raceLost),
-                    journalEntries.findByIdempotencyKey(buyKey).orElseThrow(() -> raceLost),
-                    r.sold(), r.bought());
+            return new FxPosting(sell, buy, bookedAmount(sell), bookedAmount(buy));
         }
+    }
+
+    /**
+     * The amount actually booked for one FX leg, read back from its persisted postings. Both postings of a
+     * single-currency leg carry the same magnitude and currency (e.g. the sell leg is CR fromAccount / DR
+     * clearing, both = the base amount), so either one is the leg's amount. Used on the idempotent replay and
+     * race-recovery paths so the returned amounts are always the persisted truth, never re-derived from a
+     * (possibly different) replay request.
+     */
+    private Money bookedAmount(JournalEntry entry) {
+        return postings.findByJournalEntryId(entry.getId()).stream()
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("entry " + entry.getId() + " has no postings"))
+                .getAmount();
     }
 
     /**

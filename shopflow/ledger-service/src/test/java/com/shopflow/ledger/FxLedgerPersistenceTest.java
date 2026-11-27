@@ -66,4 +66,30 @@ class FxLedgerPersistenceTest {
         assertThat(ledger.balanceOf("CASH_INR")).isEqualTo(Money.of(835000, "INR"));
         assertThat(ledger.balanceOf("CUSTOMER_USD")).isEqualTo(Money.of(-10000, "USD"));
     }
+
+    @Test
+    void replayingTheSameKeyWithADifferentBodyReturnsWhatWasActuallyBooked() {
+        String key = UUID.randomUUID().toString();
+        String ref = "fx-" + UUID.randomUUID();
+        LedgerService.FxPosting first = ledger.convertCurrency(key, ref,
+                "CUSTOMER_USD", "CASH_INR", Money.of(10000, "USD"), USD_INR);
+
+        // same idempotency key, but a DIFFERENT amount AND rate (a buggy client, or a mutated retry).
+        // The ledger must treat this as the already-done conversion and hand back the ORIGINAL booking —
+        // not echo the new body's numbers for a conversion that was never posted.
+        FxRate differentRate =
+                new FxRate("USD", "INR", new BigDecimal("90.00"), Instant.parse("2026-11-22T00:00:00Z"));
+        LedgerService.FxPosting replay = ledger.convertCurrency(key, ref,
+                "CUSTOMER_USD", "CASH_INR", Money.of(55555, "USD"), differentRate);
+
+        // the response echoes the FIRST booking (10000 USD -> 835000 INR), not 55555 USD @ 90.00
+        assertThat(replay.sold()).isEqualTo(first.sold()).isEqualTo(Money.of(10000, "USD"));
+        assertThat(replay.bought()).isEqualTo(first.bought()).isEqualTo(Money.of(835000, "INR"));
+        assertThat(replay.sell().getId()).isEqualTo(first.sell().getId());
+        assertThat(replay.buy().getId()).isEqualTo(first.buy().getId());
+
+        // and the books still hold exactly one conversion
+        assertThat(ledger.balanceOf("CASH_INR")).isEqualTo(Money.of(835000, "INR"));
+        assertThat(ledger.balanceOf("CUSTOMER_USD")).isEqualTo(Money.of(-10000, "USD"));
+    }
 }
