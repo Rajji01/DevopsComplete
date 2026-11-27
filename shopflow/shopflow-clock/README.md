@@ -35,8 +35,28 @@ element-wise `max` of the sender's vector, then bumps its own. Comparing two vec
 `CONCURRENT` is the case a Lamport clock can't see, and the one that matters: it's exactly what signals "two
 independent writes, you must resolve a conflict" — a Dynamo-style sibling, or an OR-Set add-vs-remove.
 
+## Hybrid Logical Clock (HLC) — physical-ish time that's also causal
+The clock CockroachDB / YugabyteDB use. State is a pair `(l, c)`: `l` tracks the largest physical time seen
+(own or any peer's), `c` is a small tie-breaker. A timestamp stays within the clock skew of **wall-clock
+time** (so it's human-meaningful, unlike a bare Lamport counter) AND is monotonic with causality
+(`a→b ⇒ HLC(a) < HLC(c)`) even when machines' physical clocks are skewed — the property a last-writer-wins
+store needs to pick the right winner.
+
+| Event | Rule |
+|---|---|
+| local / send | `l = max(l, now)`; `c++` if physical time didn't advance `l`, else `c = 0` |
+| receive `(l_m, c_m)` | `l = max(l, l_m, now)`; set `c` so the result strictly dominates both local state and the message |
+
+Real systems pack `(l, c)` into one 64-bit int (≈48 bits ms + 16 bits counter); here it's a readable pair.
+Use it over Lamport when you want timestamps that *mean* something in seconds, and over a vector clock when
+you need a compact total order rather than full concurrency detection.
+
 ## Use it
 ```java
+HybridLogicalClock hlc = new HybridLogicalClock();
+var ts = hlc.now();          // stamp a write; close to wall-clock, safe for ordering/LWW
+hlc.update(incomingTs);      // on receive: result dominates both, carrying causality across skew
+
 LamportClock clock = new LamportClock();
 long t = clock.sendTimestamp();         // stamp an outgoing message (a send is a local event)
 clock.onReceive(incomingTimestamp);     // advance past both on receive
@@ -59,4 +79,7 @@ limits here are why the saga leans on idempotent, status-guarded consumers rathe
 ## Tests
 `LamportClockTest` (local events monotonic; receive advances past both; a→b implies L(a) < L(b)),
 `VectorClockTest` (identical = EQUAL; a causal chain is BEFORE/AFTER; independent events on different nodes
-are CONCURRENT — the case Lamport can't detect; merge takes the element-wise max; unknown node reads as 0).
+are CONCURRENT — the case Lamport can't detect; merge takes the element-wise max; unknown node reads as 0),
+`HybridLogicalClockTest` (frozen physical time → counter climbs then resets when it advances; `l` never runs
+behind the wall clock; a receive from a skewed-ahead peer still comes out strictly greater — causality across
+skew; same-`l` receive beats the larger counter).
