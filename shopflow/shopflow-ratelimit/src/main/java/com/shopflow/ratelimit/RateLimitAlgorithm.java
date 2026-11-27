@@ -1,7 +1,7 @@
 package com.shopflow.ratelimit;
 
 /**
- * The five classic algorithms. Pick one with {@code ratelimit.algorithm}. Short version of the trade-offs
+ * The classic algorithms. Pick one with {@code ratelimit.algorithm}. Short version of the trade-offs
  * (the README has the long version with diagrams):
  *
  *  FIXED_WINDOW            — count per clock-aligned window. Cheapest + simplest. Flaw: a 2x burst can
@@ -14,11 +14,16 @@ package com.shopflow.ratelimit;
  *                            Allows controlled bursts (up to capacity), great for APIs. Stripe/AWS use it.
  *  LEAKY_BUCKET            — a queue that drains at a fixed rate; rejects when full. Enforces a SMOOTH
  *                            output rate (no bursts) — good for protecting a fragile downstream.
+ *  GCRA                    — the token bucket computed from the other side: one timestamp (Theoretical
+ *                            Arrival Time), no token count, no refill. Same burst-to-capacity behaviour,
+ *                            O(1) state, exact Retry-After; what redis-cell uses, ideal for a single-key
+ *                            distributed limiter.
  */
 public enum RateLimitAlgorithm {
     FIXED_WINDOW,
     SLIDING_WINDOW_LOG,
     SLIDING_WINDOW_COUNTER,
     TOKEN_BUCKET,
-    LEAKY_BUCKET
+    LEAKY_BUCKET,
+    GCRA
 }

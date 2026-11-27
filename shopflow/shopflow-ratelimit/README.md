@@ -1,4 +1,4 @@
-# shopflow-ratelimit — five algorithms, two backends, one config knob
+# shopflow-ratelimit — six algorithms, two backends, one config knob
 
 Rate limiting = "how many operations may this key do in this much time?" Every algorithm below answers
 that; they differ in **how they shape bursts** and **what they cost**. This module implements all five,
@@ -7,7 +7,7 @@ each with an **in-memory** backend (single node, used for tests/dev) and a **Red
 
 ---
 
-## The five algorithms (what, trade-off, when)
+## The algorithms (what, trade-off, when)
 
 | Algorithm | Idea | Memory/key | Burst behaviour | Use when |
 |---|---|---|---|---|
@@ -16,6 +16,7 @@ each with an **in-memory** backend (single node, used for tests/dev) and a **Red
 | **Sliding window counter** | weight the previous window by how much it still overlaps | O(1) | smooth, slightly approximate | **the usual default** (Cloudflare) |
 | **Token bucket** | refill tokens at a rate up to a capacity; spend to act | O(1) | **allows bursts** up to capacity, then steady | APIs that should tolerate bursts (AWS/Stripe/GitHub) |
 | **Leaky bucket** | a bucket that drains at a fixed rate; overflow → reject | O(1) | **no bursts** — smooth output | protecting a fragile downstream from spikes |
+| **GCRA** | one timestamp (Theoretical Arrival Time); allow iff the projected arrival ≤ a bucket ahead | **O(1), a single `long`** | same as token bucket (burst to capacity, then paced) | a single-key distributed limiter; exact `Retry-After` for free (redis-cell) |
 
 > Token vs leaky is the one people mix up: **token bucket lets you save up and burst; leaky bucket forces
 > a steady trickle.** Same steady rate, opposite burst shape.
@@ -82,7 +83,7 @@ RL_ALGO=TOKEN_BUCKET          RL_BACKEND=REDIS ./mvnw -pl shopflow-ratelimit spr
 ```
 Keys:
 ```
-ratelimit.algorithm   FIXED_WINDOW | SLIDING_WINDOW_LOG | SLIDING_WINDOW_COUNTER | TOKEN_BUCKET | LEAKY_BUCKET
+ratelimit.algorithm   FIXED_WINDOW | SLIDING_WINDOW_LOG | SLIDING_WINDOW_COUNTER | TOKEN_BUCKET | LEAKY_BUCKET | GCRA
 ratelimit.backend     LOCAL | REDIS
 ratelimit.limit / .window              (window algorithms: "limit per window")
 ratelimit.capacity / .refill-per-second (bucket algorithms)
@@ -117,6 +118,7 @@ limit across all pods via Redis. It's a standalone, tested library + demo here; 
 
 ## Tests
 
-`RateLimiterLocalTest` drives all five in-memory algorithms with a fake clock (deterministic, no infra) —
-it both verifies the logic and documents each algorithm's defining behaviour. The Lua backend mirrors that
-logic and is meant to be exercised live against a real Redis.
+`RateLimiterLocalTest` drives all six in-memory algorithms with a fake clock (deterministic, no infra) —
+it both verifies the logic and documents each algorithm's defining behaviour (GCRA: bursts to capacity then
+paces at the rate, same as the token bucket, with an exact `Retry-After`). The Lua backend mirrors that
+logic (one `.lua` per algorithm, including `gcra.lua`) and is meant to be exercised live against a real Redis.

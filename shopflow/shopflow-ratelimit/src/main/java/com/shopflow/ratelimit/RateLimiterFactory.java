@@ -6,6 +6,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import com.shopflow.ratelimit.local.FixedWindowLimiter;
+import com.shopflow.ratelimit.local.GcraLimiter;
 import com.shopflow.ratelimit.local.LeakyBucketLimiter;
 import com.shopflow.ratelimit.local.SlidingWindowCounterLimiter;
 import com.shopflow.ratelimit.local.SlidingWindowLogLimiter;
@@ -46,6 +47,7 @@ public final class RateLimiterFactory {
             case SLIDING_WINDOW_COUNTER -> new SlidingWindowCounterLimiter(rule, clock);
             case TOKEN_BUCKET -> new TokenBucketLimiter(rule, clock);
             case LEAKY_BUCKET -> new LeakyBucketLimiter(rule, clock);
+            case GCRA -> new GcraLimiter(rule, clock);
         };
     }
 }

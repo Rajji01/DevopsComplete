@@ -91,6 +91,27 @@ class RateLimiterLocalTest {
     }
 
     @Test
+    void gcra_burstsToCapacityThenPacesAtTheRate() {
+        var rl = new GcraLimiter(RateLimitRule.bucket(3, 1.0), clock); // cap 3, 1 permit/sec
+        assertThat(allowed(rl, "a")).isTrue();
+        assertThat(allowed(rl, "a")).isTrue();
+        assertThat(allowed(rl, "a")).isTrue();         // burst of exactly 3 from idle
+        assertThat(allowed(rl, "a")).isFalse();        // 4th denied — same shape as the token bucket
+        advance(1000);                                 // one emission interval later
+        assertThat(allowed(rl, "a")).isTrue();         // one more conforms
+        assertThat(allowed(rl, "a")).isFalse();
+    }
+
+    @Test
+    void gcra_deniedCarriesExactRetryAfter() {
+        var rl = new GcraLimiter(RateLimitRule.bucket(1, 1.0), clock); // cap 1, 1/sec
+        assertThat(rl.tryAcquire("a").allowed()).isTrue();
+        var denied = rl.tryAcquire("a");
+        assertThat(denied.allowed()).isFalse();
+        assertThat(denied.retryAfterMillis()).isEqualTo(1000); // exactly one emission interval
+    }
+
+    @Test
     void denied_resultCarriesRetryAfter() {
         var rl = new TokenBucketLimiter(RateLimitRule.bucket(1, 1.0), clock);
         assertThat(rl.tryAcquire("a").allowed()).isTrue();

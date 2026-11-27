@@ -50,6 +50,7 @@ public final class RedisRateLimiter implements RateLimiter {
             case SLIDING_WINDOW_COUNTER -> "sliding_window_counter.lua";
             case TOKEN_BUCKET -> "token_bucket.lua";
             case LEAKY_BUCKET -> "leaky_bucket.lua";
+            case GCRA -> "gcra.lua";
         };
     }
 
@@ -58,8 +59,8 @@ public final class RedisRateLimiter implements RateLimiter {
     public RateLimitResult tryAcquire(String key, int permits) {
         List<String> keys = List.of(keyPrefix + ":" + key);
         Object[] argv = switch (algorithm) {
-            // bucket algos are parameterised by capacity + rate...
-            case TOKEN_BUCKET, LEAKY_BUCKET ->
+            // bucket algos (and GCRA) are parameterised by capacity + rate...
+            case TOKEN_BUCKET, LEAKY_BUCKET, GCRA ->
                     new Object[]{num(rule.capacity()), num(rule.refillPerSecond()), Integer.toString(permits)};
             // ...the log also needs a unique id so each permit is a distinct ZSET member...
             case SLIDING_WINDOW_LOG ->
@@ -75,7 +76,7 @@ public final class RedisRateLimiter implements RateLimiter {
         long remaining = r.get(1);
         long retryMs = r.get(2);
         long ceiling = switch (algorithm) {
-            case TOKEN_BUCKET, LEAKY_BUCKET -> rule.capacity();
+            case TOKEN_BUCKET, LEAKY_BUCKET, GCRA -> rule.capacity();
             default -> rule.limit();
         };
         return allowed

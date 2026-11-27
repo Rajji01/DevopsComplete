@@ -31,7 +31,7 @@ public class RateLimitProperties {
     /** Build the numeric rule the active algorithm needs from whichever fields apply to it. */
     public RateLimitRule toRule() {
         return switch (algorithm) {
-            case TOKEN_BUCKET, LEAKY_BUCKET -> RateLimitRule.bucket(capacity, refillPerSecond);
+            case TOKEN_BUCKET, LEAKY_BUCKET, GCRA -> RateLimitRule.bucket(capacity, refillPerSecond);
             default -> RateLimitRule.perWindow(limit, window);
         };
     }
