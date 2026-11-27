@@ -19,6 +19,12 @@ cache cold-misses entirely, a sharded DB reshuffles everything. Consistent hashi
 - **`RendezvousHash` (HRW)** — same minimal-movement property without a ring: for a key, score every node by
   `hash(node, key)` and pick the max. No vnode tuning, naturally even; routing is O(nodes) instead of
   O(log positions). Good for small/medium node counts.
+- **`BoundedLoadHashRing`** — consistent hashing with a FAIRNESS cap (Google, 2016). Plain `HashRing` keeps
+  movement minimal but a hot key range can still pile onto one node; this caps any node at `(1+ε)·average`
+  by continuing clockwise to the next node with room when the first is full — bounded load, still ~1/N
+  movement on change. Stateful (tracks each key's assignment, `assign`/`release`) — the model for routing
+  live requests/connections, not just hashing to a shard. Smaller ε = tighter balance, more keys bumped off
+  their first choice (HAProxy/Vimeo use this).
 
 ```
 remove a node:
@@ -60,6 +66,8 @@ The load balancers are what an API gateway in front of the services does; least-
 upgrade over the round-robin a basic Service/kube-proxy gives you.
 
 ## Tests
-`HashTest` (removal moves only the gone node's keys; even distribution with vnodes; rendezvous stability)
+`HashTest` (removal moves only the gone node's keys; even distribution with vnodes; rendezvous stability),
+`BoundedLoadHashRingTest` (no node exceeds the `(1+ε)·avg` cap over 300 keys; assignment idempotent + stable;
+release frees capacity; tighter ε still respects its cap; bad args / empty ring rejected)
 and `LoadBalancerTest` (round-robin order; weighted proportions; least-connections reacts to release;
 **P2C keeps the peak near average over 1000 picks**).
