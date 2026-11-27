@@ -304,9 +304,9 @@ Ab `isNew()==true` → `persist()` → sidha INSERT, SELECT gaya.
 - **Charge pehle, commit baad** (humara): crash beech mein → row nahi bana → redelivery → **dobara charge**.
 - **Commit pehle, charge baad**: crash beech mein → row CAPTURED dikhata hai, **paisa gaya hi nahi** — worse, kyunki ye jhooth hai.
 
-**Asli fix wire ke us paar hai:** processor-side **idempotency key** (Stripe `Idempotency-Key`, Razorpay `receipt`) = humara `orderRef`. Dobara charge aaye to processor bolta hai "ye to ho chuka" aur paisa ek hi baar move hota hai. Isliye ye **interface ka CONTRACT** hai (PaymentGateway javadoc), implementation detail nahi — real adapter likhne wala wahi padhega.
+**Asli fix wire ke us paar hai:** processor-side **idempotency key** (Stripe `Idempotency-Key` header) = `orderRef` se banaya **per-operation** key — `orderRef:authorize` / `orderRef:capture` / `orderRef:refund`, ek bare `orderRef` teeno pe share NAHI. Dobara charge aaye to processor bolta hai "ye to ho chuka" aur paisa ek hi baar move hota hai. **Per-operation kyun (Walk 161):** authorize/capture/refund teen alag Stripe endpoints hain, aur Stripe ek hi `Idempotency-Key` ko doosre endpoint/params pe reuse karne pe `idempotency_error` deta hai — to ek shared `orderRef` key capture aur refund ko fail kara deti, dedupe nahi. Ye **interface ka CONTRACT** hai (PaymentGateway javadoc), implementation detail nahi — real adapter likhne wala wahi padhega. (Wahi per-leg keying jo ledger FX mein hai: `:fx-sell`/`:fx-buy`.)
 
-**Ek line mein:** *Remote call + local transaction kabhi atomic nahi honge; at-least-once chuno aur dusri taraf dedupe karao — key tumhara aggregate id hai.*
+**Ek line mein:** *Remote call + local transaction kabhi atomic nahi honge; at-least-once chuno aur dusri taraf dedupe karao — key tumhara aggregate id hai, per-operation scoped.*
 
 ### 10a. Retention ≠ "data gaya": replayable window (Walk 59)
 

@@ -61,7 +61,7 @@
 | Secrets / PCI (tokenization, vault, no PAN in logs) | External Secrets + IRSA; tokenization 🆕; no-PAN-in-logs 🆕 | 🟡 |
 
 ### 4. Hard-problem ammo (map to existing finds)
-- Retry-without-idempotency → duplicate charge → **Walk 45** (idempotency race) + **Walk 71** (gateway idempotency key).
+- Retry-without-idempotency → duplicate charge → **Walk 45** (idempotency race) + **Walk 71 / 161** (gateway idempotency key — *per-operation*: `orderRef:authorize`/`:capture`/`:refund`, since Stripe rejects one key reused across its 3 endpoints).
 - Race on balance → double-spend → **optimistic locking** (`@Version`), **Walk 55** (double-release phantom stock = same class).
 - PSP timeout, ambiguous state → **reconciler / OrdersStuckConfirmed** (Walk 53); increment 3 recon.
 - Orphaned pending txns → **reaper/sweeper** (`reconcileFailedOrders`).

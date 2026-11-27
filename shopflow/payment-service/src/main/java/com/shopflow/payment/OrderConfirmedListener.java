@@ -18,8 +18,9 @@ import io.micrometer.core.instrument.MeterRegistry;
  * Charge + payment row + outgoing PaymentCaptured/PaymentFailed event are one local transaction
  * (outbox), so a crash can never leave a charge without its event or an event without its charge.
  * One honest caveat (Walk 71): the gateway call itself cannot join the DB transaction, so a crash
- * between charge() and the commit re-runs charge() on redelivery — safe ONLY because orderRef is
- * the gateway idempotency key (see the PaymentGateway contract).
+ * between charge() and the commit re-runs charge() on redelivery — safe ONLY because each gateway call
+ * is idempotent on a per-operation key derived from orderRef ({@code orderRef:authorize}/{@code :capture}/
+ * {@code :refund}, not a shared bare orderRef — see the PaymentGateway contract, refined Walk 161).
  */
 @Component
 public class OrderConfirmedListener {
