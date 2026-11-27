@@ -25,6 +25,12 @@ cache cold-misses entirely, a sharded DB reshuffles everything. Consistent hashi
   movement on change. Stateful (tracks each key's assignment, `assign`/`release`) — the model for routing
   live requests/connections, not just hashing to a shard. Smaller ε = tighter balance, more keys bumped off
   their first choice (HAProxy/Vimeo use this).
+- **`MaglevHash`** — Google's L4-balancer hash (NSDI 2016; also Envoy). Precomputes a prime-size lookup table
+  from one permutation per backend (`offset = h1 % M`, `skip = h2 % (M-1) + 1`, `perm[j] = (offset+j·skip) % M`;
+  prime M ⇒ skip coprime ⇒ visits every slot). Backends take turns claiming their next free preferred slot
+  until full → **near-perfectly even** load (±1 slot) and **O(1) lookup** (`table[hash(key) % M]`, one array
+  read). Trade-off: removing a backend reshuffles ~1/N (a touch more than a ring's strict minimum), rebuilt
+  on membership change — the right call for a stateless L4 balancer that wants even load + constant-time route.
 
 ```
 remove a node:
@@ -68,6 +74,8 @@ upgrade over the round-robin a basic Service/kube-proxy gives you.
 ## Tests
 `HashTest` (removal moves only the gone node's keys; even distribution with vnodes; rendezvous stability),
 `BoundedLoadHashRingTest` (no node exceeds the `(1+ε)·avg` cap over 300 keys; assignment idempotent + stable;
-release frees capacity; tighter ε still respects its cap; bad args / empty ring rejected)
+release frees capacity; tighter ε still respects its cap; bad args / empty ring rejected),
+`MaglevHashTest` (100k keys spread within ±10% of ideal across 5 backends; lookup stable per key; removing a
+backend moves &lt;30% of keys — ~its 1/5 share, not mod-N's ~100%; non-prime / too-small size / empty rejected)
 and `LoadBalancerTest` (round-robin order; weighted proportions; least-connections reacts to release;
 **P2C keeps the peak near average over 1000 picks**).
