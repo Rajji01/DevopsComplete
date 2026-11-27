@@ -35,6 +35,16 @@ Cap concurrent calls to a dependency (a semaphore). If it goes slow, unbounded c
 thread pool and sink the whole service; the bulkhead rejects past N so the rest keeps serving. Named for a
 ship's watertight compartments.
 
+## Adaptive concurrency limit (AIMD)
+A Bulkhead's `N` is a hand-tuned guess, and the real capacity changes with load and with a slowing
+dependency. `AimdConcurrencyLimiter` finds `N` itself using TCP's congestion-control rule — **Additive
+Increase / Multiplicative Decrease**: while requests complete under the latency timeout AND the limit is
+actually being pressed, nudge it up by 1; the moment a request is slow or dropped, cut it by a backoff
+factor (e.g. ×0.9). The limit rides just below where latency starts climbing, and retreats fast on stress.
+The asymmetry is the point (same as TCP): probe gently so you don't cause the overload, retreat hard so you
+relieve the downstream immediately. `tryAcquire()` sheds when at the limit; `onSuccess(rtt)` / `onDropped()`
+feed the controller. (The shape of Netflix's concurrency-limits `AIMDLimit`; it won't inflate while idle.)
+
 ## How they stack (the order matters)
 A call to a flaky dependency is typically wrapped, outside-in:
 ```
@@ -67,4 +77,6 @@ COUNT_BASED window — Walks 39/56). This module is that stack built by hand so 
 `CircuitBreakerTest` (opens on threshold, fails fast, half-open-after-timeout → close on trials, reopen on a
 trial failure — all via a fake clock), `RetryTest` (succeeds after transient failures, exhausts + rethrows,
 skips non-retryable — backoff schedule asserted with a recording sleeper), `BulkheadTest` (admit N then
-reject then release), `BackoffsTest` (fixed/exponential-capped, full/equal jitter within bounds).
+reject then release), `BackoffsTest` (fixed/exponential-capped, full/equal jitter within bounds),
+`AimdConcurrencyLimiterTest` (sheds at the limit; healthy pressing load grows it; a slow success or a drop
+backs it off ×backoff; clamped at min/max; idle healthy traffic does NOT inflate it; bad config rejected).
