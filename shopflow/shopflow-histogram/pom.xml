@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.shopflow</groupId>
+        <artifactId>shopflow-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>shopflow-histogram</artifactId>
+    <name>shopflow-histogram</name>
+    <description>DDSketch: streaming quantiles (p50/p99/p999) in bounded memory with a RELATIVE-error
+        guarantee — the right tool for latency SLOs, where a fixed percent accuracy at every scale beats
+        absolute-error buckets. Fully mergeable across shards. Pure Java, fully unit-tested.</description>
+
+    <!-- Pure Java; test deps inherited from the parent. -->
+</project>

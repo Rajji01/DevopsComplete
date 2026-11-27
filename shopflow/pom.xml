@@ -31,6 +31,7 @@
         <module>shopflow-skiplist</module>
         <module>shopflow-crdt</module>
         <module>shopflow-clock</module>
+        <module>shopflow-histogram</module>
         <module>inventory-service</module>
         <module>order-service</module>
         <module>notification-service</module>
