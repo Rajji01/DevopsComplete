@@ -16,6 +16,7 @@ Every file follows the same pattern: **concept → how ShopFlow uses it (with fi
 | 10 | [Kafka & event-driven](10-kafka-event-driven.md) | Kafka rounds: outbox, idempotent consumer, DLT, lag, ordering, exactly-once |
 | 11 | [Security, caching, performance, tracing](11-security-caching-performance.md) | OAuth2/JWT (incl. audience validation), ArchUnit guardrail, Spring Cache + Redis, rate limiting, virtual threads, k6 (`loadtest/flash-sale.js`), tracing with Tempo/Loki |
 | 12 | [Hard interview questions](12-hard-interview-questions.md) | Senior-level follow-ups and curveballs across all topics |
+| 13 | [Distributed-systems primitives](13-distributed-systems-primitives.md) | System-design / senior rounds: the `shopflow-*` technique libs (CRDTs, logical clocks, HLL/DDSketch, consistent hashing + Maglev, GCRA, WAL, AIMD) mapped to the question each answers |
 
 ## How to prepare (not just read)
 
