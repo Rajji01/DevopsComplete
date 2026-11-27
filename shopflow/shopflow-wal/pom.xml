@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.shopflow</groupId>
+        <artifactId>shopflow-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>shopflow-wal</artifactId>
+    <name>shopflow-wal</name>
+    <description>Write-ahead log: durably append records (length + CRC framed, fsync'd) and replay them on
+        recovery, stopping at the first torn/corrupt frame — the crash boundary. The durability primitive
+        beneath databases and the transactional-outbox pattern. Pure Java (java.nio), fully unit-tested.</description>
+
+    <!-- Pure Java; test deps inherited from the parent. -->
+</project>
