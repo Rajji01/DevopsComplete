@@ -33,6 +33,7 @@
         <module>shopflow-clock</module>
         <module>shopflow-histogram</module>
         <module>shopflow-wal</module>
+        <module>shopflow-lsm</module>
         <module>inventory-service</module>
         <module>order-service</module>
         <module>notification-service</module>
