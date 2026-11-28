@@ -45,6 +45,26 @@ The asymmetry is the point (same as TCP): probe gently so you don't cause the ov
 relieve the downstream immediately. `tryAcquire()` sheds when at the limit; `onSuccess(rtt)` / `onDropped()`
 feed the controller. (The shape of Netflix's concurrency-limits `AIMDLimit`; it won't inflate while idle.)
 
+## Phi (φ) accrual failure detector
+A circuit breaker watches *your own calls* to decide a dependency is sick. The gossip-world question is the
+mirror of that: "is that **peer** still alive?", answered from its **heartbeats** — the problem Cassandra,
+Akka/Pekko and ScyllaDB solve to maintain cluster membership. A fixed "no beat for T ms ⇒ dead" timeout is
+the trap: too small and a GC pause convicts a healthy node (costly re-replication/churn), too large and a
+real crash lingers — and no single T fits both a quiet LAN and a jittery WAN. `PhiAccrualFailureDetector`
+replaces the yes/no with a **continuous suspicion level φ** that scales to the peer's *own* heartbeat
+regularity:
+```
+φ(now) = -log10( 1 - F(now - lastHeartbeat) )     F = normal CDF(mean, stddev) of recent inter-arrivals
+         φ≈1 → ~10% chance we're wrong to suspect,  φ≈2 → ~1%,  φ≈3 → ~0.1%
+```
+A metronome-regular peer (tight σ) becomes suspicious almost the instant it's late; a jittery peer (loose σ)
+is given slack. The app thresholds φ (convict at, say, 8), cleanly splitting *how we measure doubt* from
+*how much we tolerate* — low threshold = faster crash detection but more false positives. This build mirrors
+Akka: a cheap logistic approximation of the Gaussian tail (no erf), a `minStdDeviation` floor (so a very
+regular peer isn't convicted off one slightly-late beat), an `acceptableHeartbeatPause` added to the mean
+(expected GC/scheduler pauses don't count against it), and a seeded first estimate. Time is passed in, so
+tests are deterministic. `heartbeat(now)` / `phi(now)` / `isAvailable(now, threshold)`.
+
 ## How they stack (the order matters)
 A call to a flaky dependency is typically wrapped, outside-in:
 ```
@@ -79,4 +99,7 @@ trial failure — all via a fake clock), `RetryTest` (succeeds after transient f
 skips non-retryable — backoff schedule asserted with a recording sleeper), `BulkheadTest` (admit N then
 reject then release), `BackoffsTest` (fixed/exponential-capped, full/equal jitter within bounds),
 `AimdConcurrencyLimiterTest` (sheds at the limit; healthy pressing load grows it; a slow success or a drop
-backs it off ×backoff; clamped at min/max; idle healthy traffic does NOT inflate it; bad config rejected).
+backs it off ×backoff; clamped at min/max; idle healthy traffic does NOT inflate it; bad config rejected),
+`PhiAccrualFailureDetectorTest` (φ=0 before any heartbeat; steady 1s heartbeats keep φ<1 on time and drive
+φ>8 when 2s overdue; a jittery history gets more slack than a regular one at the same lateness;
+`acceptableHeartbeatPause` suppresses suspicion for an expected gap; bad config rejected).
