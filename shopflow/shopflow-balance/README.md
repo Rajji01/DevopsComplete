@@ -44,12 +44,28 @@ remove a node:
 | **RoundRobin** | strict cycle | no | equal backends, equal requests |
 | **WeightedRoundRobin** | cycle, weighted + *smoothed* | no | unequal capacity (a "3" gets 3× a "1"), spread not bursty |
 | **LeastConnections** | fewest in-flight | yes | uneven request costs; needs a global in-flight view + release |
-| **PowerOfTwoChoices** | lighter of 2 random samples | yes | many LB instances where a global view is impossible |
+| **PowerOfTwoChoices** | lighter of 2 random samples | yes (in-flight count) | many LB instances where a global view is impossible |
+| **PeakEwma** | lighter of 2 samples, scored by `rtt·(pending+1)` | yes (**latency + load**) | backends that degrade in *speed*, not just depth (GC pauses, slow node) |
 
 **The P2C insight** (a favourite interview topic): sampling just TWO backends and taking the lighter one
 drops the peak load from ~`O(log n / log log n)` above average (pure random) to ~`O(log log n)` — nearly
 perfect balance — with only local information. One extra random pick buys almost all the benefit of true
 least-connections without its coordination cost.
+
+**PeakEwma** (Finagle / Linkerd / Envoy `peak_ewma`) keeps P2C's cheap sampling but changes the *score*.
+Counting in-flight requests can't tell a healthy node from a slow one — two nodes with 3 connections each
+look identical even if one is mid-GC-pause and 10× slower. PeakEwma scores each sampled node by
+`ewmaRtt · (pending + 1)`, so **slow** is as repellent as **busy**. The RTT estimate is a *peak* EWMA:
+a higher-than-estimate sample snaps the cost **up instantly** (flee a spike now) while a lower sample is
+blended in slowly and the estimate decays on idle — quick to distrust, cautious to re-trust, exactly the
+bias you want when steering away from a degrading backend. A fresh node starts at a default RTT so it isn't
+flooded before it's proven itself.
+
+```
+two nodes, both 3 in-flight, one mid-GC-pause (RTT 10x):
+   P2C (count):    a tie -> keeps feeding the slow one   ✗
+   PeakEwma:       cost = rtt·(pending+1) -> avoids it    ✓
+```
 
 ## Use it
 ```java
@@ -63,6 +79,16 @@ String backend = rr.next();
 var p2c = new PowerOfTwoChoicesBalancer<>(List.of("be-1","be-2","be-3"), new Random());
 String be = p2c.acquire();
 try { /* serve */ } finally { p2c.release(be); }
+
+// latency-aware: 10s decay, 1s default RTT for new backends, real nanoTime clock
+var ewma = new PeakEwmaBalancer<>(
+        List.of("be-1","be-2","be-3"),
+        java.util.concurrent.TimeUnit.SECONDS.toNanos(10),
+        java.util.concurrent.TimeUnit.SECONDS.toNanos(1),
+        new Random(), System::nanoTime);
+String node = ewma.acquire();
+long t0 = System.nanoTime();
+try { /* serve */ } finally { ewma.complete(node, System.nanoTime() - t0); }  // feed back the RTT
 ```
 
 ## Where it fits in shopflow
@@ -78,4 +104,5 @@ release frees capacity; tighter ε still respects its cap; bad args / empty ring
 `MaglevHashTest` (100k keys spread within ±10% of ideal across 5 backends; lookup stable per key; removing a
 backend moves &lt;30% of keys — ~its 1/5 share, not mod-N's ~100%; non-prime / too-small size / empty rejected)
 and `LoadBalancerTest` (round-robin order; weighted proportions; least-connections reacts to release;
-**P2C keeps the peak near average over 1000 picks**).
+**P2C keeps the peak near average over 1000 picks**; **PeakEwma snaps up on a spike but decays down slowly,
+and steers ~75% of traffic away from a 10× slower backend**; bad args rejected).

@@ -1,12 +1,15 @@
 package com.shopflow.balance.lb;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
 
@@ -57,5 +60,56 @@ class LoadBalancerTest {
         }
         assertThat(sum).isEqualTo(1000);
         assertThat(max).isLessThanOrEqualTo(200);   // avg 100; P2C keeps the peak far below pure random's
+    }
+
+    private static long ms(long millis) {
+        return TimeUnit.MILLISECONDS.toNanos(millis);
+    }
+
+    @Test
+    void peakEwma_snapsUpInstantlyOnASpikeButDecaysDownSlowly() {
+        long[] clock = {0};                                     // mutable virtual clock (nanos)
+        var b = new PeakEwmaBalancer<>(
+                List.of("x"), TimeUnit.SECONDS.toNanos(10), ms(50), new Random(1), () -> clock[0]);
+
+        // fresh node sits at its default-RTT baseline (so it isn't treated as free)
+        assertThat(b.currentCost("x")).isCloseTo((double) ms(50), within((double) ms(1)));
+
+        // a 500ms sample is HIGHER than the estimate -> snap straight up to it, no smoothing
+        b.complete("x", ms(500));
+        assertThat(b.currentCost("x")).isCloseTo((double) ms(500), within((double) ms(1)));
+
+        // 10s later (one tau), a fast 50ms sample is LOWER -> blended in, not snapped:
+        // w = exp(-1) = 0.368; cost = 500*0.368 + 50*0.632 ≈ 216ms
+        clock[0] += TimeUnit.SECONDS.toNanos(10);
+        b.complete("x", ms(50));
+        assertThat(b.currentCost("x")).isCloseTo((double) ms(216), within((double) ms(5)));
+    }
+
+    @Test
+    void peakEwma_steersAwayFromTheSlowBackend() {
+        long[] clock = {0};
+        var b = new PeakEwmaBalancer<>(
+                List.of("fast", "slow"), TimeUnit.SECONDS.toNanos(10), ms(100), new Random(42), () -> clock[0]);
+        b.complete("slow", ms(1000));                            // mark slow as ~10x costlier than fast
+
+        int fast = 0;
+        for (int i = 0; i < 1000; i++) {
+            String n = b.acquire();
+            if (n.equals("fast")) {
+                fast++;
+            }
+            b.complete(n, n.equals("fast") ? ms(100) : ms(1000)); // keep each backend's latency profile
+        }
+        // P2C over 2 nodes: fast wins unless BOTH samples are slow (~1/4) -> ~75% to fast, hotspot avoided
+        assertThat(fast).isBetween(700, 800);
+    }
+
+    @Test
+    void peakEwma_rejectsBadArgs() {
+        assertThatThrownBy(() -> new PeakEwmaBalancer<>(List.of(), 1L, 1L, new Random(), () -> 0L))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new PeakEwmaBalancer<>(List.of("a"), 0L, 1L, new Random(), () -> 0L))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }
