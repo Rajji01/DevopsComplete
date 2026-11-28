@@ -176,6 +176,100 @@ capacity and backs off on the first sign of latency/drops.
 
 ---
 
+## 8. Pick the *healthiest* backend — latency-aware balancing (`shopflow-balance`)
+
+**Concept.** Round-robin and least-connections balance by *count*; they can't see that one backend is slow.
+PeakEWMA scores each backend by `ewmaRtt · (pending+1)` and sends the request to the cheaper of two random
+samples (P2C) — so a slow backend is as repellent as a busy one.
+
+**Where in ShopFlow.** `shopflow/shopflow-balance`: `PeakEwmaBalancer` (alongside round-robin, weighted,
+least-connections, plain P2C).
+
+**Q: Two backends both have 3 in-flight requests but one is mid-GC-pause — what does least-connections do?**
+It sees a tie and keeps feeding the slow one. PeakEWMA multiplies the in-flight count by the backend's recent
+RTT, so the slow node's cost is ~10× higher and it's avoided — latency and load are different failure signals.
+
+**Q: Why a "peak" EWMA (snap up on a higher sample, decay down slowly)?** You want to flee a latency spike
+*immediately* but re-trust a recovery *cautiously*. Symmetric smoothing would average a spike away over
+several samples — too slow to react when the spike means a degrading node. (Finagle/Linkerd/Envoy `peak_ewma`.)
+
+**Common mistake.** Balancing by connection count and assuming equal backends — one slow replica silently
+collects a full share of traffic and tail latency blows up.
+
+---
+
+## 9. Is that peer still alive? — φ accrual failure detection (`shopflow-resilience`)
+
+**Concept.** A fixed "no heartbeat for T ms ⇒ dead" timeout is wrong twice: too small convicts a healthy node
+mid-GC (costly churn), too large hides a real crash. The φ accrual detector outputs a *continuous* suspicion
+level that scales to each peer's own heartbeat regularity.
+
+**Where in ShopFlow.** `shopflow/shopflow-resilience`: `PhiAccrualFailureDetector` (Cassandra/Akka). It's the
+gossip-world mirror of the `CircuitBreaker` (breaker judges *your calls*; this judges a *peer's heartbeats*).
+
+**Q: What is φ?** `φ = −log10(1 − F(Δt))`, F = normal CDF of the heartbeat inter-arrival window. φ=1 ≈ 10%
+chance you're wrong to suspect, φ=2 ≈ 1%, φ=3 ≈ 0.1%. The app convicts at a threshold (e.g. 8), which cleanly
+separates *measuring* doubt from *tolerating* it.
+
+**Q: Same 0.5s of silence — why convict a steady node but not a jittery one?** Because the yardstick is the
+peer's *own* variance (σ). A metronome-regular node 0.5s late is far outside its distribution (high φ); a
+jittery node routinely varies that much (low φ). A global timeout can't express that.
+
+**Common mistake.** No σ-floor (a perfectly-regular peer has σ→0, so one slightly-late beat reads as φ=∞ —
+false death from noise) and no `acceptableHeartbeatPause` (an expected GC pause gets charged against the node).
+
+---
+
+## 10. Shed overload by *delay*, not queue length — CoDel (`shopflow-resilience`)
+
+**Concept.** Under overload you must drop some queued work. Queue *length* lies (a deep queue draining fast is
+fine; a short stuck one is a disaster). CoDel keys off **sojourn time** — how long the request actually waited.
+
+**Where in ShopFlow.** `shopflow/shopflow-resilience`: `CodelQueue` — completing the overload trio with
+`Bulkhead` (cap concurrency) and `AimdConcurrencyLimiter` (tune the cap).
+
+**Q: When does CoDel start shedding?** Only once sojourn time stays ≥ `target` (e.g. 5ms) for a full
+`interval` (e.g. 100ms) — a transient burst is *absorbed*, a *standing* queue is attacked. Then it drops on
+`dropNext = t + interval/√count`, so pressure accelerates while the backlog persists and releases the instant
+it recovers.
+
+**Q: Why shed fast (503) instead of letting requests queue?** A request that will wait past its own timeout
+behind a standing queue is going to fail anyway — having consumed capacity for nothing. Failing it fast frees
+that capacity for requests that can still succeed.
+
+**Common mistake.** Shedding on queue length (or RAM), which punishes a healthy burst and misses a short-but-
+stuck queue; and dumping the *whole* backlog at once, which just moves the overload into a retry storm.
+
+---
+
+## 11. Storage engines — LSM vs B-tree (`shopflow-lsm`, `shopflow-btree`)
+
+**Concept.** Both are ordered key-value indexes with the same API; they differ in *which path they optimise*,
+and the entire design of each falls out of that one choice. This is the most common storage-interview question.
+
+**Where in ShopFlow.** `shopflow/shopflow-lsm`: `LsmTree` (memtable → immutable sorted segments → compaction).
+`shopflow/shopflow-btree`: `BPlusTree` (high-fanout, update-in-place, leaves chained for range scans).
+
+**Q: LSM or B-tree — how do you choose?** Map it to the *workload*:
+- **B-tree** — update in place (random write), one short read path (~log_fanout n), great range scans → read-
+  heavy OLTP (PostgreSQL, InnoDB, Oracle).
+- **LSM** — append to a memtable, sequential flush, compaction later → write-heavy ingest / time-series
+  (RocksDB, Cassandra, HBase). The cost is *read amplification* (a key may be sought in every segment) and
+  *compaction debt*.
+
+**Q: Why are deletes "tombstones" in an LSM, and what breaks?** You can't mutate an immutable segment, so a
+delete writes a marker that shadows older values; the space is reclaimed only at compaction. Delete-heavy
+workloads bloat and range scans slow down wading through tombstones (Cassandra's "tombstone problem").
+
+**Q: How do LSM reads stay affordable, and which of my other modules helps?** A per-segment **Bloom filter**
+(`shopflow-sketch`) skips segments that can't hold the key, so a point lookup usually touches one segment.
+The memtable's durability comes from a **WAL** (`shopflow-wal`) written before the write is acked.
+
+**Common mistake.** Treating "LSM vs B-tree" as two definitions to recite instead of a workload decision; or
+forgetting that an LSM trades write throughput now for compaction work (and read amp) later.
+
+---
+
 ## The one-line map (for the rapid-fire round)
 
 | "How would you…" | Primitive | Module |
@@ -188,5 +282,10 @@ capacity and backs off on the first sign of latency/drops.
 | …rate-limit globally across pods | GCRA / token bucket on Redis | `shopflow-ratelimit` |
 | …survive a crash mid-write | write-ahead log (CRC, replay valid prefix) | `shopflow-wal` |
 | …stop guessing a concurrency cap | AIMD adaptive limiter | `shopflow-resilience` |
+| …route around a *slow* (not just busy) backend | PeakEWMA latency-aware P2C | `shopflow-balance` |
+| …decide a peer is dead without a brittle timeout | φ accrual failure detector | `shopflow-resilience` |
+| …shed overload by delay, not queue length | CoDel (sojourn-time AQM) | `shopflow-resilience` |
+| …absorb a million writes/sec | LSM-tree (memtable + compaction) | `shopflow-lsm` |
+| …serve read-heavy OLTP + range scans | B+tree (high-fanout, in-place) | `shopflow-btree` |
 
 Every row is real, tested code with a README — say "in my repo, `<module>`…" and give the path.
