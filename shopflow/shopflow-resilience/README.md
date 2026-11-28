@@ -45,6 +45,27 @@ The asymmetry is the point (same as TCP): probe gently so you don't cause the ov
 relieve the downstream immediately. `tryAcquire()` sheds when at the limit; `onSuccess(rtt)` / `onDropped()`
 feed the controller. (The shape of Netflix's concurrency-limits `AIMDLimit`; it won't inflate while idle.)
 
+## CoDel (controlled delay) request shedding
+AIMD and the bulkhead control *how many* requests run at once; CoDel controls *which queued requests to give
+up on* when overloaded (Nichols & Jacobson, RFC 8289 — adapted here from packets to requests). The naive
+signal is queue **length** ("shed when the queue is too long"), but length lies: a deep queue draining fast
+is fine, a short one barely moving is a disaster. What hurts the user is **sojourn time** — how long their
+request actually waited — so CoDel measures that. The refinement that makes it work is distinguishing a
+*good* queue (a burst that drains within a round-trip) from a *standing* one (persistently backed up):
+```
+good queue:  sojourn spikes above target, falls back within interval  -> absorb, shed nothing
+standing:    sojourn stays >= target for a whole interval             -> start shedding
+```
+Only once sojourn has stayed at/above `target` (default 5ms) for a full `interval` (default 100ms) does it
+start shedding, and then it drops on a schedule that tightens as the backlog persists:
+```
+dropNext = t + interval / sqrt(count)      count = drops so far this episode
+```
+so pressure accelerates while the queue stays bad and releases the instant sojourn recovers. `offer(req, now)`
+to enqueue; `poll(now)` returns the request to serve plus the list CoDel shed (fail those fast with a 503 —
+far better than letting them wait behind a standing queue and time out anyway). This is the AQM behind
+`fq_codel` and the shape of Envoy/Facebook adaptive-LIFO overload shedding.
+
 ## Phi (φ) accrual failure detector
 A circuit breaker watches *your own calls* to decide a dependency is sick. The gossip-world question is the
 mirror of that: "is that **peer** still alive?", answered from its **heartbeats** — the problem Cassandra,
@@ -102,4 +123,7 @@ reject then release), `BackoffsTest` (fixed/exponential-capped, full/equal jitte
 backs it off ×backoff; clamped at min/max; idle healthy traffic does NOT inflate it; bad config rejected),
 `PhiAccrualFailureDetectorTest` (φ=0 before any heartbeat; steady 1s heartbeats keep φ<1 on time and drive
 φ>8 when 2s overdue; a jittery history gets more slack than a regular one at the same lateness;
-`acceptableHeartbeatPause` suppresses suspicion for an expected gap; bad config rejected).
+`acceptableHeartbeatPause` suppresses suspicion for an expected gap; bad config rejected),
+`CodelQueueTest` (a burst draining within the interval sheds nothing; a standing queue sheds only after
+sojourn stays above target for a full interval, then again on the control-law schedule; recovers after the
+backlog drains and does not shed a healthy request; empty poll returns nothing; bad config rejected).
